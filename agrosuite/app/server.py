@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import shutil
 import traceback
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -936,7 +937,7 @@ def design(request: DesignRequest) -> dict[str, Any]:
         raise _fail("Give the field boundary to lay the trial out on.")
 
     try:
-        return difm_design.design_strips(
+        result = difm_design.design_strips(
             boundary_lonlat=boundary,
             rates=request.rates,
             implement_width_m=request.implement_width_m,
@@ -948,6 +949,18 @@ def design(request: DesignRequest) -> dict[str, Any]:
         )
     except Exception as exc:
         raise _fail(str(exc))
+
+    # Kept on the project, not only in the browser: the layout is what the
+    # export offers as the prescription, and a project file that lost it
+    # would hand back a session with the trial to lay out again. The request
+    # travels with it so the settings can be read off a reopened file.
+    state.project["design"] = {
+        "result": result,
+        "request": request.model_dump(),
+        "dataset_id": request.boundary_dataset_id,
+        "created_at": datetime.now().astimezone().isoformat(timespec="seconds"),
+    }
+    return result
 
 
 def _boundary_from_dataset(dataset) -> list[tuple[float, float]] | None:
@@ -1271,8 +1284,8 @@ def export(request: ExportRequest) -> dict[str, Any]:
                     )
                     generated.append(Path(info["path"]))
                 elif fmt == "isoxml":
-                    # Sempre a partir do valor interno: o DDI do padrão já
-                    # define a unidade gravada no binário.
+                    # Always from the internal value: the standard's DDI already
+                    # fixes the unit written into the binary.
                     info = writers.write_prescription_isoxml(
                         features_internal, out_dir,
                         rate_property=request.rate_property, rate_kind=request.rate_kind,

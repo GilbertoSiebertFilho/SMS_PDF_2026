@@ -500,11 +500,11 @@ def write_prescription(
     cell_lon: float,
     cell_lat: float,
     rate_kind: str = "mass",
-    task_name: str = "Prescricao",
+    task_name: str = "Prescription",
     field_name: str = "Field",
-    product_name: str = "Produto",
+    product_name: str = "Product",
     customer_name: str = "AgroSuite",
-    farm_name: str = "Fazenda",
+    farm_name: str = "Farm",
     boundary: list[tuple[float, float]] | None = None,
 ) -> Path:
     """Write a TASKDATA folder holding a type-2 grid prescription.
@@ -650,11 +650,11 @@ def write_field_setup(
     headland: list[tuple[float, float]] | None = None,
     guidance_lines: list[dict] | None = None,
     customer_name: str = "AgroSuite",
-    farm_name: str = "Fazenda",
+    farm_name: str = "Farm",
     area_m2: float | None = None,
     prescription: dict | None = None,
     task_name: str | None = None,
-    product_name: str = "Produto",
+    product_name: str = "Product",
 ) -> Path:
     """Write a TASKDATA with boundary, guidance lines and, if given, an Rx.
 

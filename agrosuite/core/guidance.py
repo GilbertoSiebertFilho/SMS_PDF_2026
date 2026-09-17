@@ -65,7 +65,7 @@ def ab_line_from_direction(
     heading = (90.0 - angle_deg) % 360.0
     return {
         "name": name,
-        "type": 1,  # linha AB
+        "type": 1,  # AB line
         "a": (float(a[0]), float(a[1])),
         "b": (float(b[0]), float(b[1])),
         "heading": round(heading, 2),

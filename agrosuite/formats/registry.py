@@ -38,8 +38,15 @@ SHAPEFILE_SIDECARS = {".shp", ".shx", ".dbf", ".prj", ".cpg", ".sbn", ".sbx", ".
 #: project names layers, it does not hold them.
 QGIS_EXT = {".qgs", ".qgz"}
 
+#: Saved AgroSuite projects. Listed for the same reason as QGIS projects — the
+#: user should find them in the file browser — but opened by
+#: :mod:`agrosuite.app.persist`, because a project is a whole session, not a
+#: dataset to add to one.
+PROJECT_EXT = {".agrosuite"}
+
 ALL_IMPORT_EXT = (
-    VECTOR_EXT | TABULAR_EXT | EXCEL_EXT | ARCHIVE_EXT | RASTER_EXT | QGIS_EXT
+    VECTOR_EXT | TABULAR_EXT | EXCEL_EXT | ARCHIVE_EXT | RASTER_EXT
+    | QGIS_EXT | PROJECT_EXT
     | {".xml", ".iso"}
 )
 
@@ -52,6 +59,14 @@ class DetectedSource:
     path: Path
     label: str
     detail: str = ""
+
+
+def _system_entry(path: Path) -> bool:
+    """A dot-file, or anything under ``__MACOSX``: what macOS writes beside
+    the user's files on a stick and into a zip. ``._Boundary.shp`` is the
+    resource fork of ``Boundary.shp``, not a shapefile, and sorted by name
+    it comes first."""
+    return path.name.startswith(".") or "__MACOSX" in path.parts
 
 
 def detect(path: str | Path) -> DetectedSource:
@@ -74,7 +89,7 @@ def detect(path: str | Path) -> DetectedSource:
                 detail=f"root at {card_root.name}",
             )
 
-        shapefiles = sorted(path.glob("*.shp"))
+        shapefiles = sorted(p for p in path.glob("*.shp") if not _system_entry(p))
         if shapefiles:
             return DetectedSource(
                 "shapefile", shapefiles[0], "Folder holding a shapefile",
@@ -120,6 +135,13 @@ def detect(path: str | Path) -> DetectedSource:
         raise ValueError(
             "That is a QGIS project. Use 'Open a QGIS project' on the Export tab, "
             "which lists its layers and lets you pick which ones to bring in."
+        )
+
+    if suffix in PROJECT_EXT:
+        raise ValueError(
+            "That is a saved AgroSuite project. Use 'Open project', which restores "
+            "the whole session — datasets, cleaning results, roles and prices — "
+            "rather than importing it as one more file."
         )
 
     raise ValueError(

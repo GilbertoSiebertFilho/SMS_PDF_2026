@@ -17,7 +17,7 @@ import re
 import unicodedata
 
 # --------------------------------------------------------------------------
-# Colunas canônicas
+# Canonical columns
 # --------------------------------------------------------------------------
 
 LON = "lon"
@@ -103,7 +103,9 @@ ALIASES: dict[str, tuple[str, ...]] = {
     LAT: (
         "lat", "latitude", "gps_lat", "gpslat", "latitude_deg", "lat_dd",
         "position_north", "northing_deg", "gps_latitude", "wgs84_lat",
-        "coord_y", "point_y",
+        # "x" is a longitude above; without "y" here a table named X/Y came
+        # out with a longitude and no latitude, and failed on the bare name.
+        "y", "coord_y", "point_y",
     ),
     TIMESTAMP: (
         "timestamp", "zeitstempel", "horodatage", "marca_tiempo",

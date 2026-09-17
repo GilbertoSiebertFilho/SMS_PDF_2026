@@ -57,6 +57,28 @@ class Entry:
         return data
 
 
+def default_project() -> dict[str, Any]:
+    """A fresh project, as a session starts and as 'New project' returns to.
+
+    One project per session: the set of files describing one field and
+    season, plus the prices that turn yield into money. Kept in one place so
+    that resetting a session cannot drift from starting one.
+    """
+    return {
+        "name": "Untitled project",
+        "goal": "difm",
+        "roles": {},        # dataset_id -> role
+        "prices": {},       # crop_price, input_cost, currency, crop
+        "reviewed": set(),  # dataset ids the user has confirmed
+        "exported": False,
+        # The trial layout last generated: {result, request, dataset_id,
+        # created_at}, or None. It is project state, not a passing result —
+        # the export tab offers it as the prescription — so it is saved with
+        # the project and comes back when the file is reopened.
+        "design": None,
+    }
+
+
 class Session:
     """In-memory repository for the session's data."""
 
@@ -64,16 +86,13 @@ class Session:
         self._entries: dict[str, Entry] = {}
         self._files: dict[str, Path] = {}
         self._lock = threading.Lock()
-        # One project per session: the set of files describing one field and
-        # season, plus the prices that turn yield into money.
-        self.project: dict[str, Any] = {
-            "name": "Untitled project",
-            "goal": "difm",
-            "roles": {},        # dataset_id -> role
-            "prices": {},       # crop_price, input_cost, currency, crop
-            "reviewed": set(),  # dataset ids the user has confirmed
-            "exported": False,
-        }
+        self.project: dict[str, Any] = default_project()
+        # The project file the session was opened from or last saved to:
+        # ``{"path": Path, "saved_at": str | None, "token": str | None}``,
+        # or None for a session that has never touched one. Kept here rather
+        # than in the browser so that reloading the page does not forget
+        # where the next save should go.
+        self.project_file: dict[str, Any] | None = None
         self.workdir = Path(tempfile.mkdtemp(prefix="agrosuite_"))
         self.uploads = self.workdir / "uploads"
         self.exports = self.workdir / "exports"
@@ -87,15 +106,24 @@ class Session:
         label: str | None = None,
         origin: str = "import",
         parent_id: str | None = None,
+        dataset_id: str | None = None,
     ) -> Entry:
+        # A reopened project keeps its original ids: reports, roles and
+        # parent links all refer to them, and re-numbering would cut every
+        # clean copy loose from the file it came from.
         entry = Entry(
-            id=uuid.uuid4().hex[:12],
+            id=dataset_id or uuid.uuid4().hex[:12],
             dataset=dataset,
             label=label or dataset.meta.name,
             origin=origin,
             parent_id=parent_id,
         )
         with self._lock:
+            if entry.id in self._entries:
+                raise ValueError(
+                    f"Dataset id '{entry.id}' is already in use in this session; "
+                    "clear the session before reloading it."
+                )
             self._entries[entry.id] = entry
         return entry
 
@@ -115,8 +143,11 @@ class Session:
         return [entry.summary() for entry in self._entries.values()]
 
     def clear(self) -> None:
+        # Whatever replaces the datasets — a new project, a reopened file —
+        # is no longer what the remembered file holds, so the link goes too.
         with self._lock:
             self._entries.clear()
+            self.project_file = None
 
     # -- files -----------------------------------------------------------
     def register_file(self, path: Path) -> str:

@@ -16,6 +16,12 @@ const App = {
     design: null,
     reports: {},
     drawing: null,
+    projectFile: null,   // the .agrosuite file open or last saved, as the server reports it
+    projectOpen: false,  // the path dialog is picking a project, not data
+    saving: false,       // a project save is on its way
+    recent: null,
+    machinePicked: {},   // the machine picked on each tab, by name: a redraw must not forget it
+    machinePlaced: {},   // what the app put in a physical field, with its exact metric number
   },
 
   /* ---------------------------------------------------------------- API */
@@ -28,9 +34,20 @@ const App = {
         : options.body ? JSON.stringify(options.body) : undefined,
     });
     let payload = null;
-    try { payload = await response.json(); } catch { /* resposta sem corpo */ }
+    try { payload = await response.json(); } catch { /* no body */ }
     if (!response.ok) {
-      throw new Error(payload?.detail || `${response.status} ${response.statusText}`);
+      // A 422 from the request model is a list of {loc, msg}; read out as
+      // "passes_per_strip: Input should be a valid integer" it can be acted
+      // on, where the list itself would show as "[object Object]".
+      const detail = Array.isArray(payload?.detail)
+        ? payload.detail.map((e) => `${(e.loc || []).filter((part) => part !== "body")
+            .join(".")}: ${e.msg}`).join(" ")
+        : payload?.detail;
+      const error = new Error(detail || `${response.status} ${response.statusText}`);
+      // A 409 is a question ("replace it?"), not a failure; callers need the
+      // status to tell the two apart.
+      error.status = response.status;
+      throw error;
     }
     return payload;
   },
@@ -73,8 +90,19 @@ const App = {
     this.bindTopbar();
     this.bindImport();
     this.bindDialogs();
+    this.bindMachineDialog();
+    this.bindProjectFiles();
     this.renderTab();
-    this.refreshDatasets().then(() => this.refreshProject());
+    this.refreshDatasets().then(async () => {
+      await this.refreshProject();
+      // A reload keeps the server's session but not the page's selection,
+      // and a full list over an empty map reads as if the data were gone.
+      // The first dataset is selected, as it is when a project is reopened.
+      if (this.state.datasets.length && !this.state.selectedId) {
+        await this.selectDataset(this.state.datasets[0].id);
+      }
+    });
+    this.refreshRecent();
   },
 
   bindTopbar() {
@@ -95,6 +123,7 @@ const App = {
       root.setAttribute("data-theme", current ? (current === "dark" ? "light" : "dark")
         : (dark ? "light" : "dark"));
       MapView.draw();
+      this.state.compare?.view.draw();
       this.renderTab();
     });
 
@@ -106,6 +135,7 @@ const App = {
     });
     document.getElementById("show-basemap").addEventListener("change", (event) => {
       MapView.setBasemap(event.target.checked);
+      this.state.compare?.view.setBasemap(event.target.checked);
     });
     document.getElementById("btn-fit").addEventListener("click", () => {
       if (this.state.selected?.bounds) MapView.fit(this.state.selected.bounds);
@@ -138,14 +168,48 @@ const App = {
     const payload = await this.api("/api/datasets").catch(() => null);
     if (!payload) return;
     this.state.datasets = payload.datasets;
+    this.forgetGoneReports();
+    // The selected dataset's detail is fetched once, when it is picked; a
+    // cleaning or an analysis run afterwards flips the flags the tabs read
+    // to decide whether there is a stored report to fetch. A tab redrawn
+    // after its cached result was pruned would otherwise believe there is
+    // nothing to fetch. The list carries the same summary, fresh.
+    const current = payload.datasets.find((d) => d.id === this.state.selectedId);
+    if (current && this.state.selected) Object.assign(this.state.selected, current);
     this.renderDatasetList();
     this.refreshProject();
+  },
+
+  /* Nothing selected: the map, the overlays and the legend that belonged to
+   * the selection go with it. */
+  clearSelection() {
+    this.state.selectedId = null;
+    this.state.selected = null;
+    MapView.clearPoints();
+    MapView.clearOverlays();
+    this.clearRemovedOverlay();
+    document.getElementById("legend").hidden = true;
+  },
+
+  /* A cached cleaning result names the clean copy and the removed records it
+   * produced; once either is deleted those ids point at nothing, and the
+   * print and "view" buttons drawn from the cache would ask the server for a
+   * dataset it no longer has. Dropping the entry makes the tab fetch the
+   * stored report again and rebuild the shape from the datasets that are
+   * still there — the original keeps its copy of the report, so printing
+   * falls back to it, as it does after a reload. */
+  forgetGoneReports() {
+    const alive = new Set(this.state.datasets.map((d) => d.id));
+    for (const [key, cached] of Object.entries(this.state.reports)) {
+      const ids = [key.split(":")[0], cached?.clean?.id, cached?.removed?.id].filter(Boolean);
+      if (ids.some((id) => !alive.has(id))) delete this.state.reports[key];
+    }
   },
 
   renderDatasetList() {
     const box = document.getElementById("dataset-list");
     if (!this.state.datasets.length) {
-      box.innerHTML = '<div class="empty">Nada carregado ainda.</div>';
+      box.innerHTML = '<div class="empty">Nothing loaded yet.</div>';
       return;
     }
     box.innerHTML = "";
@@ -168,6 +232,11 @@ const App = {
   },
 
   async selectDataset(id) {
+    // The comparison and the removed-records overlay belong to one cleaning;
+    // a new selection means a new map. Left in place, the overlay's dots would
+    // sit on the next dataset and the tooltip would call its records removed.
+    if (this.state.compare) this.exitCompare({ reload: false });
+    this.clearRemovedOverlay();
     this.state.selectedId = id;
     const detail = await this.api(`/api/datasets/${id}`).catch((err) => {
       this.toast("That did not work", err.message, "error");
@@ -201,6 +270,8 @@ const App = {
 
   async loadMap() {
     if (!this.state.selectedId) return;
+    // In compare mode the two panes are painted together, on one scale.
+    if (this.state.compare) return this.paintCompare();
     const column = this.state.colorColumn;
     const payload = await this.api(
       `/api/datasets/${this.state.selectedId}/map?column=${encodeURIComponent(column)}`
@@ -208,15 +279,27 @@ const App = {
     if (!payload) return;
 
     const { conv, unit } = Units.forColumn(column, this.state.selected?.meta?.operation);
-    const scale = MapView.setPoints(payload, conv);
+    const scale = MapView.setPoints(payload, conv, { unit });
     if (payload.polygons?.length) MapView.setPolygons(payload.polygons);
     else if (this.state.tab !== "ensaio") MapView.clearOverlays();
 
-    const status = document.getElementById("map-status");
-    status.textContent = payload.sampled
+    document.getElementById("map-status").textContent = this.pointsStatus(payload);
+    this.renderLegend(column, unit, scale);
+  },
+
+  /* Past MAP_POINT_LIMIT the server sends a systematic sample, and `count`
+   * is the size of the sample, not of the dataset. Any count shown to the
+   * user has to say so, or two datasets on either side of the limit read
+   * as if the smaller one had more points. */
+  pointsStatus(payload) {
+    return payload.sampled
       ? `${Units.num(payload.count, 0)} of ${Units.num(payload.total, 0)} points (sampled)`
       : `${Units.num(payload.count, 0)} points`;
+  },
 
+  /* The legend reads in the displayed unit, like the colours: `scale` is the
+   * one setPoints returned, already converted. */
+  renderLegend(column, unit, scale) {
     const legend = document.getElementById("legend");
     if (scale) {
       legend.hidden = false;
@@ -232,10 +315,13 @@ const App = {
 
   /* ------------------------------------------------------------ helpers */
 
+  /* Safe as text and inside a quoted attribute alike. textContent alone
+   * leaves quotes as they are, and a name such as 'S780 "40 ft"' put in a
+   * value="…" would end at its first quote. */
   escape(text) {
     const div = document.createElement("div");
     div.textContent = text ?? "";
-    return div.innerHTML;
+    return div.innerHTML.replace(/"/g, "&quot;").replace(/'/g, "&#39;");
   },
 
   field(label, inputHtml, hint) {
@@ -285,6 +371,8 @@ const App = {
 
   renderTab() {
     const panel = document.getElementById("right-panel");
+    // The comparison only makes sense next to its cleaning report.
+    if (this.state.compare && this.state.tab !== "limpeza") this.exitCompare();
     const renderers = {
       dados: () => this.tabDados(panel),
       limpeza: () => this.tabLimpeza(panel),
@@ -297,7 +385,7 @@ const App = {
 };
 
 /* ======================================================================
- * Aba 1 — Dados
+ * Tab 1 — Data
  * ==================================================================== */
 
 Object.assign(App, {
@@ -388,13 +476,11 @@ Object.assign(App, {
       ?.addEventListener("click", () => this.openImportUnitsDialog());
     document.getElementById("btn-augmenta")
       ?.addEventListener("click", () => this.runAugmenta());
+    document.getElementById("btn-print-preflight")?.addEventListener("click", (event) =>
+      this.printReport(this.state.selectedId, event.currentTarget));
     document.getElementById("btn-remove-dataset").addEventListener("click", async () => {
       await this.api(`/api/datasets/${this.state.selectedId}`, { method: "DELETE" });
-      this.state.selectedId = null;
-      this.state.selected = null;
-      MapView.clearPoints();
-      MapView.clearOverlays();
-      document.getElementById("legend").hidden = true;
+      this.clearSelection();
       await this.refreshDatasets();
       this.renderTab();
     });
@@ -414,7 +500,7 @@ Object.assign(App, {
 
     return `
       <div class="panel">
-        <h3>First look at this file</h3>
+        ${this.printableHead("First look at this file", "btn-print-preflight")}
         <div class="note ${noteClass}">${this.escape(report.summary)}</div>
         <div style="margin-top:8px">
           ${findings.map((f) => `
@@ -547,7 +633,7 @@ Object.assign(App, {
 });
 
 /* ======================================================================
- * Aba 2 — Limpeza
+ * Tab 2 — Cleaning
  * ==================================================================== */
 
 Object.assign(App, {
@@ -575,6 +661,7 @@ Object.assign(App, {
         ${this.field("Sensor flow delay (s)",
           this.numberInput("clean-delay", config.corrections.flow_delay_s ?? 0, "0.5", "0"),
           "Seconds between the cut and the sensor reading. Zero turns the correction off.")}
+        ${this.machinePicker("clean")}
       </div>
 
       <div class="panel">
@@ -591,6 +678,7 @@ Object.assign(App, {
       <div id="clean-report"></div>`;
 
     this.renderCleanSteps(config.steps);
+    this.bindMachinePicker("clean");
 
     document.getElementById("clean-preset").addEventListener("change", (event) => {
       this.state.cleanPreset = event.target.value;
@@ -600,6 +688,7 @@ Object.assign(App, {
 
     const existing = this.state.reports[`${this.state.selectedId}:clean`];
     if (existing) this.renderCleanReport(existing);
+    else if (d.has_clean_report) this.restoreCleanReport(d);
   },
 
   renderCleanSteps(stepConfig) {
@@ -709,6 +798,8 @@ Object.assign(App, {
   },
 
   async runClean() {
+    // A new cleaning replaces the clean dataset; the old comparison is stale.
+    if (this.state.compare) this.exitCompare();
     const body = this.collectCleanConfig();
     const result = await this.busy(document.getElementById("right-panel"), () =>
       this.api(`/api/datasets/${this.state.selectedId}/clean`, { method: "POST", body }));
@@ -758,7 +849,7 @@ Object.assign(App, {
 
     box.innerHTML = `
       <div class="panel">
-        <h3>Cleaning report</h3>
+        ${this.printableHead("Cleaning report", "btn-print-clean")}
         ${report.findings.map((f) =>
           `<div class="note ${f.level}">${this.escape(f.text)}</div>`).join("")}
         <div class="stat-grid" style="margin-top:10px">
@@ -778,6 +869,11 @@ Object.assign(App, {
 
       <div class="panel">
         <h3>Before and after</h3>
+        <button class="wide${this.state.compare ? "" : " primary"}" id="btn-compare">
+          ${this.state.compare ? "Back to a single map" : "Compare before and after on the map"}
+        </button>
+        <p class="hint tight">Two maps side by side, on one colour scale, moving
+        together. Hover a point to read its value.</p>
         <div class="scroll-x"><table class="data">
           <tr><th>Statistic</th><th>Before</th><th>After</th><th>Δ</th></tr>
           ${compare(`Mean (${unit})`, before.mean, after.mean, null, conv)}
@@ -818,7 +914,7 @@ Object.assign(App, {
       <div class="panel">
         <h3>Datasets produced</h3>
         <div class="row tight">
-          <button id="btn-goto-clean">View clean data</button>
+          ${result.clean ? '<button id="btn-goto-clean">View clean data</button>' : ""}
           ${result.removed ? '<button id="btn-goto-removed">View removed</button>' : ""}
         </div>
       </div>`;
@@ -839,22 +935,32 @@ Object.assign(App, {
       }
       document.getElementById("btn-show-all-removed")?.addEventListener("click",
         () => this.showRemoved(result.removed.id, null));
-      document.getElementById("btn-hide-removed")?.addEventListener("click", () => {
-        MapView.clearOverlay();
-        document.getElementById("removed-legend").innerHTML = "";
-      });
+      document.getElementById("btn-hide-removed")?.addEventListener("click",
+        () => this.clearRemovedOverlay());
     }
 
     document.getElementById("btn-goto-clean")?.addEventListener("click",
       () => this.selectDataset(result.clean.id));
     document.getElementById("btn-goto-removed")?.addEventListener("click",
       () => this.selectDataset(result.removed.id));
+    // The clean copy is the dataset that carries this report; the server keeps
+    // a copy on the original too, which serves once the clean copy is gone.
+    document.getElementById("btn-print-clean")?.addEventListener("click", (event) =>
+      this.printReport(result.clean?.id || this.state.selectedId, event.currentTarget));
+    document.getElementById("btn-compare")?.addEventListener("click", () => {
+      if (this.state.compare) this.exitCompare();
+      else this.enterCompare(result);
+    });
   },
 
   /* Draw the removed records over the clean ones, coloured by the filter that
    * caught them. Seeing that the removals sit on the headland and the overlap
    * is the difference between trusting a cleaning and hoping. */
   async showRemoved(removedDatasetId, onlyReason) {
+    // The overlay is drawn on the single map. Painted over the "Before" pane
+    // it would hide the values the comparison exists to show, and the
+    // tooltip there would read a removal reason where the legend reads yield.
+    if (this.state.compare) this.exitCompare();
     const payload = await this.api(
       `/api/datasets/${removedDatasetId}/map?group_column=removal_reason`
     ).catch(() => null);
@@ -899,6 +1005,14 @@ Object.assign(App, {
         </div>`).join("")}`;
   },
 
+  /* The overlay and the legend that explains its colours go together: one
+   * without the other is either unexplained dots or a legend for nothing. */
+  clearRemovedOverlay() {
+    MapView.clearOverlay();
+    const legend = document.getElementById("removed-legend");
+    if (legend) legend.innerHTML = "";
+  },
+
   /* The histogram arrives in internal units; the bin edges have to follow the
    * chosen unit, or the axis would read kg/ha on a chart labelled bu/ac. */
   scaleHistogram(hist, convert) {
@@ -908,7 +1022,125 @@ Object.assign(App, {
 });
 
 /* ======================================================================
- * Aba 3 — Análise DIFM
+ * Before and after, side by side
+ * ==================================================================== */
+
+/* A second map pane beside the main one: the original on the left, the
+ * clean copy on the right, locked together and on one colour scale. The
+ * histogram says how much came out of the distribution; this says where. */
+Object.assign(App, {
+  async enterCompare(result) {
+    if (this.state.compare) return;
+    if (!result?.clean?.id) {
+      this.toast("Nothing to compare", "Run the cleaning first.", "warn");
+      return;
+    }
+    // A report can outlive the clean copy it describes — removed from the
+    // session, or dropped by a reopen — and the server would answer 404 for
+    // the "After" pane. Better to say so before building a pane for it.
+    if (!this.state.datasets.some((d) => d.id === result.clean.id)) {
+      this.toast("Nothing to compare",
+        "The clean copy of this dataset is no longer loaded. Run the cleaning again.", "warn");
+      return;
+    }
+    // The panes show the value on one scale; the removed-records overlay
+    // would hide the "Before" values and contradict the legend.
+    this.clearRemovedOverlay();
+
+    const panes = document.getElementById("map-panes");
+    const paneA = document.getElementById("map-pane");
+    const paneB = document.createElement("div");
+    paneB.className = "map-pane";
+    paneB.id = "map-pane-b";
+    paneB.innerHTML = `<div id="map-b" class="map"></div>
+      <canvas id="point-canvas-b" class="point-canvas"></canvas>
+      <div class="map-caption">After</div>`;
+    panes.appendChild(paneB);
+    panes.classList.add("compare");
+    const captionA = document.createElement("div");
+    captionA.className = "map-caption";
+    captionA.textContent = "Before";
+    paneA.appendChild(captionA);
+
+    const view = createMapView("map-b", "point-canvas-b");
+    view.init();
+    view.setBasemap(this.checked("show-basemap"));
+    // Both containers changed width: Leaflet has to re-measure before any
+    // projection, or the right pane draws against the old, full-width size.
+    MapView.invalidateSize();
+    view.invalidateSize();
+    const main = MapView.instance();
+    view.instance().setView(main.getCenter(), main.getZoom(), { animate: false });
+    const unlink = linkMapViews(MapView, view);
+
+    this.state.compare = {
+      originalId: this.state.selectedId,
+      cleanId: result.clean.id,
+      column: result.report.value_column,
+      view, unlink,
+    };
+    // The panes are coloured by the cleaned variable, whatever the picker says.
+    document.getElementById("color-column").disabled = true;
+    this.syncCompareButton();
+    await this.paintCompare();
+  },
+
+  /* The toggle is updated in place: re-rendering the tab would reset every
+   * filter parameter the user has adjusted in the form above it. */
+  syncCompareButton() {
+    const button = document.getElementById("btn-compare");
+    if (!button) return;
+    const on = !!this.state.compare;
+    button.textContent = on ? "Back to a single map" : "Compare before and after on the map";
+    button.classList.toggle("primary", !on);
+  },
+
+  async paintCompare() {
+    const c = this.state.compare;
+    if (!c) return;
+    const fetchMap = (id) =>
+      this.api(`/api/datasets/${id}/map?column=${encodeURIComponent(c.column)}`);
+    const [before, after] = await Promise.all([fetchMap(c.originalId), fetchMap(c.cleanId)])
+      .catch((err) => { this.toast("That did not work", err.message, "error"); return []; });
+    // The user may have left the comparison while the request was in flight.
+    if (this.state.compare !== c) return;
+    // Without both maps there is nothing to compare: an empty "After" pane
+    // beside a disabled colour picker would look like a broken app rather
+    // than a failed request, so the single map comes back.
+    if (!before || !after) {
+      this.exitCompare();
+      return;
+    }
+
+    const { conv, unit } = Units.forColumn(c.column, this.state.selected?.meta?.operation);
+    /* One scale for both, taken from the original: on separate scales the clean
+     * map would simply look re-stretched, and the eye could not tell what was
+     * removed from what was rescaled. */
+    const scale = MapView.setPoints(before, conv, { unit });
+    c.view.setPoints(after, conv, { unit, scale });
+    this.renderLegend(c.column, unit, scale);
+    document.getElementById("map-status").textContent =
+      `Before: ${this.pointsStatus(before)} · After: ${this.pointsStatus(after)}`;
+  },
+
+  exitCompare({ reload = true } = {}) {
+    const c = this.state.compare;
+    if (!c) return;
+    this.state.compare = null;
+    c.unlink();
+    c.view.destroy();
+    document.getElementById("map-pane-b")?.remove();
+    document.getElementById("map-panes").classList.remove("compare");
+    document.querySelector("#map-pane > .map-caption")?.remove();
+    document.getElementById("color-column").disabled = false;
+    MapView.invalidateSize();
+    this.syncCompareButton();
+    if (reload) this.loadMap();
+  },
+});
+
+/* ======================================================================
+ * Tab 3 — DIFM analysis
  * ==================================================================== */
 
 Object.assign(App, {
@@ -989,6 +1221,7 @@ Object.assign(App, {
     document.getElementById("btn-run-difm").addEventListener("click", () => this.runDifm());
     const existing = this.state.reports[`${this.state.selectedId}:difm`];
     if (existing) this.renderDifmReport(existing);
+    else if (d.has_difm_report) this.restoreDifmReport(d);
   },
 
   async runDifm() {
@@ -1055,7 +1288,7 @@ Object.assign(App, {
 
     box.innerHTML = `
       <div class="panel">
-        <h3>Recommendation</h3>
+        ${this.printableHead("Recommendation", "btn-print-difm")}
         <div class="stat-grid">
           <div class="stat"><div class="k">Economic optimum rate</div>
             <div class="v">${rate(economy.optimum_rate)}</div>
@@ -1150,6 +1383,8 @@ Object.assign(App, {
 
     document.getElementById("btn-difm-to-rx").addEventListener("click", () =>
       this.prescriptionFromDifm(report));
+    document.getElementById("btn-print-difm").addEventListener("click", (event) =>
+      this.printReport(this.state.selectedId, event.currentTarget));
   },
 
   /* Turn the analysis result into a prescription: the optimum per zone when
@@ -1180,7 +1415,7 @@ Object.assign(App, {
 });
 
 /* ======================================================================
- * Aba 4 — Desenhar ensaio
+ * Tab 4 — Trial layout
  * ==================================================================== */
 
 Object.assign(App, {
@@ -1189,8 +1424,8 @@ Object.assign(App, {
     const inputUnit = Units.label.inputRate();
     const areaUnit = Units.label.area();
     const datasets = this.state.datasets.map((d) => [d.id, d.label]);
-    /* Largura usual do implemento na unidade escolhida: 60 pés é a barra e o
-     * semeador padrão das Pradarias; 12 metros, o equivalente métrico comum. */
+    /* The usual implement width in the chosen unit: 60 ft is the standard
+     * drill and boom on the Prairies; 12 m, the common metric equivalent. */
     const defaultWidth = Units.label.length() === "ft" ? 60
       : Math.round(Units.convert.length(12));
 
@@ -1220,6 +1455,7 @@ Object.assign(App, {
         ${this.field(`Rates to test (${inputUnit}, comma separated)`,
           `<input type="text" id="design-rates" value="${suggested}">`,
           "At least three, and it is worth including an unapplied strip as a check.")}
+        ${this.machinePicker("design")}
         <div class="row tight">
           ${this.field(`Implement width (${lengthUnit})`,
             this.numberInput("design-width", defaultWidth, "1", "1"))}
@@ -1244,6 +1480,7 @@ Object.assign(App, {
 
       <div id="design-report"></div>`;
 
+    this.bindMachinePicker("design");
     document.getElementById("btn-run-design").addEventListener("click", () => this.runDesign());
     document.getElementById("btn-draw-boundary").addEventListener("click", () => this.startDrawing());
     document.getElementById("btn-clear-boundary").addEventListener("click", () => {
@@ -1252,7 +1489,14 @@ Object.assign(App, {
       document.getElementById("draw-status").textContent = "";
     });
 
-    if (this.state.design) this.renderDesignReport(this.state.design);
+    if (this.state.design) {
+      this.renderDesignReport(this.state.design);
+      // The strips go back on the map with the report: after a reopened
+      // project, or a visit to a tab that painted its own overlays, the
+      // report alone would describe a layout nobody can see. A drawing in
+      // progress is left alone — it is the boundary of the next layout.
+      if (!this.state.drawing) this.drawDesignWithGuidance();
+    }
   },
 
   startDrawing() {
@@ -1417,7 +1661,7 @@ Object.assign(App, {
 });
 
 /* ======================================================================
- * Aba 5 — Exportar
+ * Tab 5 — Export
  * ==================================================================== */
 
 Object.assign(App, {
@@ -1466,6 +1710,7 @@ Object.assign(App, {
         <h3>Target monitor</h3>
         ${this.field("Platform", this.selectInput("pkg-monitor",
           monitors.map((m) => [m.key, m.label]), chosen))}
+        ${this.machinePicker("package")}
         <div id="pkg-accepts"></div>
       </div>
 
@@ -1563,6 +1808,7 @@ Object.assign(App, {
     });
     document.getElementById("btn-run-package").addEventListener("click", () => this.runPackage());
     this.bindQgisPanel();
+    this.bindMachinePicker("package");
     showAccepts();
   },
 
@@ -1653,11 +1899,11 @@ Object.assign(App, {
       rate_unit: this.value("pkg-unit"),
       crop: this.value("pkg-crop"),
       cell_m: Units.toInternal.length(this.number("pkg-cell", 10)),
-      field_name: this.value("pkg-field") || "Talhao",
-      task_name: this.value("pkg-task") || "Prescricao",
-      product_name: this.value("pkg-product") || "Produto",
+      field_name: this.value("pkg-field") || "Field",
+      task_name: this.value("pkg-task") || "Prescription",
+      product_name: this.value("pkg-product") || "Product",
       customer_name: this.value("pkg-customer") || "AgroSuite",
-      farm_name: this.value("pkg-farm") || "Fazenda",
+      farm_name: this.value("pkg-farm") || "Farm",
     };
 
     if (this.checked("pkg-rx") && this.state.design) {
@@ -1952,9 +2198,9 @@ Object.assign(App, {
       rate_unit: this.value("exp-unit"),
       crop: this.value("exp-crop"),
       cell_m: Units.toInternal.length(this.number("exp-cell", 10)),
-      task_name: this.value("exp-task") || "Prescricao",
-      field_name: this.value("exp-field") || "Talhao",
-      product_name: this.value("exp-product") || "Produto",
+      task_name: this.value("exp-task") || "Prescription",
+      field_name: this.value("exp-field") || "Field",
+      product_name: this.value("exp-product") || "Product",
     };
 
     if (this.value("exp-source") === "design") {
@@ -2016,23 +2262,35 @@ Object.assign(App, {
 Object.assign(App, {
   bindImport() {
     const input = document.getElementById("file-input");
+    const folderInput = document.getElementById("folder-input");
     document.getElementById("btn-open-file").addEventListener("click", () => input.click());
-    input.addEventListener("change", async () => {
-      const file = input.files?.[0];
-      if (!file) return;
-      const form = new FormData();
-      form.append("file", file);
-      const result = await this.busy(document.querySelector("aside.left"), () =>
-        this.api("/api/import/upload", { method: "POST", body: form }));
-      input.value = "";
-      if (!result) return;
-      await this.refreshDatasets();
-      await this.selectDataset(result.id);
-      this.toast("File loaded",
-        `${result.meta.brand_label} · ${Units.num(result.rows, 0)} records.`);
-    });
+    document.getElementById("btn-open-folder").addEventListener("click", () => folderInput.click());
+
+    // Both pickers hand over File objects; the folder picker also knows each
+    // file's place inside the chosen folder, which is what keeps a shapefile's
+    // parts and a TASKDATA tree together on the server.
+    for (const picker of [input, folderInput]) {
+      picker.addEventListener("change", async () => {
+        const files = Array.from(picker.files || []);
+        picker.value = "";
+        const file = files[0];
+        if (!file) {
+          // The file picker only comes back empty on cancel. The folder
+          // picker also does on an empty folder, and the person who chose
+          // it needs to hear that it was seen.
+          if (picker === folderInput) this.toast("Nothing to import", "The folder holds no files.", "warn");
+          return;
+        }
+        if (files.length === 1 && this.isProjectFile(file.name)) {
+          await this.uploadProject(file);
+          return;
+        }
+        await this.importFiles(files.map((f) => ({ file: f, path: f.webkitRelativePath || f.name })));
+      });
+    }
 
     document.getElementById("btn-open-path").addEventListener("click", () => {
+      this.setPathDialogMode(false);
       document.getElementById("dlg-path").showModal();
       this.browse("");
     });
@@ -2047,21 +2305,185 @@ Object.assign(App, {
       });
     }
 
-    /* Drag and drop anywhere on the window. */
+    /* Drag and drop anywhere on the window: files, a shapefile's parts, or a
+     * whole folder.
+     *
+     * The listeners sit on the document, not on #app. While an import runs,
+     * #app is dimmed with pointer events off, and a drag then lands on the
+     * body — where, with nothing to cancel it, the browser's own answer to
+     * a dropped file is to open it in place of the app, upload and all. The
+     * same happens over an open dialog, which is not inside #app. Wherever a
+     * file drag lands, its default is cancelled here; a drop that cannot be
+     * taken right now is refused with a word rather than left to the browser.
+     *
+     * Only a file drag is ours. Text dragged from a table towards an input
+     * keeps the browser's own drop, and does not light the outline that
+     * promises an import. dragenter/dragleave fire for every element the
+     * pointer crosses, so a depth count tells a real leave from a hop
+     * between panels. */
     const dropZone = document.getElementById("app");
-    dropZone.addEventListener("dragover", (e) => { e.preventDefault(); });
-    dropZone.addEventListener("drop", async (e) => {
+    const carriesFiles = (e) => {
+      const types = Array.from(e.dataTransfer?.types || []);
+      // A drag carrying nothing at all is neither text nor a link: an empty
+      // folder from some file managers, or a synthetic event. Cancelling it
+      // costs nothing, and the drop then gets its answer below.
+      return !types.length || types.includes("Files");
+    };
+    // A drop is taken from the moment it lands. Reading a big folder's
+    // entries takes a while, and the .busy class only went on once the
+    // upload started: a second drop meanwhile passed the check below and
+    // raced the first for the dataset list. The flag holds for the whole
+    // drop; the class dims the window for the same span, and is the one
+    // the pickers and every other request share.
+    let reading = false;
+    // Why a drop has to wait, or "" when it can be taken now.
+    const blocked = () => {
+      if (reading || document.querySelector(".busy")) {
+        return "Something is still running. Wait for it to finish, then drop again.";
+      }
+      if (document.querySelector("dialog[open]")) return "Close the dialog first, then drop again.";
+      return "";
+    };
+    let depth = 0;
+    document.addEventListener("dragenter", (e) => {
+      if (!carriesFiles(e)) return;
       e.preventDefault();
-      const file = e.dataTransfer?.files?.[0];
-      if (!file) return;
-      const form = new FormData();
-      form.append("file", file);
-      const result = await this.busy(dropZone, () =>
-        this.api("/api/import/upload", { method: "POST", body: form }));
-      if (!result) return;
-      await this.refreshDatasets();
-      await this.selectDataset(result.id);
+      if (depth++ === 0 && !blocked()) dropZone.classList.add("dropping");
     });
+    document.addEventListener("dragleave", (e) => {
+      if (!carriesFiles(e)) return;
+      if (--depth <= 0) { depth = 0; dropZone.classList.remove("dropping"); }
+    });
+    document.addEventListener("dragover", (e) => { if (carriesFiles(e)) e.preventDefault(); });
+    document.addEventListener("drop", async (e) => {
+      if (!carriesFiles(e)) return;
+      e.preventDefault();
+      depth = 0;
+      dropZone.classList.remove("dropping");
+      const why = blocked();
+      if (why) { this.toast("Not now", why, "warn"); return; }
+      reading = true;
+      dropZone.classList.add("busy");
+      try {
+        const entries = await this.collectDropped(e.dataTransfer).catch((err) => {
+          this.toast("Could not read the drop", `${err.message || err}\nTry "Open a folder" instead.`, "error");
+          return [];
+        });
+        const file = entries[0]?.file;
+        if (!file) {
+          // An empty folder drops without a file in it; the person who dropped
+          // it is otherwise left wondering whether the drop was seen.
+          this.toast("Nothing to import", "The drop holds no files: an empty folder, or one " +
+            "holding only hidden files.", "warn");
+          return;
+        }
+        if (entries.length === 1 && this.isProjectFile(file.name)) { await this.uploadProject(file); return; }
+        await this.importFiles(entries);
+      } finally {
+        reading = false;
+        dropZone.classList.remove("busy");
+      }
+    });
+  },
+
+  /* The files in a drop, each with its path inside what was dropped.
+   *
+   * A folder only comes through DataTransferItem.webkitGetAsEntry, and that
+   * call has to be made for every item before this function first awaits:
+   * the item list is emptied the moment the drop event handler yields.
+   * Without the entry API (or for an item that has none) the plain file list
+   * is used, which carries loose files but no folders. */
+  async collectDropped(transfer) {
+    const items = Array.from(transfer?.items || []).filter((item) => item.kind === "file");
+    const roots = items.map((item) => item.webkitGetAsEntry?.() ?? null);
+    if (!roots.length || roots.some((entry) => !entry)) {
+      return Array.from(transfer?.files || []).map((file) => ({ file, path: file.name }));
+    }
+    const found = [];
+    const visit = async (entry) => {
+      if (entry.isFile) {
+        const file = await new Promise((resolve, reject) => entry.file(resolve, reject));
+        found.push({ file, path: entry.fullPath.replace(/^\/+/, "") });
+        return;
+      }
+      if (!entry.isDirectory) return;
+      // readEntries hands out a folder in batches (a hundred at a time in
+      // Chromium) and signals the end with an empty one.
+      const reader = entry.createReader();
+      for (;;) {
+        const batch = await new Promise((resolve, reject) => reader.readEntries(resolve, reject));
+        if (!batch.length) break;
+        for (const child of batch) await visit(child);
+      }
+    };
+    for (const root of roots) await visit(root);
+    return found;
+  },
+
+  /* Everything picked or dropped goes up in one request, tree included: the
+   * server can only read a shapefile's four files, or a TASKDATA folder, as
+   * one thing when it sees them together. `entries` is [{file, path}] with
+   * the path relative to what was dropped, forward slashes. */
+  async importFiles(entries) {
+    // The fold under Load data describes the last drop, and this is now the
+    // last drop: a refusal below must not leave an older drop's list
+    // standing as if it were this one's.
+    this.renderDropReport([]);
+    const maxFiles = 2000, maxBytes = 2 * 1024 ** 3;
+    const bytes = entries.reduce((sum, entry) => sum + (entry.file.size || 0), 0);
+    if (entries.length > maxFiles || bytes > maxBytes) {
+      this.toast("Too much at once",
+        `${Units.num(entries.length, 0)} file(s), ${this.fileSize(bytes)}. One drop takes up to ` +
+        `${Units.num(maxFiles, 0)} files or 2 GB: drop one field's folder at a time, or zip it.`, "warn");
+      return;
+    }
+    const form = new FormData();
+    for (const { file, path } of entries) {
+      form.append("files", file, file.name);
+      form.append("paths", path);
+    }
+    // The whole window dims: a folder can take a while, and a second drop
+    // meanwhile would only race the first for the dataset list.
+    const result = await this.busy(document.getElementById("app"), () =>
+      this.api("/api/import/files", { method: "POST", body: form }));
+    if (!result) return;
+
+    await this.refreshDatasets();
+    await this.selectDataset(result.imported[0].id);
+    this.renderDropReport(result.skipped);
+
+    const skipped = result.skipped || [];
+    // Thumbs.db, .DS_Store and their kind travel with the folder and the
+    // server never walks them; named here, the file total still adds up.
+    const ignored = result.ignored || 0;
+    const lines = [`${Units.num(entries.length, 0)} file(s) → ${Units.num(result.imported.length, 0)} dataset(s)` +
+      (ignored ? ` (${Units.num(ignored, 0)} system file(s) ignored)` : "") + "."];
+    if (result.imported.length === 1) {
+      const only = result.imported[0];
+      lines[0] += ` ${only.meta.brand_label} · ${Units.num(only.rows, 0)} records.`;
+    }
+    for (const item of skipped.slice(0, 3)) lines.push(`Skipped ${item.name}: ${item.reason}`);
+    if (skipped.length > 3) {
+      lines.push(`…and ${skipped.length - 3} more, listed under "Load data".`);
+    }
+    this.toast(skipped.length ? "Imported, with files left out" : "Imported",
+      lines.join("\n"), skipped.length ? "warn" : "");
+  },
+
+  /* What the last drop left out stays on the Load data panel until the next
+   * one, or until the session is replaced: a toast is gone in five seconds,
+   * and a missing layer would otherwise be looked for on the map. */
+  renderDropReport(skipped) {
+    const box = document.getElementById("drop-report");
+    if (!skipped?.length) { box.innerHTML = ""; return; }
+    box.innerHTML = `
+      <details class="fold" open style="margin-top:8px">
+        <summary>${skipped.length} file(s) skipped in the last drop</summary>
+        <div class="inner">${skipped.map((item) =>
+          `<p class="hint tight"><b style="font-family:var(--mono);font-size:11px">${
+            this.escape(item.name)}</b><br>${this.escape(item.reason)}</p>`).join("")}
+        </div>
+      </details>`;
   },
 
   bindDialogs() {
@@ -2075,6 +2497,18 @@ Object.assign(App, {
     document.getElementById("btn-path-open").addEventListener("click", async () => {
       const path = this.value("path-input");
       if (!path) return;
+      // An .agrosuite file is a whole session, not one more layer: it goes to
+      // "open", which replaces what is loaded, and never to import.
+      if (this.state.projectOpen || this.isProjectFile(path)) {
+        // Looked at before the picker closes: a refused path — a folder,
+        // which a click in the browser puts in the box — leaves the picker
+        // open on it, with the file inside still there to choose.
+        const peek = await this.peekProject(path);
+        if (!peek) return;
+        document.getElementById("dlg-path").close();
+        await this.openProject(path, peek);
+        return;
+      }
       // A .qgs or .qgz is a project, not a data file: it names layers rather
       // than holding them.
       if (this.state.qgisImport || /\.(qgs|qgz)$/i.test(path)) {
@@ -2450,5 +2884,923 @@ Object.assign(App, {
       `${lengthUnit}. ${result.report.notes[0] || ""}`,
     );
     this.goToStep("analyse");
+  },
+});
+
+/* ======================================================================
+ * Machine profiles
+ *
+ * A header width, a flow delay and a working speed belong to the machine,
+ * not to the field, yet three tabs ask for them. A profile is entered once,
+ * kept by the server in profiles.json, and picked from one small row on each
+ * tab: choosing a machine fills the fields that tab needs, "Save as
+ * machine" reads them back, "Update machine" edits the one picked. The
+ * server owns the list, so it is fetched on every render; the client keeps
+ * only which machine each tab picked, so a tab switch does not forget it.
+ * Every number crosses the wire in metric and is shown in the units the
+ * user chose.
+ * ==================================================================== */
+
+Object.assign(App, {
+  /* What each tab takes from a profile and gives back to one. `fill` puts
+   * the profile's values on the form and says what it did, in the user's
+   * units; `collect` reads the form back, in metric, leaving out what the
+   * form does not have so the dialog can ask for it. */
+  machineScope(scope) {
+    const shown = (kind, value) => Number(Units.convert[kind](value).toFixed(3));
+    const said = (value) => String(Number(Number(value).toFixed(2)));
+    const put = (id, value) => {
+      const node = document.getElementById(id);
+      if (node) node.value = value;
+    };
+    const metric = (kind, id) => this.machineFieldMetric(kind, id) ?? undefined;
+    const kindFromOperation = (d) => ({
+      harvest: "combine", planting: "seeder", application: "sprayer",
+    })[d?.meta?.operation] || null;
+
+    const scopes = {
+      clean: {
+        hint: "A saved machine fills the flow delay and the speed range.",
+        kind: (d) => kindFromOperation(d) || "other",
+        fill: (p) => {
+          const speedUnit = Units.label.speed();
+          const low = shown("speed", p.speed_min_kmh);
+          const high = shown("speed", p.speed_max_kmh);
+          put("clean-delay", p.flow_delay_s);
+          put("p-speed_range-min", low);
+          put("p-speed_range-max", high);
+          this.machinePlaced("p-speed_range-min", low, p.speed_min_kmh);
+          this.machinePlaced("p-speed_range-max", high, p.speed_max_kmh);
+          // Filling a filter that is switched off would change nothing and say
+          // nothing; switching it on is what picking a speed range means.
+          const step = document.getElementById("en-speed_range");
+          const switched = step && !step.checked;
+          if (switched) step.checked = true;
+          return `flow delay ${said(p.flow_delay_s)} s, speed ${said(low)}–` +
+            `${said(high)} ${speedUnit}.` +
+            (switched ? " The speed filter was switched on." : "");
+        },
+        collect: () => ({
+          flow_delay_s: this.number("clean-delay", 0),
+          speed_min_kmh: metric("speed", "p-speed_range-min"),
+          speed_max_kmh: metric("speed", "p-speed_range-max"),
+        }),
+      },
+      design: {
+        hint: "A saved machine fills the implement width and the passes per strip.",
+        // A yield map is usually what is selected, but the trial is laid out
+        // for whatever applies the rates.
+        kind: (d) => (d?.meta?.operation === "harvest" ? "seeder"
+          : kindFromOperation(d) || "seeder"),
+        fill: (p) => {
+          const width = shown("length", p.implement_width_m);
+          put("design-width", width);
+          put("design-passes", p.passes_per_strip);
+          this.machinePlaced("design-width", width, p.implement_width_m);
+          return `implement width ${said(width)} ${Units.label.length()}, ` +
+            `${p.passes_per_strip} pass(es) per strip.`;
+        },
+        collect: () => ({
+          implement_width_m: metric("length", "design-width"),
+          passes_per_strip: this.number("design-passes", 2),
+        }),
+      },
+      package: {
+        hint: "A saved machine picks the target monitor.",
+        kind: (d) => kindFromOperation(d) || "other",
+        fill: (p) => {
+          const select = document.getElementById("pkg-monitor");
+          const known = [...select.options].some((o) => o.value === p.monitor);
+          select.value = known ? p.monitor : "generic";
+          // The existing handler redraws what the platform accepts.
+          select.dispatchEvent(new Event("change"));
+          const label = select.options[select.selectedIndex]?.textContent || select.value;
+          return known ? `platform ${label}.`
+            : `there is no package layout for ${p.monitor_label}, so the platform is ${label}.`;
+        },
+        collect: () => ({ monitor: this.value("pkg-monitor") || "generic" }),
+      },
+    };
+    return scopes[scope];
+  },
+
+  /* One select and two small buttons; the "Suggest from this file" step
+   * lives inside the save dialog, where its result can be checked before
+   * anything is written. */
+  machinePicker(scope) {
+    const { hint } = this.machineScope(scope);
+    const picked = this.machinePickedIn(scope);
+    return `
+      <div class="row tight machine-row">
+        <label class="field">
+          <span>Machine</span>
+          <select id="machine-${scope}" data-machine-picker>${
+            this.machineOptions(picked?.name || "")}</select>
+        </label>
+        <button class="small" id="btn-machine-save-${scope}"
+          title="Save the settings on this tab as a machine">${
+            this.machineSaveLabel(picked)}</button>
+        <button class="small ghost" id="btn-machine-delete-${scope}"
+          title="Delete the chosen machine">✕</button>
+      </div>
+      <p class="hint tight">${hint}</p>`;
+  },
+
+  machineOptions(selected = "") {
+    const profiles = this.state.machines?.profiles || [];
+    const placeholder = this.state.machinesRefused ? "— profiles.json could not be read —"
+      : profiles.length ? "— choose a machine —" : "— no machine saved yet —";
+    // A profile typed into the file that the app would refuse to save is
+    // listed, so it can be fixed from here, but marked.
+    const label = (p) => `${p.name} · ${p.kind_label}` +
+      (p.problems?.length ? " · ⚠ needs attention" : "");
+    return [["", placeholder], ...profiles.map((p) => [p.name, label(p)])]
+      .map(([value, text]) =>
+        `<option value="${this.escape(value)}"${value === selected ? " selected" : ""}>${
+          this.escape(text)}</option>`).join("");
+  },
+
+  /* With a machine picked, the save button edits it rather than adding one. */
+  machineSaveLabel(picked) {
+    return picked ? "Update machine…" : "Save as machine…";
+  },
+
+  bindMachinePicker(scope) {
+    const select = document.getElementById(`machine-${scope}`);
+    if (!select) return;
+    select.addEventListener("change", () => this.pickMachine(scope, select.value));
+    document.getElementById(`btn-machine-save-${scope}`)
+      .addEventListener("click", () => this.openMachineDialog(scope));
+    document.getElementById(`btn-machine-delete-${scope}`)
+      .addEventListener("click", () => this.deleteMachine(scope));
+    // The tab was just redrawn from its defaults — a tab switch, a unit
+    // change — over whatever the machine picked here had filled in. Its
+    // values go back, quietly: the picker shows which machine they are.
+    const picked = this.machinePickedIn(scope);
+    if (picked) this.applyMachine(scope, picked, { quiet: true });
+    this.loadMachines();
+  },
+
+  bindMachineDialog() {
+    document.getElementById("btn-machine-suggest")
+      .addEventListener("click", () => this.suggestMachine());
+    document.getElementById("btn-machine-save")
+      .addEventListener("click", () => this.saveMachine());
+  },
+
+  /* The server owns the list: it is fetched on every render rather than kept
+   * on the client, so a profile added in another window, or by hand in the
+   * file, shows up at the next tab change. `always` repeats a refusal that
+   * was already said: a click asked for the list and gets its answer. */
+  async loadMachines({ always = false } = {}) {
+    const listing = await this.api("/api/profiles").catch((err) => {
+      // A profiles.json the app cannot read is refused, not overwritten: the
+      // message names the file and what is wrong. Every tab asks for the list
+      // again, and the same refusal is said once, not at every tab switch.
+      if (always || this.state.machinesRefused !== err.message) {
+        this.toast("Machine profiles unavailable", err.message, "error");
+      }
+      this.state.machinesRefused = err.message;
+      return null;
+    });
+    if (listing) this.state.machinesRefused = null;
+    this.setMachines(listing);
+    return listing;
+  },
+
+  setMachines(listing) {
+    this.state.machines = listing;
+    for (const select of document.querySelectorAll("select[data-machine-picker]")) {
+      this.drawMachinePicker(select.id.replace("machine-", ""));
+    }
+  },
+
+  /* The picker's list and its save button, in line with the list the server
+   * holds now and with what this tab picked. */
+  drawMachinePicker(scope) {
+    const select = document.getElementById(`machine-${scope}`);
+    if (!select) return;
+    const picked = this.machinePickedIn(scope);
+    select.innerHTML = this.machineOptions(picked?.name || "");
+    const button = document.getElementById(`btn-machine-save-${scope}`);
+    if (button) button.textContent = this.machineSaveLabel(picked);
+  },
+
+  /* What the tab picked, remembered by name so the choice survives the tab
+   * being redrawn; resolved against the list as it is now, so a machine
+   * deleted in the meantime is simply no longer picked. */
+  machinePickedIn(scope) {
+    return this.machineNamed(this.state.machinePicked?.[scope]);
+  },
+
+  pickMachine(scope, name) {
+    this.state.machinePicked = { ...(this.state.machinePicked || {}), [scope]: name };
+    const profile = this.machineNamed(name);
+    document.getElementById(`btn-machine-save-${scope}`).textContent =
+      this.machineSaveLabel(profile);
+    if (profile) this.applyMachine(scope, profile);
+  },
+
+  /* The machine's values onto the tab, with what was done said in a toast.
+   * A profile the file holds but the app would refuse to save — an inverted
+   * speed range, a kind it does not know — is not applied: its numbers would
+   * go into the cleaning as they are. It stays picked, so "Update machine…"
+   * opens on it and can put it right. */
+  applyMachine(scope, profile, { quiet = false } = {}) {
+    if (profile.problems?.length) {
+      if (!quiet) {
+        this.toast(`'${profile.name}' needs attention`,
+          `${profile.problems.join(" ")} Fix it with "Update machine…", or in ` +
+          `${this.state.machines.storage}. Nothing was filled in.`, "warn");
+      }
+      return;
+    }
+    const done = this.machineScope(scope).fill(profile);
+    if (!quiet) this.toast(`Filled from '${profile.name}'`, done);
+  },
+
+  /* Names match the way the server matches them — case and spacing aside —
+   * so the profile just saved is found under whatever spelling came back. */
+  machineKey(name) {
+    return String(name || "").split(/\s+/).join(" ").trim().toLowerCase();
+  },
+
+  machineNamed(name) {
+    const key = this.machineKey(name);
+    if (!key) return null;
+    return (this.state.machines?.profiles || []).find((p) => this.machineKey(p.name) === key)
+      || null;
+  },
+
+  machineKindLabel(kind) {
+    return Object.fromEntries(this.state.machines?.kinds || [])[kind] || kind;
+  },
+
+  /* A typed value on its way to the server, in metric. Rounded to a
+   * micrometre, not a millimetre: 33 ft is 10.0584 m, and cut to 10.058 it
+   * came back on screen as 32.999 while the toast still said 33. Six
+   * decimals keep profiles.json readable and are invisible at the three the
+   * forms show. */
+  machineMetric(kind, value) {
+    return Math.round(Units.toInternal[kind](value) * 1e6) / 1e6;
+  },
+
+  /* What the app itself put in a physical field, with the metric number it
+   * was converted from. A field still showing that value is read back as
+   * that number rather than re-converted: 9 m shown as 29.528 ft and
+   * converted back is 9.000134 m, a drift that would be written to
+   * profiles.json and read as a change nobody made. Keyed by field id; the
+   * ids are distinct across the tabs and the dialog. */
+  machinePlaced(id, display, metric) {
+    const placed = (this.state.machinePlaced = this.state.machinePlaced || {});
+    if (metric == null || display === "") delete placed[id];
+    else placed[id] = { display, metric };
+  },
+
+  /* A physical field read back in metric: the exact number the app placed
+   * there while the field still shows it, the typed value converted once it
+   * does not. Null when the field is empty. */
+  machineFieldMetric(kind, id) {
+    const value = this.number(id, null);
+    if (value == null) return null;
+    const placed = this.state.machinePlaced?.[id];
+    return placed && placed.display === value ? placed.metric : this.machineMetric(kind, value);
+  },
+
+  /* "John Deere combine", or "My seeder" when the file does not say who made it. */
+  machineNameFor(d, kind) {
+    const brand = (d?.meta?.brand_label || "").trim();
+    const known = brand && !/^(desconhecido|unknown|generic)/i.test(brand) ? brand : "My";
+    const word = kind === "other" ? "machine"
+      : this.machineKindLabel(kind).split(" /")[0].toLowerCase();
+    return `${known} ${word}`;
+  },
+
+  /* The server names a suggestion with its width in metres; whoever reads
+   * feet should see feet, rounded the way a header is spoken of. */
+  machineNameWithWidth(p) {
+    const base = p.name.replace(/\s+[\d.]+\s*m$/, "");
+    if (!(p.implement_width_m > 0)) return base;
+    const unit = Units.label.length();
+    const width = Units.convert.length(p.implement_width_m);
+    return `${base} ${Number(width.toFixed(unit === "m" ? 2 : 0))} ${unit}`;
+  },
+
+  async openMachineDialog(scope) {
+    if (!this.state.machines && !(await this.loadMachines({ always: true }))) return;
+    const d = this.state.selected;
+    const handlers = this.machineScope(scope);
+    // A picked machine is edited, not copied: the dialog opens on its name,
+    // kind, monitor and notes, and saving under that name updates it without
+    // asking. Otherwise the form starts a new one from the file.
+    const picked = this.machinePickedIn(scope);
+    const kind = picked?.kind || handlers.kind(d);
+    const brands = this.state.catalog.brands.map((b) => b.key);
+    const draft = picked ? { ...picked } : {
+      name: this.machineNameFor(d, kind),
+      kind,
+      monitor: brands.includes(d?.meta?.brand) ? d.meta.brand : "generic",
+      implement_width_m: null,
+      flow_delay_s: kind === "combine" ? 12 : 0,
+      passes_per_strip: 2,
+      speed_min_kmh: null,
+      speed_max_kmh: null,
+      notes: "",
+    };
+    // What the tab shows wins over what was saved: a width corrected on the
+    // form is the correction being saved. A field the machine filled and
+    // nobody touched reads back as the exact number it came from.
+    for (const [key, value] of Object.entries(handlers.collect())) {
+      if (value !== undefined) draft[key] = value;
+    }
+    this.state.machineDialog = { scope, editing: picked?.name || null };
+    this.renderMachineDialog(draft);
+    document.getElementById("dlg-machine").showModal();
+  },
+
+  renderMachineDialog(p) {
+    const lengthUnit = Units.label.length();
+    const speedUnit = Units.label.speed();
+    const editing = this.state.machineDialog?.editing;
+    // A speed minimum of 0 is a real setting and stays 0; an empty box is
+    // what makes the server fill in the kind's typical range instead.
+    const shown = (kind, value) => (value == null ? "" : Number(Units.convert[kind](value).toFixed(3)));
+    const brands = this.state.catalog.brands.map((b) => [b.key, b.label]);
+    // Only the width keeps 0 for "unknown": that is what a suggestion sends
+    // when the file has no swath, and the placeholder is the better prompt.
+    const width = shown("length", p.implement_width_m || null);
+    const low = shown("speed", p.speed_min_kmh);
+    const high = shown("speed", p.speed_max_kmh);
+    this.machinePlaced("mp-width", width, p.implement_width_m || null);
+    this.machinePlaced("mp-speed-min", low, p.speed_min_kmh);
+    this.machinePlaced("mp-speed-max", high, p.speed_max_kmh);
+
+    document.querySelector("#dlg-machine h3").textContent =
+      editing ? `Update '${editing}'` : "Save as a machine";
+    document.getElementById("machine-body").innerHTML = `
+      ${this.field("Name",
+        `<input type="text" id="mp-name" value="${this.escape(p.name)}"
+           placeholder="e.g. S780 with the 40 ft draper">`,
+        editing ? `Under another name this is saved as a new machine; '${this.escape(editing)}' stays.`
+          : "Saving under another machine's name asks before replacing it.")}
+      <div class="row tight">
+        ${this.field("Kind", this.selectInput("mp-kind", this.state.machines.kinds, p.kind))}
+        ${this.field("Monitor", this.selectInput("mp-monitor", brands, p.monitor))}
+      </div>
+      <div class="row tight">
+        ${this.field(`Implement width (${lengthUnit})`,
+          `<input type="number" id="mp-width" value="${width}"
+             step="any" min="0" placeholder="header, boom or drill">`)}
+        ${this.field("Flow delay (s)", this.numberInput("mp-delay", p.flow_delay_s, "0.5", "0"),
+          "Combines only; 0 for anything else.")}
+      </div>
+      <div class="row tight">
+        ${this.field(`Speed from (${speedUnit})`,
+          `<input type="number" id="mp-speed-min" value="${low}"
+             step="any" min="0" placeholder="typical for the kind">`)}
+        ${this.field(`to (${speedUnit})`,
+          `<input type="number" id="mp-speed-max" value="${high}"
+             step="any" min="0" placeholder="typical for the kind">`)}
+        ${this.field("Passes per strip", this.numberInput("mp-passes", p.passes_per_strip, "1", "1"))}
+      </div>
+      ${this.field("Notes", `<input type="text" id="mp-notes" value="${this.escape(p.notes)}">`)}
+      <div id="mp-problems"></div>
+      <p class="hint tight">Saved in <span style="font:11px var(--mono)">${
+        this.escape(this.state.machines.storage)}</span> — plain JSON, in metric.</p>`;
+
+    document.getElementById("btn-machine-suggest").hidden = !this.state.selectedId;
+  },
+
+  /* Prefill from the selected dataset. Nothing is saved: the file is
+   * evidence of what the machine was, and the operator confirms it. */
+  async suggestMachine() {
+    if (!this.state.selectedId) {
+      this.toast("No file selected", "Pick a dataset on the left first.", "warn");
+      return;
+    }
+    // The suggestion is for the kind the form shows, not for whichever
+    // machine wrote the file: on the trial-layout tab a yield map is
+    // selected, and the profile being made is the seeder's.
+    const kind = this.value("mp-kind");
+    const passes = this.value("mp-passes");
+    const result = await this.busy(document.getElementById("dlg-machine"), () =>
+      this.api("/api/profiles/suggest", {
+        method: "POST", body: { dataset_id: this.state.selectedId, kind },
+      }));
+    if (!result) return;
+
+    const profile = { ...result.profile, name: this.machineNameWithWidth(result.profile) };
+    // Passes per strip are a decision, not something a file records.
+    if (passes) profile.passes_per_strip = passes;
+    // Suggesting into a machine being updated fills in its numbers, not a
+    // new name: the file says what the machine is like, not what it is called.
+    if (this.state.machineDialog?.editing) profile.name = this.value("mp-name");
+    this.renderMachineDialog(profile);
+    document.getElementById("mp-problems").innerHTML = result.problems.length
+      ? `<div class="note warning">${result.problems.map((s) => this.escape(s)).join("<br>")}</div>`
+      : `<div class="note ok">Read from '${this.escape(result.dataset_label)}'. ` +
+        "Nothing stops this being saved as it is.</div>";
+    this.toast("Suggested from the file",
+      result.problems.length ? "Fill in what is missing, then save." : "Check the numbers, then save.");
+  },
+
+  async saveMachine() {
+    const { scope, editing } = this.state.machineDialog || {};
+    const name = (this.value("mp-name") || "").trim();
+
+    // Checked here first, in the units on the screen: the server refuses an
+    // inverted range too, but in km/h, quoting numbers nobody typed.
+    const low = this.number("mp-speed-min", null);
+    const high = this.number("mp-speed-max", null);
+    if (low != null && high != null && low >= high) {
+      this.toast("Check the speed range", "The minimum speed must be below the maximum " +
+        `(got ${low} and ${high} ${Units.label.speed()}).`, "warn");
+      return;
+    }
+
+    const body = {
+      name,
+      kind: this.value("mp-kind"),
+      monitor: this.value("mp-monitor"),
+      // A missing width goes as 0 so the server refuses it with its own words
+      // rather than inventing a header.
+      implement_width_m: this.machineFieldMetric("length", "mp-width") ?? 0,
+      flow_delay_s: this.number("mp-delay", 0),
+      passes_per_strip: this.number("mp-passes", 2),
+      // Left empty, the speeds come back as the typical range for the kind.
+      speed_min_kmh: this.machineFieldMetric("speed", "mp-speed-min"),
+      speed_max_kmh: this.machineFieldMetric("speed", "mp-speed-max"),
+      notes: this.value("mp-notes") || "",
+      // Updating the machine that was picked is what the dialog opened for
+      // and asks nothing; any other saved name is replaced only once the
+      // person says so, below.
+      replace: !!editing && this.machineKey(name) === this.machineKey(editing),
+    };
+
+    // A 400 lists every problem at once; busy() shows it verbatim. A 409 is
+    // a question, with the saved machine's name in it.
+    const listing = await this.busy(document.getElementById("dlg-machine"), async () => {
+      try {
+        return await this.api("/api/profiles", { method: "POST", body });
+      } catch (err) {
+        if (err.status !== 409) throw err;
+        if (!window.confirm(`${err.message}\n\nReplace that machine with what the form shows?`)) {
+          return null;
+        }
+        return this.api("/api/profiles", { method: "POST", body: { ...body, replace: true } });
+      }
+    });
+    if (!listing) return;
+
+    document.getElementById("dlg-machine").close();
+    this.setMachines(listing);
+    const saved = this.machineNamed(name);
+    let filled = "";
+    if (saved && document.getElementById(`machine-${scope}`)) {
+      this.state.machinePicked = { ...(this.state.machinePicked || {}), [scope]: saved.name };
+      this.drawMachinePicker(scope);
+      filled = " " + this.machineScope(scope).fill(saved);
+    }
+    this.toast(editing ? "Machine updated" : "Machine saved",
+      `'${saved?.name || name}' is ready on every tab.${filled}`);
+  },
+
+  async deleteMachine(scope) {
+    const name = this.value(`machine-${scope}`);
+    if (!name) {
+      this.toast("Nothing to delete", "Choose a machine in the list first.", "warn");
+      return;
+    }
+    if (!window.confirm(`Delete the machine '${name}'? Its saved settings are lost; ` +
+                        "what is already filled in on this tab stays as it is.")) return;
+    const listing = await this.busy(document.getElementById(`machine-${scope}`).parentElement,
+      () => this.api(`/api/profiles/${encodeURIComponent(name)}`, { method: "DELETE" }));
+    if (!listing) return;
+    // Forgotten on every tab, not just this one: a machine saved later under
+    // the same name is a different machine and is not picked by itself.
+    for (const [tab, picked] of Object.entries(this.state.machinePicked || {})) {
+      if (this.machineKey(picked) === this.machineKey(name)) this.state.machinePicked[tab] = "";
+    }
+    this.setMachines(listing);
+    this.toast("Machine deleted", `'${name}' is gone from the list.`);
+  },
+});
+
+/* ======================================================================
+ * Project files
+ *
+ * A session is worth keeping: the datasets, the cleaning results, the
+ * roles and the prices took an afternoon to put together, and the app
+ * forgets all of it when it closes. "Save project" writes one .agrosuite
+ * file holding the whole session; "Open project" brings it back as it
+ * was, with the same dataset ids, so every report still points at its
+ * datasets. The server owns the recent list; the client only asks for it.
+ * ==================================================================== */
+
+Object.assign(App, {
+  bindProjectFiles() {
+    document.getElementById("btn-project-save")
+      .addEventListener("click", () => this.openSaveDialog());
+    document.getElementById("btn-save-project-confirm")
+      .addEventListener("click", () => this.saveProject());
+    for (const id of ["save-name", "save-path"]) {
+      document.getElementById(id).addEventListener("keydown", (event) => {
+        if (event.key === "Enter") { event.preventDefault(); this.saveProject(); }
+      });
+    }
+    document.getElementById("btn-project-new")
+      .addEventListener("click", () => this.newProject());
+
+    // The same browser as "Open by path", pointed at projects: it lists
+    // .agrosuite files already, and an .agrosuite pick goes to "open".
+    document.getElementById("btn-project-open").addEventListener("click", () => {
+      this.setPathDialogMode(true);
+      document.getElementById("path-input").value = "";
+      document.getElementById("dlg-path").showModal();
+      const last = (this.state.recent || []).find((item) => item.exists);
+      this.browse(last ? last.path : "");
+      this.toast("Pick a project", "Choose a .agrosuite file, then press Open.");
+    });
+    // Cancelled or not, the dialog is a plain data picker the next time.
+    document.getElementById("dlg-path")
+      .addEventListener("close", () => this.setPathDialogMode(false));
+  },
+
+  setPathDialogMode(project) {
+    this.state.projectOpen = project;
+    document.getElementById("dlg-path-title").textContent =
+      project ? "Open a project" : "Open by path";
+  },
+
+  /* ".agrosuite" is what the file browser and the drop zone go by: the
+   * server refuses to import one as a layer anyway, and the refusal would
+   * only arrive after the upload. */
+  isProjectFile(name) { return /\.agrosuite$/i.test(name || ""); },
+
+  when(iso) {
+    const date = new Date(iso);
+    return Number.isNaN(date.getTime()) ? String(iso)
+      : date.toLocaleString([], { dateStyle: "medium", timeStyle: "short" });
+  },
+
+  /* ---------------------------------------------------------------- save */
+
+  openSaveDialog() {
+    if (!this.state.datasets.length) {
+      this.toast("Nothing to save yet",
+        "The session holds no datasets. Open a file first.", "warn");
+      return;
+    }
+    const current = this.state.projectFile;
+    document.getElementById("save-name").value = this.state.project?.name || "";
+    // Saved to disk before: propose where it went, so re-saving is a matter
+    // of pressing Save. A file named after the project keeps following the
+    // name — the folder is proposed, and a renamed project gets a new file
+    // beside the old one — while a file saved under a name of its own is
+    // re-saved as it is. A temporary folder is never proposed.
+    document.getElementById("save-path").value = !current?.on_disk ? ""
+      : current.named_after_project ? current.folder : current.path;
+    document.getElementById("dlg-save-project").showModal();
+    document.getElementById("save-name").select();
+  },
+
+  async saveProject() {
+    // busy() blocks the pointer, not the keyboard: a second Enter while the
+    // first save is on its way would run the whole flow twice and race the
+    // server's "already exists" check.
+    if (this.state.saving) return;
+    const dialog = document.getElementById("dlg-save-project");
+    const name = (this.value("save-name") || "").trim();
+    const path = (this.value("save-path") || "").trim();
+    if (!name) {
+      this.toast("Name the project", "The file is named after it.", "warn");
+      return;
+    }
+
+    // The name given here is the project's: it names the file, it is what
+    // the next save proposes, and it comes back when the file is reopened.
+    // It travels with the save, so a refused save renames nothing.
+    // Re-saving the file that is open is the normal flow and asks nothing —
+    // the server knows which file that is; any other existing file is
+    // replaced only once the person says so.
+    const request = { name, path: path || null, overwrite: false };
+
+    this.state.saving = true;
+    let result;
+    try {
+      result = await this.busy(dialog, async () => {
+        try {
+          return await this.api("/api/session/save", { method: "POST", body: request });
+        } catch (err) {
+          if (err.status !== 409) throw err;
+          if (!window.confirm(`${err.message}\n\nReplace it with the current session?`)) {
+            return null;
+          }
+          return this.api("/api/session/save", {
+            method: "POST", body: { ...request, overwrite: true },
+          });
+        }
+      });
+    } finally {
+      this.state.saving = false;
+    }
+    if (!result) return;
+
+    dialog.close();
+    this.state.projectFile = result.file;
+    this.renderProjectFile();
+    this.refreshRecent();
+    this.refreshProject();
+    this.toast("Project saved",
+      `${result.path}\n${result.datasets} dataset(s), ${this.fileSize(result.size_bytes)}.` +
+      (result.file.on_disk ? "" : "\nThat folder goes when the app closes: keep the file " +
+        "through the download link in the Load data panel.") +
+      (result.warning ? `\n${result.warning}` : ""),
+      result.warning ? "warn" : "");
+  },
+
+  /* What is open, where it is, and the way to keep it. */
+  renderProjectFile() {
+    const box = document.getElementById("project-file");
+    const file = this.state.projectFile;
+    if (!file) { box.innerHTML = ""; return; }
+    box.innerHTML = `
+      <div class="note ok" style="margin-top:8px">
+        <b>${this.escape(file.name)}.agrosuite</b>${
+          file.saved_at ? ` · saved ${this.escape(this.when(file.saved_at))}` : ""}
+        ${file.on_disk ? `<br><span style="font:11px var(--mono);word-break:break-all">${
+          this.escape(file.path)}</span>` : ""}
+        ${file.download_url ? `<br><a href="${file.download_url}" download
+          id="project-download">Download a copy</a>` : ""}
+      </div>`;
+  },
+
+  /* -------------------------------------------------------------- recent */
+
+  async refreshRecent() {
+    const payload = await this.api("/api/session/recent").catch(() => null);
+    if (!payload) return;
+    this.state.recent = payload.recent;
+    // The server remembers which file the session came from or last went
+    // to; a copy kept only here would not survive a page reload, and the
+    // next save would quietly go to the temporary folder.
+    this.state.projectFile = payload.current;
+    this.renderProjectFile();
+    this.renderRecentProjects();
+  },
+
+  renderRecentProjects() {
+    const box = document.getElementById("recent-projects");
+    const items = this.state.recent || [];
+    box.innerHTML = `<h4 style="margin:12px 0 4px">Recent projects</h4>`;
+    if (!items.length) {
+      box.innerHTML += '<p class="hint tight">None yet — "Save project" writes one.</p>';
+      return;
+    }
+    const list = document.createElement("div");
+    list.className = "file-list";
+    for (const item of items) {
+      const node = document.createElement("div");
+      node.className = "item" + (item.exists ? "" : " unavailable") +
+        (item.path === this.state.projectFile?.path ? " current" : "");
+      node.title = item.exists ? item.path : `Not found: ${item.path}`;
+      node.innerHTML = `<span class="icon">${item.exists ? "🗂" : "∅"}</span>
+        <span class="name">${this.escape(item.name)}${item.saved_at
+          ? `<span class="when">${this.escape(this.when(item.saved_at))}</span>` : ""}</span>`;
+      node.addEventListener("click", () => {
+        if (item.exists) { this.openProject(item.path); return; }
+        this.toast("File not found", `${item.path}\nPlug the drive back in, or open ` +
+          "the project by path from wherever it is now.", "warn");
+      });
+      list.appendChild(node);
+    }
+    box.appendChild(list);
+  },
+
+  /* ---------------------------------------------------------------- open */
+
+  /* Opening and "New project" replace the session, so the person is asked
+   * first. The client asks because the server cannot tell whether what it
+   * holds was saved a minute ago or never. */
+  confirmReplace(what) {
+    const count = this.state.datasets.length;
+    if (!count) return true;
+    return window.confirm(`${what} closes the ${count} dataset(s) loaded now. ` +
+      "Anything not saved to a project file is lost. Continue?");
+  },
+
+  /* A look at the file before anything is given up for it: what it holds
+   * and when it was saved, or why it cannot be opened. Without it a folder,
+   * or a ZIP of monitor data, went through "closes the N datasets" and only
+   * then failed — the work was still there, but the question should never
+   * have been asked. The server answers a refusal in words, not with an
+   * error status: it is an answer, shown here. Null when refused. */
+  async peekProject(path) {
+    const peek = await this.api(`/api/session/peek?path=${encodeURIComponent(path)}`)
+      .catch((err) => ({ ok: false, reason: err.message }));
+    if (peek.ok) return peek;
+    this.toast("Not a project to open", peek.reason, "warn");
+    return null;
+  },
+
+  async openProject(path, peek = null) {
+    peek = peek || await this.peekProject(path);
+    if (!peek) return;
+    const saved = peek.saved_at ? `, saved ${this.when(peek.saved_at)}` : "";
+    if (!this.confirmReplace(
+      `Opening '${peek.project || peek.name}' (${peek.datasets} dataset(s)${saved})`)) return;
+    const result = await this.busy(document.querySelector("aside.left"), () =>
+      this.api("/api/session/open", { method: "POST", body: { path } }));
+    if (!result) return;
+    await this.sessionReplaced(result);
+  },
+
+  async uploadProject(file) {
+    if (!this.confirmReplace(`Opening '${file.name}'`)) return;
+    const form = new FormData();
+    form.append("file", file);
+    const result = await this.busy(document.querySelector("aside.left"), () =>
+      this.api("/api/session/upload", { method: "POST", body: form }));
+    if (!result) return;
+    // The copy lives in the session's temporary folder, not where the file
+    // came from; the server reports it as not "on disk", and the save
+    // dialog does not propose that folder.
+    await this.sessionReplaced(result);
+  },
+
+  async newProject() {
+    if (!this.confirmReplace("A new project")) return;
+    const ok = await this.busy(document.querySelector("aside.left"), () =>
+      this.api("/api/session/new", { method: "POST" }));
+    if (!ok) return;
+    this.resetSessionState();
+    this.state.projectFile = null;
+    this.renderProjectFile();
+    this.renderRecentProjects();
+    await this.refreshDatasets();
+    await this.refreshProject();
+    this.renderTab();
+    this.toast("New project", "The session is empty. Load a file, or open a saved project.");
+  },
+
+  /* Everything the client cached about the old session goes: the report
+   * caches keyed by dataset id, the map, the comparison. A reopened project
+   * keeps its ids, so a stale cache would show a cleaning run after the
+   * file was saved as if it were in the file. */
+  resetSessionState() {
+    if (this.state.compare) this.exitCompare({ reload: false });
+    this.state.reports = {};
+    this.state.joinReport = null;
+    this.state.design = null;
+    this.state.drawing = null;
+    this.state.selectedId = null;
+    this.state.selected = null;
+    MapView.clearPoints();
+    MapView.clearOverlays();
+    this.clearRemovedOverlay();
+    document.getElementById("legend").hidden = true;
+    document.getElementById("map-status").textContent = "";
+    // The skipped-files fold belongs to a drop made into the old session.
+    this.renderDropReport([]);
+  },
+
+  async sessionReplaced(result) {
+    this.resetSessionState();
+    this.state.projectFile = result.file;
+    // The trial layout is in the file with everything else: the Trial
+    // layout tab puts it back on the map when it renders, and Export
+    // offers it as the prescription again.
+    this.state.design = result.design?.result || null;
+    this.renderProjectFile();
+    await this.refreshDatasets();
+    await this.refreshProject();
+    this.refreshRecent();
+    if (this.state.datasets.length) await this.selectDataset(this.state.datasets[0].id);
+    else this.renderTab();
+    this.toast(`Opened '${result.project}'`,
+      `${result.datasets.length} dataset(s) from ${result.name}.agrosuite` +
+      (result.saved_at ? `, saved ${this.when(result.saved_at)}.` : ".") +
+      (result.warning ? `\n${result.warning}` : ""),
+      result.warning ? "warn" : "");
+  },
+
+  /* ------------------------------------------------------ stored reports */
+
+  /* The server keeps every report; the client caches only the ones it saw
+   * being made. After a reopen the cache is empty while the reports are
+   * there, so a tab asks for what it is missing instead of showing nothing. */
+  async storedReport(kind) {
+    const id = this.state.selectedId;
+    const report = await this.api(`/api/datasets/${id}/report/${kind}`).catch(() => null);
+    // The selection may have moved on while the request was out.
+    if (!report || this.state.selectedId !== id) return null;
+    return report;
+  },
+
+  /* POST /clean answers with the report plus the two datasets it produced;
+   * the stored report is the report alone, so the ids are read off the
+   * dataset list: the clean copy and the removed records both hang off the
+   * dataset that was cleaned, and the last of each is the latest run. */
+  cleanResultFor(id, report) {
+    const children = this.state.datasets.filter((d) => d.parent_id === id);
+    const clean = children.filter((d) => d.origin === "clean" && d.has_clean_report).pop();
+    const removed = children.filter((d) => d.origin === "clean_removed").pop();
+    return {
+      report,
+      clean: clean ? { id: clean.id } : null,
+      removed: removed ? { id: removed.id } : null,
+    };
+  },
+
+  async restoreCleanReport(d) {
+    const shape = this.cleanResultFor(d.id, null);
+    // A clean copy carries the report of its own making; it is shown on the
+    // dataset that was cleaned, where "view clean data" leads somewhere.
+    if (d.origin === "clean" && !shape.clean) return;
+    const report = await this.storedReport("clean");
+    if (!report || this.state.tab !== "limpeza") return;
+    const result = { ...shape, report };
+    this.state.reports[`${d.id}:clean`] = result;
+    this.renderCleanReport(result);
+  },
+
+  async restoreDifmReport(d) {
+    const report = await this.storedReport("difm");
+    if (!report || this.state.tab !== "difm") return;
+    this.state.reports[`${d.id}:difm`] = report;
+    this.renderDifmReport(report);
+  },
+});
+
+/* ======================================================================
+ * Printed report
+ * ==================================================================== */
+
+Object.assign(App, {
+  /* A panel heading with the print button beside it. The button lives on
+   * the report it prints, so what goes on paper is what is on screen. */
+  printableHead(title, buttonId) {
+    return `<div class="head"><h3>${title}</h3>
+      <button class="small" id="${buttonId}"
+              title="Write this report as a PDF, in the units shown on screen">
+        Print report (PDF)</button></div>`;
+  },
+
+  /* The report belongs to the dataset that carries it: the clean copy after a
+   * cleaning, the analysed dataset after DIFM. The unit set travels with the
+   * request because the server keeps no display preference — the numbers on
+   * paper must be the ones the user was looking at, not the metric ones
+   * underneath. The project name is the heading. */
+  async printReport(datasetId, button) {
+    const prefs = Units.get();
+    const body = {
+      dataset_id: datasetId,
+      units: Object.fromEntries(["yield_unit", "input_rate_unit", "area_unit",
+        "length_unit", "speed_unit", "currency", "crop"].map((k) => [k, prefs[k]])),
+      title: this.state.project?.name || null,
+    };
+    const result = await this.busy(button, async () => {
+      try {
+        return await this.api("/api/report", { method: "POST", body });
+      } catch (err) {
+        if (err.status !== 404) throw err;
+        // The dataset the button named is no longer in the session: removed
+        // from elsewhere — the MCP server, another tab — since this panel was
+        // drawn. The list is the truth: refreshing it prunes the cached
+        // result that carried the old id, and redrawing the tab rebuilds the
+        // panel from what is still loaded. For a cleaning report that is the
+        // original, which keeps its own copy and prints from that; when the
+        // selected dataset itself is gone there is nothing to redraw for.
+        const wasSelected = datasetId === this.state.selectedId;
+        if (wasSelected) this.clearSelection();
+        await this.refreshDatasets();
+        this.renderTab();
+        this.toast(wasSelected ? "That dataset is gone" : "The clean copy is gone",
+          "It was removed from the session after this panel was drawn. The list " +
+          "has been refreshed" + (wasSelected ? "; pick a dataset to go on."
+            : " and the report redrawn from the original's own copy; press Print again."),
+          "warn");
+        return null;
+      }
+    });
+    if (!result) return;
+
+    // The file is served as an attachment, so the new tab is the download.
+    // A pop-up blocker returns null; a clicked anchor needs no permission,
+    // and the toast names the path on disk either way.
+    if (!window.open(result.download_url, "_blank")) {
+      const link = document.createElement("a");
+      link.href = result.download_url;
+      link.download = result.filename;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+    }
+
+    const names = { preflight: "first look", clean: "cleaning", difm: "DIFM analysis" };
+    const printed = result.sections.map((s) => names[s]).filter(Boolean).join(", ");
+    this.toast("Report written",
+      `${result.filename}: ${printed || "header only"}, ` +
+      `${result.pages} page${result.pages === 1 ? "" : "s"}.\nSaved at ${result.path}`);
   },
 });
