@@ -1,4 +1,4 @@
-"""Permite ``python -m agrosuite``."""
+"""Allows ``python -m agrosuite``."""
 
 from .cli import main
 

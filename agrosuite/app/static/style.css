@@ -237,8 +237,8 @@ table.data td.num { font-family: var(--mono); }
   background: var(--surface-2); margin-bottom: 6px;
 }
 .note.ok { border-color: var(--ok); background: var(--accent-soft); }
-.note.atencao { border-color: var(--warn); background: var(--warn-soft); }
-.note.alerta { border-color: var(--danger); background: var(--danger-soft); }
+.note.warning { border-color: var(--warn); background: var(--warn-soft); }
+.note.alert { border-color: var(--danger); background: var(--danger-soft); }
 
 .empty {
   padding: 28px 16px; text-align: center; color: var(--text-faint); font-size: 13px;

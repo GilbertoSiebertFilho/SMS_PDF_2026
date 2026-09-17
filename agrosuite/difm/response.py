@@ -1,18 +1,18 @@
-"""Funções de resposta à dose e otimização econômica.
+"""Rate response functions and economic optimization.
 
-O objetivo de um ensaio em faixas não é descobrir qual dose deu o maior
-rendimento — é descobrir qual dose dá o maior **lucro**. As duas respostas
-raramente coincidem: a curva de rendimento continua subindo quando o
-incremento já não paga o insumo.
+The point of a strip trial is not to find which rate gave the highest yield —
+it is to find which rate gives the highest **profit**. The two answers rarely
+coincide: the yield curve keeps climbing long after the increment stops
+paying for the input.
 
-A dose econômica ótima é o ponto em que a derivada da curva de rendimento
-iguala a razão de preços::
+The economic optimum rate is where the derivative of the yield curve equals
+the price ratio::
 
-    dY/dR = custo_do_insumo / preço_do_produto
+    dY/dR = input_cost / crop_price
 
-Abaixo dela, cada quilo a mais de insumo devolve mais do que custa; acima,
-devolve menos. Todos os modelos aqui expõem essa derivada analiticamente,
-para que a dose ótima seja resolvida sem busca numérica quando possível.
+Below it, each extra unit of input returns more than it costs; above it, less.
+Every model here exposes that derivative analytically, so the optimum can be
+solved without a numeric search wherever possible.
 """
 
 from __future__ import annotations
@@ -25,7 +25,7 @@ import numpy as np
 
 @dataclass
 class ResponseFit:
-    """Ajuste de um modelo de resposta a um conjunto (dose, rendimento)."""
+    """Fit of a response model to a set of (rate, yield) pairs."""
 
     model: str
     label: str
@@ -63,15 +63,15 @@ def _goodness(y: np.ndarray, y_hat: np.ndarray) -> tuple[float, float]:
 
 
 # --------------------------------------------------------------------------
-# Modelos
+# Models
 # --------------------------------------------------------------------------
 
 def fit_quadratic(rates: np.ndarray, yields: np.ndarray) -> ResponseFit:
-    """Resposta quadrática: ``Y = a + b·R + c·R²``.
+    """Quadratic response: ``Y = a + b*R + c*R^2``.
 
-    É o modelo de referência da literatura de adubação. Exige apenas três
-    doses distintas e tem dose ótima em forma fechada, mas impõe simetria à
-    curva — o que superestima a queda em doses altas.
+    The reference model in the fertility literature. It needs only three
+    distinct rates and has a closed-form optimum, but it forces the curve to
+    be symmetric, which overstates the fall-off at high rates.
     """
     coef = np.polyfit(rates, yields, 2)
     c, b, a = float(coef[0]), float(coef[1]), float(coef[2])
@@ -81,20 +81,20 @@ def fit_quadratic(rates: np.ndarray, yields: np.ndarray) -> ResponseFit:
     plateau = -b / (2 * c) if c < 0 else None
     return ResponseFit(
         model="quadratic",
-        label="Quadrática",
+        label="Quadratic",
         params={"a": a, "b": b, "c": c},
         r2=r2, rmse=rmse, n=len(rates),
         predict=predict, derivative=derivative,
         plateau_rate=plateau,
-        message="" if c < 0 else "Curvatura positiva: sem máximo agronômico na faixa testada.",
+        message="" if c < 0 else "Positive curvature: no agronomic maximum within the tested range.",
     )
 
 
 def fit_quadratic_plateau(rates: np.ndarray, yields: np.ndarray) -> ResponseFit:
-    """Quadrática com platô: sobe até a dose crítica e estabiliza.
+    """Quadratic plateau: climbs to a critical rate and levels off.
 
-    Mais fiel ao comportamento biológico que a quadrática pura, porque não
-    obriga o rendimento a cair depois do ponto máximo.
+    Closer to the biology than the pure quadratic, because it does not force
+    yield to fall after the maximum.
     """
     from scipy.optimize import curve_fit
 
@@ -110,7 +110,7 @@ def fit_quadratic_plateau(rates: np.ndarray, yields: np.ndarray) -> ResponseFit:
         popt, _ = curve_fit(model, rates, yields, p0=p0, maxfev=20_000)
         converged, message = True, ""
     except Exception as exc:
-        popt, converged, message = p0, False, f"Ajuste não convergiu ({exc}); usados valores iniciais."
+        popt, converged, message = p0, False, f"Fit did not converge ({exc}); initial values used."
 
     a, b, c = (float(v) for v in popt)
     critical = -b / (2 * c) if c < 0 else float("inf")
@@ -126,7 +126,7 @@ def fit_quadratic_plateau(rates: np.ndarray, yields: np.ndarray) -> ResponseFit:
     r2, rmse = _goodness(yields, predict(rates))
     return ResponseFit(
         model="quadratic_plateau",
-        label="Quadrática com platô",
+        label="Quadratic plateau",
         params={"a": a, "b": b, "c": c},
         r2=r2, rmse=rmse, n=len(rates),
         predict=predict, derivative=derivative,
@@ -136,10 +136,10 @@ def fit_quadratic_plateau(rates: np.ndarray, yields: np.ndarray) -> ResponseFit:
 
 
 def fit_linear_plateau(rates: np.ndarray, yields: np.ndarray) -> ResponseFit:
-    """Linear com platô: resposta constante até a dose crítica, depois nada.
+    """Linear plateau: constant response up to a critical rate, then nothing.
 
-    Útil quando o insumo é claramente limitante até um ponto e irrelevante
-    depois — comum em correção de deficiência.
+    Useful when the input is clearly limiting up to a point and irrelevant
+    after it — common when correcting a deficiency.
     """
     from scipy.optimize import curve_fit
 
@@ -154,7 +154,7 @@ def fit_linear_plateau(rates: np.ndarray, yields: np.ndarray) -> ResponseFit:
         popt, _ = curve_fit(model, rates, yields, p0=p0, maxfev=20_000)
         converged, message = True, ""
     except Exception as exc:
-        popt, converged, message = p0, False, f"Ajuste não convergiu ({exc}); usados valores iniciais."
+        popt, converged, message = p0, False, f"Fit did not converge ({exc}); initial values used."
 
     a, b, critical = (float(v) for v in popt)
     predict = lambda r: model(r, a, b, critical)
@@ -162,7 +162,7 @@ def fit_linear_plateau(rates: np.ndarray, yields: np.ndarray) -> ResponseFit:
     r2, rmse = _goodness(yields, predict(rates))
     return ResponseFit(
         model="linear_plateau",
-        label="Linear com platô",
+        label="Linear plateau",
         params={"a": a, "b": b, "critical": critical},
         r2=r2, rmse=rmse, n=len(rates),
         predict=predict, derivative=derivative,
@@ -172,10 +172,10 @@ def fit_linear_plateau(rates: np.ndarray, yields: np.ndarray) -> ResponseFit:
 
 
 def fit_mitscherlich(rates: np.ndarray, yields: np.ndarray) -> ResponseFit:
-    """Mitscherlich: ``Y = A·(1 − exp(−c·(R + b)))``.
+    """Mitscherlich: ``Y = A * (1 - exp(-c * (R + b)))``.
 
-    Assíntota suave, sem queda em doses altas. É o modelo mais conservador
-    para extrapolar acima da maior dose testada.
+    A smooth asymptote with no fall-off at high rates. It is the most
+    conservative model for extrapolating above the highest rate tested.
     """
     from scipy.optimize import curve_fit
 
@@ -190,7 +190,7 @@ def fit_mitscherlich(rates: np.ndarray, yields: np.ndarray) -> ResponseFit:
         )
         converged, message = True, ""
     except Exception as exc:
-        popt, converged, message = p0, False, f"Ajuste não convergiu ({exc}); usados valores iniciais."
+        popt, converged, message = p0, False, f"Fit did not converge ({exc}); initial values used."
 
     A, b, c = (float(v) for v in popt)
     predict = lambda r: model(r, A, b, c)
@@ -214,18 +214,18 @@ MODELS: dict[str, Callable[[np.ndarray, np.ndarray], ResponseFit]] = {
 }
 
 MODEL_LABELS = {
-    "quadratic": "Quadrática",
-    "quadratic_plateau": "Quadrática com platô",
-    "linear_plateau": "Linear com platô",
+    "quadratic": "Quadratic",
+    "quadratic_plateau": "Quadratic plateau",
+    "linear_plateau": "Linear plateau",
     "mitscherlich": "Mitscherlich",
 }
 
 
 def fit_best(rates: np.ndarray, yields: np.ndarray, candidates=None) -> tuple[ResponseFit, list[ResponseFit]]:
-    """Ajusta os modelos candidatos e devolve o melhor por R², com os demais.
+    """Fit the candidate models and return the best by R-squared, plus the rest.
 
-    Modelos com menos doses distintas que parâmetros são descartados: um
-    ajuste que passa exatamente pelos pontos não informa nada.
+    Models with fewer distinct rates than parameters are dropped: a fit that
+    passes exactly through the points tells you nothing.
     """
     rates = np.asarray(rates, dtype="float64")
     yields = np.asarray(yields, dtype="float64")
@@ -235,8 +235,8 @@ def fit_best(rates: np.ndarray, yields: np.ndarray, candidates=None) -> tuple[Re
     distinct = len(np.unique(rates))
     if distinct < 3:
         raise ValueError(
-            f"São necessárias ao menos 3 doses distintas para ajustar uma curva "
-            f"de resposta; o conjunto tem {distinct}."
+            f"At least 3 distinct rates are needed to fit a response curve; "
+            f"this dataset has {distinct}."
         )
 
     names = candidates or list(MODELS)
@@ -250,14 +250,14 @@ def fit_best(rates: np.ndarray, yields: np.ndarray, candidates=None) -> tuple[Re
         except Exception:
             continue
     if not fits:
-        raise ValueError("Nenhum modelo de resposta pôde ser ajustado a estes dados.")
+        raise ValueError("No response model could be fitted to this data.")
 
     fits.sort(key=lambda f: (-f.r2, f.rmse))
     return fits[0], fits
 
 
 # --------------------------------------------------------------------------
-# Economia
+# Economics
 # --------------------------------------------------------------------------
 
 def optimum_rate(
@@ -267,29 +267,29 @@ def optimum_rate(
     rate_min: float = 0.0,
     rate_max: float = 400.0,
 ) -> dict[str, float]:
-    """Dose econômica ótima e o que ela rende.
+    """Economic optimum rate, and what it returns.
 
     Parameters
     ----------
     crop_price:
-        Preço do produto colhido, por unidade da variável de rendimento
-        (ex.: R$/kg se o rendimento está em kg/ha).
+        Price of the harvested crop, per unit of the yield variable (for
+        example $/kg when yield is in kg/ha).
     input_cost:
-        Custo do insumo, por unidade de dose (ex.: R$/kg de N).
+        Cost of the input, per unit of rate (for example $/kg of N).
     rate_min, rate_max:
-        Faixa em que a busca é permitida. Fora do intervalo testado no
-        ensaio a curva é extrapolação, e o resultado vem marcado como tal.
+        Range the search is allowed over. Outside the range actually tested in
+        the trial the curve is extrapolation, and the result says so.
     """
     if crop_price <= 0:
-        raise ValueError("O preço do produto precisa ser positivo.")
+        raise ValueError("The crop price must be positive.")
 
-    price_ratio = input_cost / crop_price  # unidades de rendimento por unidade de dose
+    price_ratio = input_cost / crop_price  # yield units per unit of rate
     grid = np.linspace(rate_min, rate_max, 2001)
     profit = fit.predict(grid) * crop_price - grid * input_cost
     best_index = int(np.argmax(profit))
     best_rate = float(grid[best_index])
 
-    # Refina pela condição marginal, quando a derivada cruza a razão de preços.
+    # Refine on the marginal condition, where the derivative crosses the price ratio.
     derivative = fit.derivative(grid)
     crossing = np.flatnonzero(np.diff(np.sign(derivative - price_ratio)) < 0)
     if crossing.size:
@@ -303,12 +303,12 @@ def optimum_rate(
     yield_at_best = float(fit.predict(np.array([best_rate]))[0])
     agronomic = fit.plateau_rate
     return {
-        "dose_otima": round(best_rate, 2),
-        "rendimento_na_otima": round(yield_at_best, 1),
-        "lucro_na_otima": round(yield_at_best * crop_price - best_rate * input_cost, 2),
-        "razao_de_precos": round(price_ratio, 4),
-        "dose_maximo_agronomico": round(float(agronomic), 2) if agronomic and np.isfinite(agronomic) else None,
-        "no_limite_da_faixa": bool(best_rate >= rate_max - 1e-6 or best_rate <= rate_min + 1e-6),
+        "optimum_rate": round(best_rate, 2),
+        "yield_at_optimum": round(yield_at_best, 1),
+        "profit_at_optimum": round(yield_at_best * crop_price - best_rate * input_cost, 2),
+        "price_ratio": round(price_ratio, 4),
+        "agronomic_maximum": round(float(agronomic), 2) if agronomic and np.isfinite(agronomic) else None,
+        "at_range_limit": bool(best_rate >= rate_max - 1e-6 or best_rate <= rate_min + 1e-6),
     }
 
 
@@ -320,15 +320,15 @@ def profit_curve(
     rate_max: float = 400.0,
     points: int = 60,
 ) -> list[dict[str, float]]:
-    """Amostra a curva de rendimento e a de lucro para exibição."""
+    """Sample the yield and profit curves for display."""
     grid = np.linspace(rate_min, rate_max, points)
     predicted = fit.predict(grid)
     profit = predicted * crop_price - grid * input_cost
     return [
         {
-            "dose": round(float(r), 2),
-            "rendimento": round(float(y), 1),
-            "lucro": round(float(p), 2),
+            "rate": round(float(r), 2),
+            "yield": round(float(y), 1),
+            "profit": round(float(p), 2),
         }
         for r, y, p in zip(grid, predicted, profit)
     ]

@@ -1,17 +1,17 @@
-"""Desenho de ensaios em faixas no padrão DIFM.
+"""Laying out DIFM strip trials.
 
-Um ensaio DIFM útil precisa de três propriedades que o desenho aqui garante:
+A useful DIFM trial needs three properties this layout guarantees:
 
-* **Casualização em blocos.** As doses são sorteadas dentro de cada bloco de
-  faixas consecutivas, de modo que um gradiente de fertilidade atravessando
-  o talhão não fique confundido com o efeito da dose.
-* **Faixas operáveis.** A largura é múltipla da largura do implemento, senão
-  o operador não consegue executar o ensaio.
-* **Repetição.** Cada dose aparece uma vez por bloco; o número de blocos é o
-  número de repetições.
+* **Randomization in blocks.** Rates are drawn within each block of
+  consecutive strips, so a fertility gradient running across the field does
+  not get confounded with the rate effect.
+* **Operable strips.** Strip width is a multiple of the implement width;
+  otherwise the operator cannot drive the trial.
+* **Replication.** Each rate appears once per block; the number of blocks is
+  the number of replicates.
 
-A saída já sai pronta para virar prescrição em qualquer um dos formatos de
-exportação do app.
+The output is ready to become a prescription in any of the app's export
+formats.
 """
 
 from __future__ import annotations
@@ -23,10 +23,10 @@ import numpy as np
 
 
 def _principal_direction(polygon) -> float:
-    """Ângulo (graus) do lado mais longo do retângulo mínimo que envolve o talhão.
+    """Angle (degrees) of the longest side of the field's minimum bounding box.
 
-    Faixas paralelas ao lado mais longo ficam mais compridas, o que reduz o
-    número de manobras e aumenta a área útil de cada tratamento.
+    Strips parallel to the longest side come out longer, which cuts the number
+    of turns and increases the usable area of each treatment.
     """
     rectangle = polygon.minimum_rotated_rectangle
     coords = list(rectangle.exterior.coords)[:4]
@@ -49,30 +49,30 @@ def design_strips(
     buffer_m: float = 0.0,
     seed: int = 0,
 ) -> dict[str, Any]:
-    """Gera faixas de ensaio sobre um contorno de talhão.
+    """Generate trial strips over a field boundary.
 
     Parameters
     ----------
     boundary_lonlat:
-        Contorno do talhão como lista de ``(lon, lat)`` em WGS84.
+        Field boundary as a list of ``(lon, lat)`` in WGS84.
     rates:
-        Doses a testar. Pelo menos três — abaixo disso não há curva a ajustar.
+        Rates to test. At least three — below that there is no curve to fit.
     implement_width_m:
-        Largura de trabalho do implemento que vai aplicar o ensaio.
+        Working width of the implement that will apply the trial.
     passes_per_strip:
-        Quantas passadas do implemento compõem cada faixa. Duas ou mais
-        deixam a passada central livre do efeito das faixas vizinhas.
+        How many implement passes make up each strip. Two or more leave the
+        centre pass free of the neighbouring strips' influence.
     blocks:
-        Número de repetições (blocos casualizados).
+        Number of replicates (randomized blocks).
     angle_deg:
-        Direção das faixas. Ausente, usa o lado mais longo do talhão.
+        Strip direction. When absent, the field's longest side is used.
     buffer_m:
-        Recuo para dentro do contorno, descartando a bordadura.
+        Inward setback from the boundary, dropping the headland.
 
     Returns
     -------
     dict
-        Com ``features`` (GeoJSON das faixas), ``summary`` e ``warnings``.
+        With ``features`` (strip GeoJSON), ``summary`` and ``warnings``.
     """
     from pyproj import Transformer
     from shapely import affinity
@@ -80,11 +80,11 @@ def design_strips(
     from shapely.ops import unary_union
 
     if len(rates) < 3:
-        raise ValueError("Um ensaio de resposta precisa de ao menos 3 doses distintas.")
+        raise ValueError("A response trial needs at least 3 distinct rates.")
     if len(boundary_lonlat) < 3:
-        raise ValueError("Contorno do talhão inválido: menos de 3 vértices.")
+        raise ValueError("Invalid field boundary: fewer than 3 vertices.")
     if blocks < 1:
-        raise ValueError("O ensaio precisa de ao menos 1 bloco.")
+        raise ValueError("The trial needs at least 1 block.")
 
     from ..core.crs import WGS84, pick_metric_crs
 
@@ -99,21 +99,21 @@ def design_strips(
     if not field.is_valid:
         field = field.buffer(0)
     if field.is_empty:
-        raise ValueError("Contorno do talhão resultou em polígono vazio.")
+        raise ValueError("The field boundary produced an empty polygon.")
 
     warnings: list[str] = []
     working = field.buffer(-abs(buffer_m)) if buffer_m else field
     if working.is_empty:
         raise ValueError(
-            f"O recuo de {buffer_m:g} m consumiu o talhão inteiro. Reduza a bordadura."
+            f"The {buffer_m:g} m setback consumed the whole field. Reduce the headland."
         )
     if working.geom_type == "MultiPolygon":
         working = max(working.geoms, key=lambda g: g.area)
-        warnings.append("O recuo dividiu o talhão; foi usada a maior parte contínua.")
+        warnings.append("The setback split the field; the largest continuous part was used.")
 
     angle = angle_deg if angle_deg is not None else _principal_direction(working)
     centroid = working.centroid
-    # Gira o talhão para que as faixas fiquem alinhadas com o eixo X.
+    # Rotate the field so the strips line up with the X axis.
     aligned = affinity.rotate(working, -angle, origin=centroid, use_radians=False)
     min_x, min_y, max_x, max_y = aligned.bounds
 
@@ -121,23 +121,24 @@ def design_strips(
     total_strips = int(math.floor((max_y - min_y) / strip_width))
     if total_strips < len(rates):
         raise ValueError(
-            f"O talhão comporta apenas {total_strips} faixa(s) de {strip_width:g} m, "
-            f"e o ensaio precisa de pelo menos {len(rates)} (uma por dose). "
-            "Reduza a largura da faixa ou o número de doses."
+            f"The field only fits {total_strips} strip(s) of {strip_width:g} m, and the "
+            f"trial needs at least {len(rates)} — one per rate. Reduce the strip width "
+            "or the number of rates."
         )
 
     usable_blocks = min(blocks, total_strips // len(rates))
     if usable_blocks < blocks:
         warnings.append(
-            f"O talhão comporta {usable_blocks} bloco(s) completo(s) em vez dos "
-            f"{blocks} pedidos; o ensaio foi ajustado."
+            f"The field fits {usable_blocks} complete block(s) instead of the {blocks} "
+            "requested; the trial was adjusted."
         )
     if usable_blocks < 2:
         warnings.append(
-            "Com um único bloco não há repetição: a análise não conseguirá "
-            "separar efeito da dose de variação natural do talhão."
+            "With a single block there is no replication: the analysis will not be "
+            "able to separate the rate effect from the field's natural variation."
         )
 
+    # Draw the rate order within each block, as in a randomized block design.
     rng = np.random.default_rng(seed)
     assignment: list[float] = []
     for _ in range(usable_blocks):
@@ -166,35 +167,35 @@ def design_strips(
                 "type": "Feature",
                 "geometry": {"type": "Polygon", "coordinates": [[list(p) for p in ring]]},
                 "properties": {
-                    "faixa": index + 1,
-                    "bloco": index // len(rates) + 1,
-                    "dose": round(float(rate), 2),
+                    "strip": index + 1,
+                    "block": index // len(rates) + 1,
+                    "rate": round(float(rate), 2),
                     "area_ha": round(part.area / 10_000.0, 3),
                 },
             })
             areas.append(part.area / 10_000.0)
 
     if not features:
-        raise ValueError("Nenhuma faixa utilizável foi gerada com esses parâmetros.")
+        raise ValueError("No usable strip was generated with these parameters.")
 
     counts: dict[float, int] = {}
     for feature in features:
-        dose = feature["properties"]["dose"]
-        counts[dose] = counts.get(dose, 0) + 1
+        rate = feature["properties"]["rate"]
+        counts[rate] = counts.get(rate, 0) + 1
 
     return {
         "features": {"type": "FeatureCollection", "features": features},
         "summary": {
-            "doses": sorted(counts),
-            "repeticoes_por_dose": {str(k): v for k, v in sorted(counts.items())},
-            "faixas": len(features),
-            "blocos": usable_blocks,
-            "largura_faixa_m": strip_width,
-            "passadas_por_faixa": max(1, int(passes_per_strip)),
-            "direcao_graus": round(angle % 180.0, 1),
-            "area_total_ha": round(sum(areas), 2),
-            "area_media_faixa_ha": round(sum(areas) / len(areas), 3),
-            "crs_metrico": metric_crs,
+            "rates": sorted(counts),
+            "reps_per_rate": {str(k): v for k, v in sorted(counts.items())},
+            "strips": len(features),
+            "blocks": usable_blocks,
+            "strip_width_m": strip_width,
+            "passes_per_strip": max(1, int(passes_per_strip)),
+            "direction_deg": round(angle % 180.0, 1),
+            "total_area_ha": round(sum(areas), 2),
+            "mean_strip_area_ha": round(sum(areas) / len(areas), 3),
+            "metric_crs": metric_crs,
         },
         "warnings": warnings,
     }

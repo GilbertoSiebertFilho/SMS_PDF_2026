@@ -1,12 +1,13 @@
-"""Estado da sessão do app.
+"""App session state.
 
-Como o AgroSuite roda localmente e para uma pessoa só, o estado vive em
-memória: os datasets carregados, os resultados de limpeza e análise, e os
-arquivos gerados para exportação. Nada é gravado sem o usuário pedir.
+Since AgroSuite runs locally and for one person, state lives in memory: the
+loaded datasets, the cleaning and analysis results, and the files generated
+for export. Nothing is written to disk unless the user asks.
 
-Um dataset nunca é sobrescrito. Limpar gera dois novos datasets (limpo e
-removidos) que convivem com o original — é o que permite comparar antes e
-depois, e desfazer uma limpeza malfeita sem reimportar o arquivo.
+A dataset is never overwritten. Cleaning produces two new datasets — clean
+and removed — that live alongside the original. That is what makes it
+possible to compare before and after, and to undo a bad cleaning without
+re-importing the file.
 """
 
 from __future__ import annotations
@@ -25,14 +26,14 @@ import pandas as pd
 from ..core import schema as sch
 from ..core.dataset import Dataset
 
-#: Teto de pontos enviados ao mapa numa única resposta. Acima disso a
-#: amostragem é sistemática — preserva o padrão espacial sem travar o navegador.
+#: Ceiling on points sent to the map in one response. Above it the sampling is
+#: systematic, which preserves the spatial pattern without stalling the browser.
 MAP_POINT_LIMIT = 60_000
 
 
 @dataclass
 class Entry:
-    """Um dataset na sessão, com seu histórico."""
+    """One dataset in the session, with its history."""
 
     id: str
     dataset: Dataset
@@ -55,7 +56,7 @@ class Entry:
 
 
 class Session:
-    """Repositório em memória dos dados da sessão."""
+    """In-memory repository for the session's data."""
 
     def __init__(self) -> None:
         self._entries: dict[str, Entry] = {}
@@ -89,7 +90,7 @@ class Session:
     def get(self, dataset_id: str) -> Entry:
         entry = self._entries.get(dataset_id)
         if entry is None:
-            raise KeyError(f"Dataset '{dataset_id}' não está carregado na sessão.")
+            raise KeyError(f"Dataset '{dataset_id}' is not loaded in this session.")
         return entry
 
     def remove(self, dataset_id: str) -> None:
@@ -103,9 +104,9 @@ class Session:
         with self._lock:
             self._entries.clear()
 
-    # -- arquivos --------------------------------------------------------
+    # -- files -----------------------------------------------------------
     def register_file(self, path: Path) -> str:
-        """Registra um arquivo gerado e devolve o token de download."""
+        """Register a generated file and return its download token."""
         token = uuid.uuid4().hex[:16]
         with self._lock:
             self._files[token] = Path(path)
@@ -114,7 +115,7 @@ class Session:
     def file_for(self, token: str) -> Path:
         path = self._files.get(token)
         if path is None or not path.exists():
-            raise KeyError("Arquivo não encontrado ou já removido.")
+            raise KeyError("File not found, or already removed.")
         return path
 
     def cleanup(self) -> None:
@@ -122,7 +123,7 @@ class Session:
 
 
 # --------------------------------------------------------------------------
-# Serialização para o mapa e os gráficos
+# Serialization for the map and the charts
 # --------------------------------------------------------------------------
 
 def map_payload(
@@ -130,12 +131,12 @@ def map_payload(
     column: str = sch.VALUE,
     limit: int = MAP_POINT_LIMIT,
 ) -> dict[str, Any]:
-    """Prepara os pontos para o desenho no mapa.
+    """Prepare the points for drawing on the map.
 
-    Devolve vetores paralelos em vez de GeoJSON: para dezenas de milhares de
-    pontos, o GeoJSON multiplica por cinco o tamanho da resposta e o tempo de
-    interpretação no navegador, sem nenhum ganho — o desenho é feito em
-    canvas, que só precisa das coordenadas e do valor.
+    It returns parallel arrays rather than GeoJSON: for tens of thousands of
+    points, GeoJSON multiplies the response size and the browser's parse time
+    several times over for no gain — the drawing happens on a canvas, which
+    only needs the coordinates and the value.
     """
     df = dataset.df
     if sch.LON not in df.columns or sch.LAT not in df.columns:
@@ -146,8 +147,8 @@ def map_payload(
 
     total = len(frame)
     if total > limit:
-        # Amostragem sistemática: mantém a cobertura espacial da passada,
-        # ao contrário de um corte nas primeiras N linhas.
+        # Systematic sampling keeps the spatial coverage of the pass, unlike
+        # simply taking the first N rows.
         step = int(np.ceil(total / limit))
         frame = frame.iloc[::step]
 
@@ -174,8 +175,8 @@ def map_payload(
             payload["scale"] = {
                 "min": float(np.min(array)),
                 "max": float(np.max(array)),
-                # A escala de cor usa percentis: um único ponto extremo não
-                # deve achatar o contraste do mapa inteiro.
+                # The colour scale uses percentiles: one extreme point should
+                # not flatten the contrast of the whole map.
                 "low": float(np.percentile(array, 2)),
                 "high": float(np.percentile(array, 98)),
             }
@@ -187,7 +188,7 @@ def map_payload(
 
 
 def _polygon_payload(dataset: Dataset, limit: int = 4000) -> list[list[list[float]]]:
-    """Anéis externos dos polígonos, para desenhar contornos e grades."""
+    """Outer rings of the polygons, for drawing boundaries and grids."""
     rings: list[list[list[float]]] = []
     for geometry in (dataset.geometry or [])[:limit]:
         if geometry is None or geometry.is_empty:
@@ -202,7 +203,7 @@ def _polygon_payload(dataset: Dataset, limit: int = 4000) -> list[list[list[floa
 
 
 def preview_table(dataset: Dataset, rows: int = 25) -> dict[str, Any]:
-    """Amostra da tabela para inspeção visual na interface."""
+    """A sample of the table for visual inspection in the interface."""
     frame = dataset.df.head(rows).copy()
     for column in frame.columns:
         if pd.api.types.is_datetime64_any_dtype(frame[column]):

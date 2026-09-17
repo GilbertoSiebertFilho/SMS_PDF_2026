@@ -1,183 +1,184 @@
 # AgroSuite
 
-Aplicativo local para trabalhar com dados de monitores agrícolas: importar o
-que vem da máquina, limpar mapas de colheita e de aplicação com laudo do que
-foi removido, analisar ensaios em faixas no padrão DIFM e gerar os arquivos
-de volta para o monitor — já no arranjo de pasta que cada terminal espera.
+A local application for working with agricultural monitor data: import what
+comes off the machine, clean harvest and application maps with a report of
+what was removed, analyse strip trials the DIFM way, and generate the files
+to take back to the monitor — already laid out the way each terminal expects.
 
-Roda inteiro no seu computador. Nenhum dado sai da máquina: o servidor
-escuta só em `127.0.0.1` e os arquivos ficam numa pasta da sessão.
+Everything runs on your computer. No data leaves the machine: the server
+listens only on `127.0.0.1` and the files live in a session folder.
 
-![fluxo](docs/fluxo.svg)
+![workflow](docs/workflow.svg)
 
-## Instalação no Windows
+## Installing on Windows
 
-1. Instale o [Python 3.10 ou mais novo](https://www.python.org/downloads/),
-   marcando **Add Python to PATH** durante a instalação.
-2. Baixe ou clone esta pasta.
-3. Dê um duplo-clique em **`run.bat`**.
+1. Install [Python 3.10 or newer](https://www.python.org/downloads/), ticking
+   **Add Python to PATH** during installation.
+2. Download or clone this folder.
+3. Double-click **`run.bat`**.
 
-Na primeira vez o script cria o ambiente e instala as dependências (alguns
-minutos). Nas vezes seguintes o app abre direto no navegador.
+The first run creates the environment and installs the dependencies (a few
+minutes). After that the app opens straight in your browser.
 
-No Linux ou no macOS, use `./run.sh`. Em qualquer sistema também funciona:
+On Linux or macOS, use `./run.sh`. On any system this also works:
 
 ```
 pip install -r requirements.txt
 python -m agrosuite
 ```
 
-## Unidades
+## Units
 
-O app abre no **padrão canadense**: bu/ac para grão, lb/ac para fertilizante
-e semente, acres, pés, mph e dólar canadense. Dá para trocar tudo de uma vez
-pelo seletor no topo (Canadá, Estados Unidos, Brasil, métrico puro) ou
-ajustar cada grandeza pelo botão ⚙.
+The app opens in the **Canadian default**: bu/ac for grain, lb/ac for
+fertilizer and seed, acres, feet, mph and Canadian dollars. You can switch
+the whole set from the picker at the top (Canada, United States, Brazil,
+metric) or adjust each quantity through the ⚙ button.
 
-Por dentro, tudo é guardado em métrico — kg/ha, hectares, metros, km/h. A
-conversão acontece só na exibição e na gravação, então trocar de acre para
-hectare não altera nenhum número armazenado e não exige recarregar nada.
+Internally everything is stored in metric — kg/ha, hectares, metres, km/h.
+Conversion happens only at display and at write time, so switching from acres
+to hectares changes no stored number and requires no reload.
 
-As unidades em bushel dependem da cultura, porque o bushel mede volume: um
-bushel de milho pesa 25,40 kg e um de canola, 22,68 kg. Escolha a cultura no
-mesmo painel.
+Bushel units depend on the crop, because a bushel measures volume: a bushel
+of canola weighs 22.68 kg and one of wheat 27.22 kg. Pick the crop in the
+same panel.
 
-## Os cinco passos
+## The five steps
 
-### 1 · Dados
+### 1 · Data
 
-Aceita o que o monitor produz:
+It takes what the monitor produces:
 
-| Origem | Formato |
+| Source | Format |
 |---|---|
-| John Deere | shapefile e CSV do Operations Center, ZIP do pen drive, cartão GS2/GS3/Gen 4 |
-| Ag Leader / SMS | shapefile e CSV |
-| Raven Viper 4 | CSV de trabalho, shapefile |
-| Trimble GFX / TMX / FmX | CSV de cobertura, shapefile |
-| Case IH AFS, New Holland PLM | ISOXML (TASKDATA + logs TLG binários) |
+| John Deere | Operations Center shapefile and CSV, the USB zip, GS2/GS3/Gen 4 cards |
+| Ag Leader / SMS | shapefile and CSV |
+| Raven Viper 4 | job CSV, shapefile |
+| Trimble GFX / TMX / FmX | coverage CSV, shapefile |
+| Case IH AFS, New Holland PLM | ISOXML (TASKDATA plus binary TLG logs) |
 | Bourgault X30/X35, Väderstad, Topcon/Müller | ISOXML, CSV |
-| Augmenta | GeoJSON de sessão, com vigor e dose |
-| Qualquer um | shapefile, GeoJSON, CSV/TXT, Excel, KML/KMZ, ZIP |
+| Augmenta | session GeoJSON, carrying vigour and rate |
+| Anything else | shapefile, GeoJSON, CSV/TXT, Excel, KML/KMZ, ZIP |
 
-O app identifica o fabricante pela assinatura das colunas e pela estrutura de
-pasta, converte tudo para um esquema único e reconstrói o que estiver
-faltando — velocidade e rumo saem da própria trajetória quando o arquivo não
-os traz.
+The app identifies the manufacturer from the column signature and the folder
+structure, converts everything to one schema, and reconstructs what is
+missing — speed and heading come from the track itself when the file does not
+carry them.
 
-Shapefile e pasta ISOXML precisam de todos os arquivos juntos: use **Abrir
-por caminho / pasta**, ou envie um `.zip`.
+A shapefile or an ISOXML folder needs all of its files together: use **Open
+by path / folder**, or upload a `.zip`.
 
-### 2 · Limpeza
+### 2 · Cleaning
 
-Treze filtros encadeados, com perfil inicial por tipo de operação:
+Thirteen chained filters, with a starting profile per operation type:
 
-- valores nulos e não positivos, posição inconsistente, umidade fora de faixa;
-- velocidade fora da faixa operacional e variação brusca de velocidade;
-- faixa parcial, passadas curtas, início e fim de passada;
-- **sobreposição de faixas** — a principal fonte de valores baixos falsos num
-  mapa de rendimento;
-- **bordadura**, medida por transformada de distância sobre a área trabalhada,
-  o que acompanha talhões de formato irregular;
-- outliers globais e locais.
+- null and non-positive values, inconsistent positions, moisture out of range;
+- speed outside the operating range, and sharp speed changes;
+- partial swath, short passes, pass starts and ends;
+- **swath overlap** — the main source of false low values in a yield map;
+- **field edge**, measured by a distance transform over the worked area, which
+  follows irregularly shaped fields;
+- global and local outliers.
 
-Antes dos filtros vem a correção de **atraso de fluxo**: do corte até o sensor
-passam alguns segundos, e sem deslocar a série o mapa inteiro sai alguns
-metros fora de lugar.
+Before the filters comes the **flow delay** correction: several seconds pass
+between the cut and the sensor, and without shifting the series the whole map
+ends up several metres out of place.
 
-Nada é sobrescrito. A limpeza gera dois conjuntos novos — *limpo* e
-*removidos*, este último com o motivo de cada descarte — e um laudo com
-antes e depois, histograma sobreposto e o que cada filtro tirou.
+Nothing is overwritten. Cleaning produces two new datasets — *clean* and
+*removed*, the latter carrying the reason for each discard — plus a report
+with before and after, an overlaid histogram, and what each filter took out.
 
-### 3 · Análise DIFM
+### 3 · DIFM analysis
 
-Agrega os pontos em células (sem nunca misturar doses de faixas vizinhas),
-descarta a transição entre tratamentos, ajusta quatro modelos de resposta
-— quadrática, quadrática com platô, linear com platô e Mitscherlich — e
-escolhe o de melhor R².
+It aggregates the points into cells (never mixing rates from neighbouring
+strips), drops the transition between treatments, fits four response models —
+quadratic, quadratic plateau, linear plateau and Mitscherlich — and picks the
+one with the best R².
 
-Com preço do produto e custo do insumo, calcula a **dose econômica ótima**:
-o ponto em que o quilo a mais de insumo deixa de se pagar. Com uma coluna de
-zona, ajusta uma curva por zona e compara o lucro da taxa variável com o da
-melhor dose única — que é o número que decide se vale a pena gerar o mapa.
+Given a crop price and an input cost, it computes the **economic optimum
+rate**: the point where the next unit of input stops paying for itself. Given
+a zone column, it fits one curve per zone and compares variable rate profit
+against the best single rate — which is the number that decides whether the
+map is worth building.
 
-### 4 · Desenhar ensaio
+### 4 · Trial layout
 
-Gera faixas em blocos casualizados sobre o contorno do talhão: largura
-múltipla do implemento, doses sorteadas dentro de cada bloco, direção
-alinhada ao lado mais longo. Gera também a **linha AB** na direção das
-faixas — sem ela, o operador entra noutro ângulo e o ensaio se perde.
+It generates randomized block strips over the field boundary: width a
+multiple of the implement, rates drawn within each block, direction aligned to
+the longest side. It also generates the **AB line** along the strip
+direction — without it the operator enters at another angle and the trial is
+lost.
 
-### 5 · Exportar
+### 5 · Export
 
-Dois modos.
+Two modes.
 
-**Pacote pronto para o monitor** monta a pasta do pen drive no arranjo que a
-plataforma escolhida procura, com contorno, linhas AB e prescrição, mais um
-`LEIA-ME.txt` com o caminho de importação. O que a plataforma não aceita fica
-de fora e é informado — melhor saber aqui do que na cabine.
+**Ready-to-load package** builds the USB folder in the layout the chosen
+platform looks for, with boundary, AB lines and prescription, plus a
+`README.txt` naming the import path. Whatever the platform does not accept is
+left out and reported — better to know here than in the cab.
 
-**Arquivos avulsos** gera só o que você pedir, sem estrutura de pasta.
+**Individual files** generates only what you ask for, with no folder
+structure.
 
-## Verificação antes de levar
+## Check before you take it out
 
-Todo pacote passa por uma verificação automática, feita **sobre os arquivos já
-gravados**, não sobre o que se pretendia gravar. Ela confere as causas
-conhecidas de recusa, uma a uma:
+Every package goes through an automatic check, run **over the files already
+written** rather than over what was meant to be written. It covers the known
+causes of rejection, one by one:
 
-- shapefile: `.shp`/`.shx`/`.dbf`/`.prj` presentes, geometria poligonal,
-  polígonos válidos, projeção, nomes de campo dentro do limite do DBF, campo
-  de dose existente, numérico, sem nulo e sem negativo, magnitude plausível,
-  acentuação com codificação declarada, tamanho e quantidade de feições;
-- ISOXML: pasta e arquivo com o nome exato, XML válido, anéis fechados,
-  linhas AB com os dois pontos de referência, tamanho do binário da grade
-  igual ao que o cabeçalho declara, células com dose, DDI declarado.
+- shapefile: `.shp`/`.shx`/`.dbf`/`.prj` present, polygon geometry, valid
+  polygons, projection, field names within the DBF limit, rate field present,
+  numeric, with no nulls and no negatives, plausible magnitude, character
+  encoding declared, size and feature count;
+- ISOXML: folder and file named exactly, valid XML, closed rings, AB lines
+  carrying both reference points, grid binary length matching what the header
+  declares, cells carrying a rate, DDI declared.
 
-O resultado sai em três níveis: **conferido**, **a confirmar na tela do
-monitor** e **impedimento**. Nada afirma "vai funcionar" — a verificação
-afirma que as causas conhecidas de falha foram eliminadas. Versão de
-firmware e menu de importação não dá para testar daqui.
+The result comes in three levels: **checked**, **to confirm on the monitor
+screen** and **blocker**. Nothing claims "this will work" — the check claims
+that the known causes of failure have been ruled out. Firmware version and
+import menus cannot be tested from here.
 
-## O que é proprietário e o que não é
+## What is proprietary and what is not
 
-O AgroSuite lê e escreve formatos abertos: shapefile, GeoJSON, CSV, KML e
-ISOXML (ISO 11783-10), que é o padrão dos terminais ISOBUS.
+AgroSuite reads and writes open formats: shapefile, GeoJSON, CSV, KML and
+ISOXML (ISO 11783-10), the standard of ISOBUS terminals.
 
-Não escreve formatos proprietários. Os arquivos de setup dentro de
-`GS2_2600/SETUP` ou `GS3_2630/SETUP`, `.gsd`, `.fdd`, `.jdf`, `.vy1` e
-similares são fechados, e reconstruí-los por engenharia reversa produziria
-arquivos que o display recusa na lavoura.
+It does not write proprietary formats. The setup files inside `GS2_2600/SETUP`
+or `GS3_2630/SETUP`, along with `.gsd`, `.fdd`, `.jdf`, `.vy1` and the like,
+are closed, and reverse-engineering them would produce files the display
+refuses out in the field.
 
-O que o app faz com eles: **inventaria o cartão**, diz o que cada arquivo é,
-lê todas as camadas em formato aberto que estiverem lá dentro — contorno,
-linhas, prescrições em shapefile — e explica o caminho de conversão quando
-não há nada legível. Um contorno lido de um cartão GreenStar pode ser
-reexportado para qualquer outro monitor sem redesenhar nada.
+What the app does with them: it **inventories the card**, says what each file
+is, reads every layer in an open format inside it — boundaries, lines,
+shapefile prescriptions — and explains the conversion route when there is
+nothing readable. A boundary read off a GreenStar card can be re-exported to
+any other monitor without redrawing anything.
 
-## Desenvolvimento
+## Development
 
 ```
-python -m pytest tests/ -q          # 67 testes
-python tests/fixtures.py amostras   # gera arquivos de exemplo de cada monitor
-python -m agrosuite --reload        # servidor com recarga automática
+python -m pytest tests/ -q          # 67 tests
+python tests/fixtures.py samples    # sample files for every monitor
+python -m agrosuite --reload        # server with auto-reload
 ```
 
-Os testes rodam contra arquivos que imitam a exportação real de cada
-plataforma — mesmos nomes de coluna, mesmas unidades, mesma estrutura de
-pasta. Se um fabricante mudar um nome de coluna, o teste correspondente
-quebra e o alias é atualizado num lugar só.
+The tests run against files that mimic each platform's real export — same
+column names, same units, same folder structure. If a manufacturer changes a
+column name, the matching test breaks and the alias is updated in one place.
 
-### Organização
+### Layout
 
 ```
 agrosuite/
-  core/       modelo de dados, esquema de colunas, unidades, CRS, linhas AB
-  formats/    leitura e escrita por formato, identificação de monitor,
-              pacotes por plataforma, verificação
-  clean/      filtros de limpeza e laudo
-  difm/       modelos de resposta, economia, desenho de ensaio
-  app/        servidor local e interface
+  core/       data model, column schema, units, CRS, AB lines
+  formats/    per-format reading and writing, monitor identification,
+              per-platform packages, verification
+  clean/      cleaning filters and report
+  difm/       response models, economics, trial layout
+  app/        local server and interface
 ```
 
-## Licença
+## Licence
 
 MIT.

@@ -1,9 +1,9 @@
 @echo off
 REM ---------------------------------------------------------------------
-REM  AgroSuite - inicializador para Windows
+REM  AgroSuite - Windows launcher
 REM
-REM  Na primeira execucao cria um ambiente virtual e instala as
-REM  dependencias. Nas seguintes, apenas sobe o app.
+REM  On the first run it creates a virtual environment and installs the
+REM  dependencies. After that it just starts the app.
 REM ---------------------------------------------------------------------
 setlocal
 cd /d "%~dp0"
@@ -13,15 +13,15 @@ set PY=%VENV%\Scripts\python.exe
 
 if not exist "%PY%" (
     echo.
-    echo  Primeira execucao: preparando o ambiente. Isso leva alguns minutos.
+    echo  First run: setting up the environment. This takes a few minutes.
     echo.
     where py >nul 2>nul
     if %errorlevel%==0 ( py -3 -m venv "%VENV%" ) else ( python -m venv "%VENV%" )
     if errorlevel 1 (
         echo.
-        echo  Nao foi possivel criar o ambiente virtual.
-        echo  Instale o Python 3.10 ou mais novo em https://www.python.org/downloads/
-        echo  marcando "Add Python to PATH" durante a instalacao.
+        echo  Could not create the virtual environment.
+        echo  Install Python 3.10 or newer from https://www.python.org/downloads/
+        echo  and tick "Add Python to PATH" during installation.
         echo.
         pause
         exit /b 1
@@ -30,7 +30,7 @@ if not exist "%PY%" (
     "%PY%" -m pip install -r requirements.txt
     if errorlevel 1 (
         echo.
-        echo  Falha ao instalar as dependencias. Verifique a conexao e tente de novo.
+        echo  Failed to install the dependencies. Check your connection and try again.
         echo.
         pause
         exit /b 1

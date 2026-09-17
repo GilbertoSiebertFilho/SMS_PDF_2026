@@ -1,9 +1,9 @@
-/* Mapa e camada de pontos.
+/* Map and point layer.
  *
- * Os pontos não viram marcadores do Leaflet: um mapa de colheita tem dezenas
- * de milhares deles, e um elemento de DOM por ponto trava o navegador. Em vez
- * disso, um canvas sobreposto ao mapa é redesenhado a cada movimento,
- * projetando as coordenadas com a própria matemática do Leaflet. */
+ * The points do not become Leaflet markers: a yield map has tens of thousands
+ * of them, and one DOM element per point locks up the browser. Instead a canvas
+ * laid over the map is redrawn on every move, projecting the coordinates with
+ * Leaflet's own maths. */
 
 const MapView = (() => {
   let map = null;
@@ -15,9 +15,9 @@ const MapView = (() => {
   let colorScale = null;
   let pointSize = 3;
 
-  /* Rampa divergente-quente, legível em tema claro e escuro e distinguível
-   * por quem não enxerga verde e vermelho como cores separadas: a
-   * luminosidade cresce de forma monótona do mínimo ao máximo. */
+  /* A cool-to-warm ramp, legible in both light and dark themes and readable by
+   * people who do not see green and red as separate colours: luminance rises
+   * monotonically from the minimum to the maximum. */
   const RAMP = [
     [ 49,  54, 149],
     [ 69, 117, 180],
@@ -85,9 +85,9 @@ const MapView = (() => {
     ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
   }
 
-  /* Alimenta a camada de pontos. ``convert`` traduz o valor interno para a
-   * unidade escolhida — a escala de cor é calculada já na unidade exibida,
-   * para que a legenda e as cores contem a mesma história. */
+  /* Feed the point layer. `convert` translates the internal value into the
+   * chosen unit — the colour scale is computed in the displayed unit, so the
+   * legend and the colours tell the same story. */
   function setPoints(payload, convert) {
     data = payload;
     const scale = payload?.scale;
@@ -146,7 +146,7 @@ const MapView = (() => {
     ctx.globalAlpha = 1;
   }
 
-  /* Polígonos (contorno, faixas de ensaio, grade de prescrição). */
+  /* Polygons: boundary, trial strips, prescription grid. */
   function setPolygons(rings, options = {}) {
     if (!overlayGroup) return;
     overlayGroup.clearLayers();
@@ -164,8 +164,8 @@ const MapView = (() => {
     }
   }
 
-  /* Faixas do ensaio, coloridas por dose, com rótulo ao clicar. */
-  function setFeatures(collection, rateProperty = "dose") {
+  /* Trial strips, coloured by rate, labelled on click. */
+  function setFeatures(collection, rateProperty = "rate") {
     if (!overlayGroup) return;
     overlayGroup.clearLayers();
     if (!collection?.features?.length) return;
@@ -195,8 +195,8 @@ const MapView = (() => {
     return { min, max };
   }
 
-  /* Linha AB sobre o que já está desenhado, com os marcadores A e B: é a
-   * conferência visual de que a direção da linha bate com a das faixas. */
+  /* An AB line over whatever is already drawn, with A and B markers: the visual
+   * check that the line's direction matches the strips'. */
   function addLine(points, label) {
     if (!overlayGroup || !points?.length) return;
     const latlngs = points.map(([lon, lat]) => [lat, lon]);
@@ -204,7 +204,7 @@ const MapView = (() => {
       .getPropertyValue("--text").trim();
 
     L.polyline(latlngs, { color: accent, weight: 3, opacity: 0.9, dashArray: "10 6" })
-      .bindTooltip(label || "Linha AB", { permanent: false })
+      .bindTooltip(label || "AB line", { permanent: false })
       .addTo(overlayGroup);
 
     for (const [index, name] of [[0, "A"], [latlngs.length - 1, "B"]]) {

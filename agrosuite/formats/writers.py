@@ -1,18 +1,18 @@
-"""Escrita de arquivos para levar de volta ao monitor.
+"""Writing files to take back to the monitor.
 
-Cada plataforma tem suas manias, e a maioria delas são pequenas — mas
-suficientes para o monitor recusar o arquivo no meio da lavoura:
+Every platform has its quirks, and most of them are small — but enough for
+the monitor to refuse the file in the middle of the field:
 
-* O DBF do shapefile limita nomes de campo a **10 caracteres**. Nomes mais
-  longos são truncados em silêncio pela biblioteca, e dois campos podem
-  colidir; aqui o truncamento é feito de forma controlada e reportada.
-* Cada monitor procura a dose num nome de campo diferente. O exportador
-  grava o campo com o nome que a plataforma escolhida espera e, por
-  segurança, repete o valor num campo ``RATE`` genérico.
-* Prescrição precisa ser **polígono**, não ponto. Quando a origem é um
-  conjunto de pontos, as células são geradas como grade.
-* O ISOXML exige a grade completa e retangular, com zeros onde não há
-  aplicação.
+* A shapefile's DBF limits field names to **10 characters**. Longer names get
+  truncated silently by the library, and two fields can collide; here the
+  truncation is done deliberately and reported.
+* Each monitor looks for the rate under a different field name. The exporter
+  writes the field under the name the chosen platform expects and, for
+  safety, repeats the value in a generic ``RATE`` field.
+* A prescription must be **polygons**, not points. When the source is a set
+  of points, the cells are generated as a grid.
+* ISOXML demands a complete rectangular grid, with zeros where nothing is
+  applied.
 """
 
 from __future__ import annotations
@@ -31,7 +31,7 @@ from ..core.crs import WGS84
 from ..core.dataset import Dataset
 from . import isoxml as isoxml_mod
 
-#: Nome do campo de dose esperado por cada plataforma no shapefile de Rx.
+#: Rate field name each platform expects in an Rx shapefile.
 RATE_FIELD_BY_BRAND = {
     "john_deere": "RATE",
     "ag_leader": "RATE",
@@ -47,17 +47,17 @@ RATE_FIELD_BY_BRAND = {
     "generic": "RATE",
 }
 
-#: Limite de caracteres de um nome de campo no formato DBF.
+#: Character limit for a field name in the DBF format.
 DBF_FIELD_LIMIT = 10
 
 
 def safe_field_names(columns: list[str]) -> tuple[dict[str, str], list[str]]:
-    """Trunca nomes para o limite do DBF resolvendo colisões.
+    """Truncate names to the DBF limit, resolving collisions.
 
     Returns
     -------
-    (mapa, avisos)
-        ``mapa`` leva do nome original ao nome gravado.
+    (mapping, warnings)
+        ``mapping`` goes from the original name to the written one.
     """
     mapping: dict[str, str] = {}
     used: set[str] = set()
@@ -72,14 +72,14 @@ def safe_field_names(columns: list[str]) -> tuple[dict[str, str], list[str]]:
                     name = candidate
                     break
         if name != str(column):
-            warnings.append(f"Campo '{column}' gravado como '{name}' (limite do DBF).")
+            warnings.append(f"Field '{column}' written as '{name}' (DBF limit).")
         mapping[column] = name
         used.add(name)
     return mapping, warnings
 
 
 # ==========================================================================
-# Saídas genéricas
+# Generic outputs
 # ==========================================================================
 
 def write_vector(
@@ -88,7 +88,7 @@ def write_vector(
     driver: str | None = None,
     columns: list[str] | None = None,
 ) -> dict[str, Any]:
-    """Grava um dataset como shapefile, GeoPackage ou GeoJSON."""
+    """Write a dataset as a shapefile, GeoPackage or GeoJSON."""
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     gdf = dataset.to_geodataframe()
@@ -97,7 +97,7 @@ def write_vector(
         keep = [c for c in columns if c in gdf.columns]
         gdf = gdf[keep + [gdf.geometry.name]]
 
-    # Datas viram texto: o DBF não tem tipo datetime.
+    # Dates become text: DBF has no datetime type.
     for column in gdf.columns:
         if pd.api.types.is_datetime64_any_dtype(gdf[column]):
             gdf[column] = gdf[column].dt.strftime("%Y-%m-%d %H:%M:%S")
@@ -119,7 +119,7 @@ def write_vector(
 
 
 def write_csv(dataset: Dataset, path: Path, columns: list[str] | None = None) -> dict[str, Any]:
-    """Grava a tabela em CSV, com latitude e longitude à frente."""
+    """Write the table as CSV, with latitude and longitude first."""
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     df = dataset.df
@@ -132,7 +132,7 @@ def write_csv(dataset: Dataset, path: Path, columns: list[str] | None = None) ->
 
 
 def write_geojson(features: dict[str, Any], path: Path) -> dict[str, Any]:
-    """Grava uma ``FeatureCollection`` já montada."""
+    """Write an already-assembled ``FeatureCollection``."""
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(features, ensure_ascii=False), encoding="utf-8")
@@ -140,11 +140,11 @@ def write_geojson(features: dict[str, Any], path: Path) -> dict[str, Any]:
 
 
 # ==========================================================================
-# Prescrição
+# Prescription
 # ==========================================================================
 
-def features_to_geodataframe(features: dict[str, Any], rate_property: str = "dose"):
-    """Converte a ``FeatureCollection`` de prescrição em ``GeoDataFrame``."""
+def features_to_geodataframe(features: dict[str, Any], rate_property: str = "rate"):
+    """Convert the prescription ``FeatureCollection`` into a ``GeoDataFrame``."""
     import geopandas as gpd
     from shapely.geometry import shape
 
@@ -161,7 +161,7 @@ def features_to_geodataframe(features: dict[str, Any], rate_property: str = "dos
 
     if not rows:
         raise ValueError(
-            f"Nenhuma feição com a propriedade de dose '{rate_property}' foi encontrada."
+            f"No feature carrying the rate property '{rate_property}' was found."
         )
     return gpd.GeoDataFrame(pd.DataFrame(rows), geometry=geometries, crs=WGS84)
 
@@ -170,17 +170,30 @@ def write_prescription_shapefile(
     features: dict[str, Any],
     path: Path,
     brand: str = "generic",
-    rate_property: str = "dose",
+    rate_property: str = "rate",
     rate_unit: str = "kg/ha",
     product: str | None = None,
 ) -> dict[str, Any]:
-    """Grava a prescrição como shapefile de polígonos, pronto para o monitor."""
+    """Write the prescription as a polygon shapefile, ready for the monitor."""
     gdf = features_to_geodataframe(features, rate_property)
     field_name = RATE_FIELD_BY_BRAND.get(brand, "RATE")
 
-    gdf[field_name] = pd.to_numeric(gdf[rate_property], errors="coerce").round(3)
-    if "RATE" not in gdf.columns:
-        gdf["RATE"] = gdf[field_name]
+    rate_values = pd.to_numeric(gdf[rate_property], errors="coerce").round(3)
+
+    # DBF field names are case-insensitive, so a source property called "rate"
+    # would collide with the monitor's "RATE" field and the driver would
+    # silently rename one of them to RATE_1 — which is exactly the field the
+    # monitor would then fail to find. Drop the source column and write the
+    # value only under the names the monitor expects.
+    written = {field_name.upper(), "RATE", "UNIT"}
+    if product:
+        written.add("PRODUCT")
+    gdf = gdf.drop(columns=[c for c in gdf.columns
+                            if c != gdf.geometry.name and c.upper() in written])
+
+    gdf[field_name] = rate_values
+    if field_name.upper() != "RATE":
+        gdf["RATE"] = rate_values
     gdf["UNIT"] = rate_unit[:10]
     if product:
         gdf["PRODUCT"] = str(product)[:32]
@@ -202,14 +215,14 @@ def write_prescription_shapefile(
 
 def rasterize_prescription(
     features: dict[str, Any],
-    rate_property: str = "dose",
+    rate_property: str = "rate",
     cell_m: float = 10.0,
 ) -> dict[str, Any]:
-    """Converte polígonos de prescrição numa grade regular em graus.
+    """Convert prescription polygons into a regular grid in degrees.
 
-    O ISOXML só aceita grade retangular alinhada aos eixos, em coordenadas
-    geográficas. As células fora de qualquer polígono recebem zero, que é
-    como o terminal entende "não aplicar aqui".
+    ISOXML only accepts an axis-aligned rectangular grid in geographic
+    coordinates. Cells outside every polygon get zero, which is how the
+    terminal understands "apply nothing here".
     """
     from shapely.geometry import box
     from shapely.strtree import STRtree
@@ -228,11 +241,11 @@ def rasterize_prescription(
     cols = max(1, int(np.ceil((max_lon - min_lon) / cell_lon)))
     rows = max(1, int(np.ceil((max_lat - min_lat) / cell_lat)))
 
-    # Uma grade absurda costuma ser célula pequena demais para o talhão.
+    # An absurd grid usually means the cell is far too small for the field.
     if rows * cols > 4_000_000:
         raise ValueError(
-            f"A grade resultaria em {rows * cols:,} células. Aumente o tamanho da "
-            "célula para gerar um arquivo que o terminal consiga carregar."
+            f"The grid would come to {rows * cols:,} cells. Increase the cell size to "
+            "produce a file the terminal can actually load."
         )
 
     grid = np.zeros((rows, cols), dtype="float64")
@@ -254,7 +267,7 @@ def rasterize_prescription(
                 area = intersection.area
                 if area > best_area:
                     best_area, best_rate = area, float(rates[index])
-            # Só aplica onde o polígono cobre a maior parte da célula.
+            # Only apply where the polygon covers most of the cell.
             grid[row, col] = best_rate if best_area > cell.area * 0.5 else 0.0
 
     return {
@@ -273,14 +286,14 @@ def rasterize_prescription(
 def write_prescription_isoxml(
     features: dict[str, Any],
     out_dir: Path,
-    rate_property: str = "dose",
+    rate_property: str = "rate",
     rate_kind: str = "mass",
     cell_m: float = 10.0,
-    task_name: str = "Prescricao",
-    field_name: str = "Talhao",
-    product_name: str = "Produto",
+    task_name: str = "Prescription",
+    field_name: str = "Field",
+    product_name: str = "Product",
 ) -> dict[str, Any]:
-    """Grava a prescrição como pasta TASKDATA para terminal ISOBUS."""
+    """Write the prescription as a TASKDATA folder for an ISOBUS terminal."""
     raster = rasterize_prescription(features, rate_property, cell_m)
     boundary = _outer_ring(features)
 
@@ -309,7 +322,7 @@ def write_prescription_isoxml(
 
 
 def _outer_ring(features: dict[str, Any]) -> list[tuple[float, float]] | None:
-    """Contorno externo do conjunto de polígonos, para o cadastro do talhão."""
+    """Outer boundary of the polygon set, for the field registry."""
     from shapely.geometry import shape
     from shapely.ops import unary_union
 
@@ -329,12 +342,12 @@ def _outer_ring(features: dict[str, Any]) -> list[tuple[float, float]] | None:
 def write_prescription_csv(
     features: dict[str, Any],
     path: Path,
-    rate_property: str = "dose",
+    rate_property: str = "rate",
 ) -> dict[str, Any]:
-    """Grava a prescrição como CSV de centroides — o formato de recurso.
+    """Write the prescription as a CSV of centroids — the fallback format.
 
-    Alguns controladores antigos não leem shapefile nem ISOXML, mas
-    importam uma tabela de pontos com dose.
+    Some older controllers read neither shapefile nor ISOXML, but will import
+    a table of points carrying a rate.
     """
     gdf = features_to_geodataframe(features, rate_property)
     centroids = gdf.geometry.representative_point()
@@ -353,7 +366,7 @@ def write_prescription_csv(
 
 
 def bundle(paths: list[Path], zip_path: Path) -> dict[str, Any]:
-    """Empacota os arquivos gerados num ZIP para levar no pen drive."""
+    """Bundle the generated files into a ZIP to carry on the stick."""
     zip_path = Path(zip_path)
     zip_path.parent.mkdir(parents=True, exist_ok=True)
     added: list[str] = []
@@ -369,7 +382,7 @@ def bundle(paths: list[Path], zip_path: Path) -> dict[str, Any]:
             elif item.exists():
                 archive.write(item, item.name)
                 added.append(item.name)
-                # Shapefile é um conjunto: sem os acompanhantes ele não abre.
+                # A shapefile is a set: without its companions it will not open.
                 if item.suffix.lower() == ".shp":
                     for ext in (".shx", ".dbf", ".prj", ".cpg"):
                         sidecar = item.with_suffix(ext)
@@ -381,7 +394,7 @@ def bundle(paths: list[Path], zip_path: Path) -> dict[str, Any]:
 
 
 # ==========================================================================
-# Pacote pronto para o monitor
+# Ready-to-load package for the monitor
 # ==========================================================================
 
 def build_package(
@@ -391,23 +404,23 @@ def build_package(
     boundary: list[tuple[float, float]] | None = None,
     guidance_lines: list[dict[str, Any]] | None = None,
     dataset: Dataset | None = None,
-    rate_property: str = "dose",
+    rate_property: str = "rate",
     rate_kind: str = "mass",
     rate_unit: str = "kg/ha",
     cell_m: float = 10.0,
-    field_name: str = "Talhao",
-    task_name: str = "Prescricao",
-    product_name: str = "Produto",
+    field_name: str = "Field",
+    task_name: str = "Prescription",
+    product_name: str = "Product",
     customer_name: str = "AgroSuite",
-    farm_name: str = "Fazenda",
+    farm_name: str = "Farm",
 ) -> dict[str, Any]:
-    """Monta a pasta que vai para o pen drive, no arranjo que o monitor espera.
+    """Assemble the folder that goes on the stick, laid out as the monitor expects.
 
-    Junta num só lugar tudo que a máquina precisa para executar o trabalho:
-    contorno do talhão, linhas de orientação e prescrição. O que a plataforma
-    escolhida não aceita é simplesmente omitido, e isso vai registrado no
-    resultado — é melhor o usuário saber que o Ag Leader não recebeu as linhas
-    AB do que descobrir na cabine.
+    It gathers in one place everything the machine needs to run the job: field
+    boundary, guidance lines and prescription. Whatever the chosen platform
+    does not accept is simply left out, and that is recorded in the result —
+    better for the user to know Ag Leader did not get the AB lines than to
+    find out in the cab.
 
     Returns
     -------
@@ -465,11 +478,11 @@ def build_package(
         )
         parts = []
         if iso_boundary:
-            parts.append("contorno")
+            parts.append("boundary")
         if iso_guidance:
-            parts.append(f"{len(iso_guidance)} linha(s) AB")
+            parts.append(f"{len(iso_guidance)} AB line(s)")
         if iso_prescription:
-            parts.append("prescrição em grade")
+            parts.append("grid prescription")
         contents.append({
             "artifact": "isoxml",
             "path": str(Path(taskdata).relative_to(out_dir)),
@@ -489,7 +502,7 @@ def build_package(
         contents.append({
             "artifact": "prescription",
             "path": str(Path(info["path"]).relative_to(out_dir)),
-            "detail": f"{info['features']} polígonos, campo {rate_field}",
+            "detail": f"{info['features']} polygons, field {rate_field}",
             "absolute": info["path"],
         })
 
@@ -506,7 +519,7 @@ def build_package(
         contents.append({
             "artifact": "boundary",
             "path": str(path.relative_to(out_dir)),
-            "detail": "polígono do talhão",
+            "detail": "field polygon",
             "absolute": str(path),
         })
 
@@ -517,7 +530,7 @@ def build_package(
         contents.append({
             "artifact": "prescription",
             "path": str(path.relative_to(out_dir)),
-            "detail": f"{len(prescription.get('features', []))} feições",
+            "detail": f"{len(prescription.get('features', []))} features",
             "absolute": str(path),
         })
 
@@ -529,23 +542,23 @@ def build_package(
         contents.append({
             "artifact": "data",
             "path": str(path.relative_to(out_dir)),
-            "detail": f"{info['features']} pontos",
+            "detail": f"{info['features']} points",
             "absolute": info["path"],
         })
 
-    # ----------------------------------------------------- o que ficou de fora
+    # ---------------------------------------------------- what was left out
     for artifact, value in (("prescription", prescription), ("boundary", boundary),
                             ("guidance", guidance_lines), ("data", dataset)):
         if value is not None and artifact not in profile.accepts:
             skipped.append(
-                f"{packages_mod.ARTIFACT_LABELS[artifact]}: o "
-                f"{profile.label} não recebe este tipo de arquivo por esta via."
+                f"{packages_mod.ARTIFACT_LABELS[artifact]}: the {profile.label} does "
+                "not take this kind of file through this route."
             )
     if guidance_lines and "guidance" in profile.accepts and not wants_isoxml:
         skipped.append(
-            "Linhas de orientação: esta plataforma recebe linhas AB por ISOXML, "
-            "que não faz parte do arranjo preferido dela. Gere o pacote ISOBUS "
-            "genérico se precisar levar as linhas."
+            "Guidance lines: this platform receives AB lines through ISOXML, which is "
+            "not part of its preferred layout. Build the generic ISOBUS package if you "
+            "need to carry the lines."
         )
 
     readme = packages_mod.write_readme(out_dir, profile, contents, rate_field, rate_unit)
@@ -561,17 +574,17 @@ def build_package(
 
 
 def _slug(text: str) -> str:
-    """Nome de arquivo seguro: sem acento, espaço nem caractere especial."""
+    """Safe filename: no accents, spaces or special characters."""
     import unicodedata
 
     normalized = unicodedata.normalize("NFKD", str(text))
     ascii_only = "".join(c for c in normalized if not unicodedata.combining(c))
     safe = "".join(c if c.isalnum() or c in "-_" else "_" for c in ascii_only)
-    return safe.strip("_") or "arquivo"
+    return safe.strip("_") or "file"
 
 
 def _boundary_collection(ring: list[tuple[float, float]], name: str) -> dict[str, Any]:
-    """Empacota um anel de contorno como ``FeatureCollection``."""
+    """Wrap a boundary ring as a ``FeatureCollection``."""
     closed = [list(p) for p in ring]
     if closed and closed[0] != closed[-1]:
         closed.append(closed[0])

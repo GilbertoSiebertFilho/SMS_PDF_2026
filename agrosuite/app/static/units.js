@@ -1,22 +1,22 @@
-/* Conversão e formatação de unidades no cliente.
+/* Unit conversion and formatting, on the client.
  *
- * O servidor fala sempre em unidades internas (kg/ha, ha, m, km/h, kg). Toda
- * a conversão para o que o usuário escolheu acontece aqui, na hora de
- * exibir — assim nenhum número guardado depende da preferência da tela, e
- * trocar de acre para hectare não exige recarregar nada. */
+ * The server always speaks internal units (kg/ha, ha, m, km/h, kg). Every
+ * conversion to what the user picked happens here, at display time — so no
+ * stored number depends on a screen preference, and switching from acres to
+ * hectares requires no reload. */
 
 const Units = (() => {
   let catalog = null;
   let prefs = null;
 
-  /* Peso de teste do bushel, em kg, por cultura. Vem do servidor. */
+  /* Bushel test weight in kg, per crop. Comes from the server. */
   function bushelKg(cropKey) {
     const crop = (catalog?.crops || []).find((c) => c.key === cropKey);
     return crop ? crop.bushel_kg : 25.4012;
   }
 
-  /* Fator que leva a unidade escolhida à interna. O bushel é resolvido aqui
-   * porque depende da cultura, que o usuário pode trocar a qualquer momento. */
+  /* Factor taking the chosen unit to the internal one. Bushels are resolved
+   * here because they depend on the crop, which the user can change at any time. */
   function factor(group, unitKey) {
     const info = catalog?.groups?.[group];
     if (!info) return 1;
@@ -49,7 +49,7 @@ const Units = (() => {
     return entry ? entry.symbol : "$";
   }
 
-  /* --- conversões nomeadas, uma por grandeza exibida na interface --- */
+  /* --- named conversions, one per quantity shown in the interface --- */
 
   const convert = {
     yield: (v) => (v == null ? null : v / factor("rate_mass", prefs.yield_unit)),
@@ -60,7 +60,7 @@ const Units = (() => {
     mass: (v) => (v == null ? null : v / factor("mass", prefs.mass_unit)),
   };
 
-  /* Caminho inverso: da unidade da tela para a interna, ao enviar ao servidor. */
+  /* The other direction: screen unit to internal, on the way to the server. */
   const toInternal = {
     yield: (v) => (v == null ? null : v * factor("rate_mass", prefs.yield_unit)),
     inputRate: (v) => (v == null ? null : v * factor("rate_mass", prefs.input_rate_unit)),
@@ -78,16 +78,16 @@ const Units = (() => {
     mass: () => prefs.mass_unit,
   };
 
-  /* Operações em que a variável principal é produção colhida. Em todas as
-   * outras — aplicação, plantio, prescrição — ela é dose de insumo, e sair
-   * mostrando lb/ac de fertilizante como bu/ac de grão é erro grosseiro. */
+  /* Operations where the main variable is harvested production. In every other
+   * one — application, seeding, prescription — it is an input rate, and showing
+   * lb/ac of fertilizer as bu/ac of grain would be a gross error. */
   const YIELD_OPERATIONS = new Set(["harvest"]);
 
-  /* Escolhe a conversão certa a partir do nome canônico da coluna e do tipo
-   * de operação do dataset. */
+  /* Pick the right conversion from the canonical column name and the dataset's
+   * operation type. */
   function forColumn(column, operation) {
     const isYield = operation == null
-      ? true                              // sem contexto, rendimento é o padrão
+      ? true                              // with no context, yield is the default
       : YIELD_OPERATIONS.has(operation);
     switch (column) {
       case "value":
@@ -110,18 +110,18 @@ const Units = (() => {
     }
   }
 
-  /* Formatação numérica em português, com casas decimais proporcionais à
-   * magnitude — 0,84 precisa de duas casas; 12.553 não precisa de nenhuma. */
+  /* Number formatting with decimal places proportional to magnitude — 0.84
+   * needs two places; 12,553 needs none. */
   function num(value, decimals) {
     if (value == null || !isFinite(value)) return "—";
     let places = decimals;
     if (places == null) {
       const abs = Math.abs(value);
-      // Zero exato não ganha casas decimais: "0,000" numa tabela de doses
-      // sugere precisão que não existe.
+      // An exact zero gets no decimals: "0.000" in a rate table suggests a
+      // precision that is not there.
       places = abs === 0 ? 0 : abs >= 1000 ? 0 : abs >= 100 ? 1 : abs >= 1 ? 2 : 3;
     }
-    return value.toLocaleString("pt-BR", {
+    return value.toLocaleString("en-CA", {
       minimumFractionDigits: places,
       maximumFractionDigits: places,
     });
@@ -132,7 +132,7 @@ const Units = (() => {
     return `${currencySymbol()} ${num(value, decimals)}`;
   }
 
-  /* Valor com unidade, já convertido a partir do interno. */
+  /* Value with its unit, already converted from the internal one. */
   function show(value, kind, decimals) {
     const converted = convert[kind] ? convert[kind](value) : value;
     const unit = label[kind] ? label[kind]() : "";
@@ -140,9 +140,9 @@ const Units = (() => {
   }
 
 
-  /* Massa (kg) e área (ha) por trás de uma unidade de dose como "bu/ac".
-   * Preço é sempre cotado pelo numerador — dólar por bushel, por libra, por
-   * saca — então converter um preço exige separar as duas metades. */
+  /* The mass (kg) and area (ha) behind a rate unit such as "bu/ac". A price is
+   * always quoted per numerator — dollars per bushel, per pound — so converting
+   * one means splitting the two halves apart. */
   const MASS_PART = { kg: 1, t: 1000, sc: 60, lb: 0.45359237, g: 0.001, bu: null };
   const AREA_PART = { ha: 1, ac: 0.40468564224, alq: 2.42, m2: 1e-4 };
 
@@ -155,7 +155,7 @@ const Units = (() => {
     return { massKg: mass, areaHa: AREA_PART[den] ?? null };
   }
 
-  /* Preço cotado por unidade do numerador -> preço por kg (interno). */
+  /* Price quoted per numerator unit -> price per kg (internal). */
   function priceToInternal(price, rateUnitKey) {
     const { massKg } = rateUnitParts(rateUnitKey);
     return massKg ? price / massKg : price;
@@ -166,7 +166,7 @@ const Units = (() => {
     return massKg ? pricePerKg * massKg : pricePerKg;
   }
 
-  /* Rótulo do numerador, para escrever "US$ / bu" no formulário. */
+  /* The numerator's label, for writing "C$ / bu" on the form. */
   function rateNumerator(unitKey) {
     return String(unitKey || "").split("/")[0] || "";
   }

@@ -1,25 +1,25 @@
-"""Conversão de unidades agrícolas.
+"""Agricultural unit conversion.
 
-Os monitores exportam a mesma grandeza em unidades diferentes conforme o
-país e a configuração da máquina. Aqui tudo é convertido para o sistema
-métrico interno do AgroSuite:
+Monitors export the same quantity in different units depending on the
+country and on how the machine was configured. Everything here is converted
+to AgroSuite's internal metric system:
 
 ===================  ==========================
-Grandeza             Unidade interna
+Quantity             Internal unit
 ===================  ==========================
-Rendimento           kg/ha
-Dose aplicada        kg/ha (ou sementes/ha)
-Velocidade           km/h
-Largura / distância  m
-Área                 ha
-Massa                kg
+Yield                kg/ha
+Applied rate         kg/ha (or seeds/ha)
+Speed                km/h
+Width / distance     m
+Area                 ha
+Mass                 kg
 ===================  ==========================
 """
 
 from __future__ import annotations
 
 # --------------------------------------------------------------------------
-# Fatores lineares (valor_interno = valor_bruto * fator)
+# Linear factors (internal_value = raw_value * factor)
 # --------------------------------------------------------------------------
 
 LENGTH_TO_M = {
@@ -41,18 +41,18 @@ AREA_TO_HA = {
     "ha": 1.0, "hectare": 1.0, "hectares": 1.0,
     "ac": 0.40468564224, "acre": 0.40468564224, "acres": 0.40468564224,
     "m2": 1e-4, "m^2": 1e-4, "sqm": 1e-4,
-    "alq": 2.42, "alqueire": 2.42,  # alqueire paulista
+    "alq": 2.42, "alqueire": 2.42,  # Brazilian alqueire paulista
 }
 
 MASS_TO_KG = {
     "kg": 1.0, "quilo": 1.0, "quilos": 1.0,
     "g": 0.001, "t": 1000.0, "ton": 1000.0, "tonne": 1000.0, "tonelada": 1000.0,
     "lb": 0.45359237, "lbs": 0.45359237, "pound": 0.45359237,
-    "sc": 60.0, "saca": 60.0, "sacas": 60.0,  # saca brasileira padrão de 60 kg
+    "sc": 60.0, "saca": 60.0, "sacas": 60.0,  # 60 kg Brazilian bag
 }
 
-#: Peso de teste padrão (kg por bushel) — necessário porque o bushel é uma
-#: unidade de volume e a conversão depende da cultura.
+#: Standard test weight (kg per bushel). Needed because a bushel measures
+#: volume, so the conversion depends on the crop.
 BUSHEL_KG = {
     "corn": 25.4012, "milho": 25.4012, "maize": 25.4012,
     "soybean": 27.2155, "soybeans": 27.2155, "soja": 27.2155,
@@ -68,15 +68,15 @@ BUSHEL_KG = {
     "flax": 25.4012, "linho": 25.4012,
     "rye": 25.4012, "centeio": 25.4012,
 }
-DEFAULT_BUSHEL_KG = 25.4012  # milho, usado quando a cultura é desconhecida
+DEFAULT_BUSHEL_KG = 25.4012  # corn, used when the crop is unknown
 
-#: Rótulos amigáveis para as unidades de saída mais usadas.
+#: Friendly labels for the most common output units.
 YIELD_UNITS = {
     "kg/ha": 1.0,
     "t/ha": 0.001,
     "sc/ha": 1.0 / 60.0,
     "lb/ac": 1.0 / (0.45359237 / 0.40468564224),
-    "bu/ac": None,  # depende da cultura; tratado em ``yield_to``
+    "bu/ac": None,  # crop dependent; handled in ``yield_to``
 }
 
 
@@ -85,35 +85,35 @@ def _key(unit: str | None) -> str:
 
 
 def length_to_m(value: float, unit: str) -> float:
-    """Converte comprimento para metros."""
+    """Convert a length to metres."""
     return value * LENGTH_TO_M.get(_key(unit), 1.0)
 
 
 def speed_to_kmh(value: float, unit: str) -> float:
-    """Converte velocidade para km/h."""
+    """Convert a speed to km/h."""
     return value * SPEED_TO_KMH.get(_key(unit), 1.0)
 
 
 def area_to_ha(value: float, unit: str) -> float:
-    """Converte área para hectares."""
+    """Convert an area to hectares."""
     return value * AREA_TO_HA.get(_key(unit), 1.0)
 
 
 def mass_to_kg(value: float, unit: str) -> float:
-    """Converte massa para quilogramas."""
+    """Convert a mass to kilograms."""
     return value * MASS_TO_KG.get(_key(unit), 1.0)
 
 
 def bushel_kg(crop: str | None) -> float:
-    """Peso de um bushel da cultura informada, em kg."""
+    """Weight of one bushel of the given crop, in kg."""
     return BUSHEL_KG.get(_key(crop), DEFAULT_BUSHEL_KG)
 
 
 def yield_factor_to_kg_ha(unit: str, crop: str | None = None) -> float:
-    """Fator multiplicativo que leva uma unidade de rendimento a kg/ha.
+    """Multiplier taking a yield unit to kg/ha.
 
-    Aceita as formas ``massa/area`` mais comuns dos monitores, incluindo
-    ``bu/ac`` (convertida via peso de teste da cultura) e ``sc/ha``.
+    Accepts the common ``mass/area`` forms monitors use, including ``bu/ac``
+    (converted through the crop's test weight) and ``sc/ha``.
     """
     key = _key(unit)
     if not key:
@@ -137,18 +137,18 @@ def yield_factor_to_kg_ha(unit: str, crop: str | None = None) -> float:
 
 
 def yield_to(value_kg_ha: float, unit: str, crop: str | None = None) -> float:
-    """Converte de kg/ha (interno) para a unidade de exibição pedida."""
+    """Convert from kg/ha (internal) to the requested display unit."""
     factor = yield_factor_to_kg_ha(unit, crop)
     return value_kg_ha / factor if factor else value_kg_ha
 
 
 def guess_speed_unit(values) -> str:
-    """Infere a unidade de velocidade a partir da magnitude da série.
+    """Infer the speed unit from the magnitude of the series.
 
-    Colheitadeiras e pulverizadores trabalham entre ~2 e ~25 km/h. Se a
-    mediana observada fica abaixo de 4, os dados quase certamente estão em
-    m/s; acima de 40, em algo já convertido erroneamente. Entre 4 e 20 é
-    ambíguo entre km/h e mph, e aí km/h é o padrão seguro (não altera nada).
+    Combines and sprayers work between roughly 2 and 25 km/h. If the observed
+    median falls below 4, the data is almost certainly in m/s. Between 4 and
+    20 it is ambiguous between km/h and mph, and km/h is the safe default
+    because it changes nothing.
     """
     import numpy as np
 
@@ -163,164 +163,164 @@ def guess_speed_unit(values) -> str:
 
 
 # ==========================================================================
-# Catálogo de unidades selecionáveis pela interface
+# Catalogue of units the interface can offer
 # ==========================================================================
-# O AgroSuite guarda tudo em métrico, mas nem o arquivo de origem nem o
-# usuário precisam falar métrico. O catálogo abaixo alimenta os seletores da
-# interface em dois momentos distintos:
+# AgroSuite stores everything in metric, but neither the source file nor the
+# user has to speak metric. The catalogue below feeds the interface pickers
+# at two distinct moments:
 #
-#   * **na importação**, para declarar em que unidade o monitor gravou;
-#   * **na exibição e na exportação**, para escolher em que unidade ler o
-#     resultado e gravar o arquivo de volta.
+#   * **on import**, to declare which unit the monitor wrote;
+#   * **on display and export**, to choose which unit to read the result in
+#     and to write back into the file.
 #
-# Cada entrada traz o fator que leva **da unidade para a interna**. Quem
-# exibe divide; quem importa multiplica.
+# Each entry carries the factor that takes **the unit to the internal one**.
+# Display divides by it; import multiplies by it.
 
-#: Unidades de rendimento e dose (interna: kg/ha).
-#: ``needs_crop`` marca as que dependem do peso de teste da cultura.
+#: Yield and rate units (internal: kg/ha).
+#: ``needs_crop`` marks those that depend on the crop's test weight.
 RATE_UNITS = [
     {"key": "kg/ha",     "label": "kg/ha",                   "factor": 1.0},
-    {"key": "t/ha",      "label": "t/ha (tonelada)",         "factor": 1000.0},
-    {"key": "sc/ha",     "label": "sc/ha (saca de 60 kg)",   "factor": 60.0},
-    {"key": "lb/ac",     "label": "lb/ac (libra por acre)",  "factor": 0.45359237 / 0.40468564224},
-    {"key": "bu/ac",     "label": "bu/ac (bushel por acre)", "factor": None, "needs_crop": True},
-    {"key": "g/m2",      "label": "g/m² (grama por metro²)", "factor": 10.0},
-    {"key": "kg/ac",     "label": "kg/ac",                   "factor": 1.0 / 0.40468564224},
-    {"key": "t/ac",      "label": "t/ac",                    "factor": 1000.0 / 0.40468564224},
-    {"key": "sc/alq",    "label": "sc/alqueire (60 kg)",     "factor": 60.0 / 2.42},
-    {"key": "kg/alq",    "label": "kg/alqueire",             "factor": 1.0 / 2.42},
+    {"key": "t/ha",      "label": "t/ha (tonne per hectare)", "factor": 1000.0},
+    {"key": "sc/ha",     "label": "sc/ha (60 kg bag)",        "factor": 60.0},
+    {"key": "lb/ac",     "label": "lb/ac (pound per acre)",   "factor": 0.45359237 / 0.40468564224},
+    {"key": "bu/ac",     "label": "bu/ac (bushel per acre)",  "factor": None, "needs_crop": True},
+    {"key": "g/m2",      "label": "g/m² (gram per square metre)", "factor": 10.0},
+    {"key": "kg/ac",     "label": "kg/ac",                    "factor": 1.0 / 0.40468564224},
+    {"key": "t/ac",      "label": "t/ac",                     "factor": 1000.0 / 0.40468564224},
+    {"key": "sc/alq",    "label": "sc/alqueire (60 kg bag)",  "factor": 60.0 / 2.42},
+    {"key": "kg/alq",    "label": "kg/alqueire",              "factor": 1.0 / 2.42},
 ]
 
-#: Unidades de volume por área — calda, fertilizante líquido (interna: L/ha).
+#: Volume per area units — spray solution, liquid fertilizer (internal: L/ha).
 VOLUME_RATE_UNITS = [
     {"key": "L/ha",   "label": "L/ha",                     "factor": 1.0},
-    {"key": "gal/ac", "label": "gal/ac (galão americano)",  "factor": 3.785411784 / 0.40468564224},
-    {"key": "gal/ha", "label": "gal/ha (galão americano)",  "factor": 3.785411784},
+    {"key": "gal/ac", "label": "gal/ac (US gallon)",  "factor": 3.785411784 / 0.40468564224},
+    {"key": "gal/ha", "label": "gal/ha (US gallon)",  "factor": 3.785411784},
     {"key": "L/ac",   "label": "L/ac",                      "factor": 1.0 / 0.40468564224},
     {"key": "mL/m2",  "label": "mL/m²",                     "factor": 10.0},
 ]
 
-#: Unidades de contagem por área — semeadura (interna: sementes/ha).
+#: Count per area units — seeding (internal: seeds/ha).
 COUNT_RATE_UNITS = [
-    {"key": "sementes/ha",  "label": "sementes/ha",          "factor": 1.0},
-    {"key": "sementes/ac",  "label": "sementes/ac (seeds/ac)", "factor": 1.0 / 0.40468564224},
-    {"key": "mil_sem/ha",   "label": "mil sementes/ha",      "factor": 1000.0},
-    {"key": "mil_sem/ac",   "label": "mil sementes/ac",      "factor": 1000.0 / 0.40468564224},
-    {"key": "sementes/m2",  "label": "sementes/m²",          "factor": 10_000.0},
+    {"key": "seeds/ha",   "label": "seeds/ha",              "factor": 1.0},
+    {"key": "seeds/ac",   "label": "seeds/ac",              "factor": 1.0 / 0.40468564224},
+    {"key": "kseeds/ha",  "label": "thousand seeds/ha",     "factor": 1000.0},
+    {"key": "kseeds/ac",  "label": "thousand seeds/ac",     "factor": 1000.0 / 0.40468564224},
+    {"key": "seeds/m2",   "label": "seeds/m²",              "factor": 10_000.0},
 ]
 
-#: Unidades de área (interna: ha).
+#: Area units (internal: ha).
 AREA_UNITS = [
-    {"key": "ha",  "label": "hectare (ha)",          "factor": 1.0},
-    {"key": "ac",  "label": "acre (ac)",             "factor": 0.40468564224},
-    {"key": "alq", "label": "alqueire paulista",     "factor": 2.42},
-    {"key": "m2",  "label": "metro quadrado (m²)",   "factor": 1e-4},
-    {"key": "km2", "label": "quilômetro² (km²)",     "factor": 100.0},
+    {"key": "ha",  "label": "hectare (ha)",       "factor": 1.0},
+    {"key": "ac",  "label": "acre (ac)",          "factor": 0.40468564224},
+    {"key": "alq", "label": "alqueire paulista",  "factor": 2.42},
+    {"key": "m2",  "label": "square metre (m²)",  "factor": 1e-4},
+    {"key": "km2", "label": "square kilometre (km²)", "factor": 100.0},
 ]
 
-#: Unidades de massa (interna: kg).
+#: Mass units (internal: kg).
 MASS_UNITS = [
-    {"key": "kg", "label": "quilograma (kg)",   "factor": 1.0},
-    {"key": "t",  "label": "tonelada (t)",      "factor": 1000.0},
-    {"key": "lb", "label": "libra (lb)",        "factor": 0.45359237},
-    {"key": "sc", "label": "saca de 60 kg",     "factor": 60.0},
-    {"key": "g",  "label": "grama (g)",         "factor": 0.001},
-    {"key": "bu", "label": "bushel",            "factor": None, "needs_crop": True},
+    {"key": "kg", "label": "kilogram (kg)",  "factor": 1.0},
+    {"key": "t",  "label": "tonne (t)",      "factor": 1000.0},
+    {"key": "lb", "label": "pound (lb)",     "factor": 0.45359237},
+    {"key": "sc", "label": "60 kg bag (sc)", "factor": 60.0},
+    {"key": "g",  "label": "gram (g)",       "factor": 0.001},
+    {"key": "bu", "label": "bushel",         "factor": None, "needs_crop": True},
 ]
 
-#: Unidades de velocidade (interna: km/h).
+#: Speed units (internal: km/h).
 SPEED_UNITS = [
     {"key": "km/h", "label": "km/h",             "factor": 1.0},
-    {"key": "mph",  "label": "mph (milha/hora)", "factor": 1.609344},
-    {"key": "m/s",  "label": "m/s",              "factor": 3.6},
-    {"key": "kn",   "label": "nó (knot)",        "factor": 1.852},
+    {"key": "mph",  "label": "mph (miles per hour)", "factor": 1.609344},
+    {"key": "m/s",  "label": "m/s",                  "factor": 3.6},
+    {"key": "kn",   "label": "knot",                 "factor": 1.852},
 ]
 
-#: Unidades de comprimento (interna: m).
+#: Length units (internal: m).
 LENGTH_UNITS = [
-    {"key": "m",  "label": "metro (m)",     "factor": 1.0},
-    {"key": "ft", "label": "pé (ft)",       "factor": 0.3048},
-    {"key": "in", "label": "polegada (in)", "factor": 0.0254},
-    {"key": "cm", "label": "centímetro (cm)", "factor": 0.01},
-    {"key": "yd", "label": "jarda (yd)",    "factor": 0.9144},
+    {"key": "m",  "label": "metre (m)",      "factor": 1.0},
+    {"key": "ft", "label": "foot (ft)",      "factor": 0.3048},
+    {"key": "in", "label": "inch (in)",      "factor": 0.0254},
+    {"key": "cm", "label": "centimetre (cm)", "factor": 0.01},
+    {"key": "yd", "label": "yard (yd)",      "factor": 0.9144},
 ]
 
-#: Unidades monetárias — só rótulo, sem conversão entre moedas.
+#: Currencies — label only, no conversion between them.
 CURRENCIES = [
-    {"key": "BRL", "label": "Real (R$)",   "symbol": "R$"},
-    {"key": "USD", "label": "Dólar (US$)", "symbol": "US$"},
-    {"key": "EUR", "label": "Euro (€)",    "symbol": "€"},
-    {"key": "CAD", "label": "Dólar canadense (C$)", "symbol": "C$"},
+    {"key": "CAD", "label": "Canadian dollar (C$)", "symbol": "C$"},
+    {"key": "USD", "label": "US dollar (US$)",      "symbol": "US$"},
+    {"key": "EUR", "label": "Euro (€)",             "symbol": "€"},
+    {"key": "BRL", "label": "Brazilian real (R$)",  "symbol": "R$"},
 ]
 
 UNIT_GROUPS = {
-    "rate_mass": {"label": "Rendimento / dose em massa", "internal": "kg/ha", "units": RATE_UNITS},
-    "rate_volume": {"label": "Dose em volume", "internal": "L/ha", "units": VOLUME_RATE_UNITS},
-    "rate_count": {"label": "Dose em contagem", "internal": "sementes/ha", "units": COUNT_RATE_UNITS},
-    "area": {"label": "Área", "internal": "ha", "units": AREA_UNITS},
-    "mass": {"label": "Massa", "internal": "kg", "units": MASS_UNITS},
-    "speed": {"label": "Velocidade", "internal": "km/h", "units": SPEED_UNITS},
-    "length": {"label": "Comprimento", "internal": "m", "units": LENGTH_UNITS},
+    "rate_mass": {"label": "Yield / rate by mass", "internal": "kg/ha", "units": RATE_UNITS},
+    "rate_volume": {"label": "Rate by volume", "internal": "L/ha", "units": VOLUME_RATE_UNITS},
+    "rate_count": {"label": "Rate by count", "internal": "seeds/ha", "units": COUNT_RATE_UNITS},
+    "area": {"label": "Area", "internal": "ha", "units": AREA_UNITS},
+    "mass": {"label": "Mass", "internal": "kg", "units": MASS_UNITS},
+    "speed": {"label": "Speed", "internal": "km/h", "units": SPEED_UNITS},
+    "length": {"label": "Length", "internal": "m", "units": LENGTH_UNITS},
 }
 
-#: Culturas com peso de teste conhecido, para as unidades em bushel.
+#: Crops with a known test weight, for the bushel-based units.
 CROP_CHOICES = [
-    {"key": "corn", "label": "Milho", "bushel_kg": BUSHEL_KG["corn"]},
-    {"key": "soybean", "label": "Soja", "bushel_kg": BUSHEL_KG["soybean"]},
-    {"key": "wheat", "label": "Trigo", "bushel_kg": BUSHEL_KG["wheat"]},
-    {"key": "barley", "label": "Cevada", "bushel_kg": BUSHEL_KG["barley"]},
-    {"key": "oats", "label": "Aveia", "bushel_kg": BUSHEL_KG["oats"]},
     {"key": "canola", "label": "Canola", "bushel_kg": BUSHEL_KG["canola"]},
-    {"key": "sorghum", "label": "Sorgo", "bushel_kg": BUSHEL_KG["sorghum"]},
-    {"key": "rice", "label": "Arroz", "bushel_kg": BUSHEL_KG["rice"]},
-    {"key": "sunflower", "label": "Girassol", "bushel_kg": BUSHEL_KG["sunflower"]},
-    {"key": "peas", "label": "Ervilha", "bushel_kg": BUSHEL_KG["peas"]},
-    {"key": "lentils", "label": "Lentilha", "bushel_kg": BUSHEL_KG["lentils"]},
-    {"key": "flax", "label": "Linho", "bushel_kg": BUSHEL_KG["flax"]},
-    {"key": "rye", "label": "Centeio", "bushel_kg": BUSHEL_KG["rye"]},
+    {"key": "wheat", "label": "Wheat", "bushel_kg": BUSHEL_KG["wheat"]},
+    {"key": "barley", "label": "Barley", "bushel_kg": BUSHEL_KG["barley"]},
+    {"key": "oats", "label": "Oats", "bushel_kg": BUSHEL_KG["oats"]},
+    {"key": "peas", "label": "Field peas", "bushel_kg": BUSHEL_KG["peas"]},
+    {"key": "lentils", "label": "Lentils", "bushel_kg": BUSHEL_KG["lentils"]},
+    {"key": "flax", "label": "Flax", "bushel_kg": BUSHEL_KG["flax"]},
+    {"key": "rye", "label": "Rye", "bushel_kg": BUSHEL_KG["rye"]},
+    {"key": "corn", "label": "Corn", "bushel_kg": BUSHEL_KG["corn"]},
+    {"key": "soybean", "label": "Soybean", "bushel_kg": BUSHEL_KG["soybean"]},
+    {"key": "sorghum", "label": "Sorghum", "bushel_kg": BUSHEL_KG["sorghum"]},
+    {"key": "rice", "label": "Rice", "bushel_kg": BUSHEL_KG["rice"]},
+    {"key": "sunflower", "label": "Sunflower", "bushel_kg": BUSHEL_KG["sunflower"]},
 ]
 
 
 def unit_factor(group: str, unit_key: str, crop: str | None = None) -> float:
-    """Fator que leva ``unit_key`` à unidade interna do grupo.
+    """Factor taking ``unit_key`` to the group's internal unit.
 
-    As unidades em bushel dependem da cultura, porque o bushel mede volume:
-    um bushel de milho pesa 25,4 kg e um de soja, 27,2 kg. Sem cultura
-    declarada, é usado o peso do milho — e a interface avisa.
+    Bushel units depend on the crop, because a bushel measures volume: a
+    bushel of corn weighs 25.40 kg and one of canola 22.68 kg. With no crop
+    declared, corn's weight is used.
     """
     group_info = UNIT_GROUPS.get(group)
     if group_info is None:
-        raise ValueError(f"Grupo de unidades desconhecido: '{group}'.")
+        raise ValueError(f"Unknown unit group: '{group}'.")
 
     for entry in group_info["units"]:
         if entry["key"] != unit_key:
             continue
         if entry.get("factor") is not None:
             return float(entry["factor"])
-        # Unidades em bushel: o fator sai do peso de teste da cultura.
+        # Bushel units: the factor comes from the crop's test weight.
         weight = bushel_kg(crop)
         if group == "mass":
             return weight
         if group == "rate_mass":
             return weight / AREA_TO_HA["ac"]
-        raise ValueError(f"Unidade '{unit_key}' não é conversível no grupo '{group}'.")
+        raise ValueError(f"Unit '{unit_key}' is not convertible in group '{group}'.")
 
-    raise ValueError(f"Unidade '{unit_key}' não pertence ao grupo '{group}'.")
+    raise ValueError(f"Unit '{unit_key}' does not belong to group '{group}'.")
 
 
 def to_internal(value, group: str, unit_key: str, crop: str | None = None):
-    """Converte da unidade escolhida para a interna."""
+    """Convert from the chosen unit to the internal one."""
     return value * unit_factor(group, unit_key, crop)
 
 
 def from_internal(value, group: str, unit_key: str, crop: str | None = None):
-    """Converte da unidade interna para a escolhida."""
+    """Convert from the internal unit to the chosen one."""
     factor = unit_factor(group, unit_key, crop)
     return value / factor if factor else value
 
 
 def unit_catalog() -> dict:
-    """Catálogo serializável para os seletores da interface."""
+    """Serializable catalogue for the interface pickers."""
     return {
         "groups": {
             key: {
@@ -331,8 +331,8 @@ def unit_catalog() -> dict:
                         "key": u["key"],
                         "label": u["label"],
                         "needs_crop": bool(u.get("needs_crop")),
-                        # O fator das unidades em bushel é resolvido no cliente,
-                        # a partir do peso de teste da cultura escolhida.
+                        # The factor for bushel units is resolved on the client,
+                        # from the test weight of the selected crop.
                         "factor": u["factor"],
                     }
                     for u in info["units"]
@@ -349,30 +349,29 @@ def unit_catalog() -> dict:
 
 
 # ==========================================================================
-# Predefinições regionais
+# Regional presets
 # ==========================================================================
-# Cada região trabalha com um conjunto coerente de unidades, e misturar
-# grandezas de sistemas diferentes é a principal fonte de erro de leitura.
-# As predefinições abaixo ligam todos os seletores de uma vez; qualquer
-# unidade individual continua podendo ser trocada depois.
+# Each region works with a coherent set of units, and mixing quantities from
+# different systems is the main source of misreading. The presets below set
+# every picker at once; any individual unit can still be changed afterwards.
 #
-# A predefinição canadense é a inicial do app: nas Pradarias, os monitores
-# saem de fábrica em bu/ac para grão, lb/ac para fertilizante e semente,
-# gal/ac (galão americano) para calda, e a largura do implemento é falada
-# em pés — mesmo o país sendo oficialmente métrico.
+# The Canadian preset is the app's default: on the Prairies, monitors are
+# normally set to bu/ac for grain, lb/ac for fertilizer and seed, US gal/ac
+# for spray solution, and implement width is spoken in feet — even though the
+# country is officially metric.
 
 UNIT_PRESETS = {
     "canada": {
-        "label": "Canadá (Pradarias)",
+        "label": "Canada (Prairies)",
         "description": (
-            "bu/ac para grão, lb/ac para fertilizante e semente, acres, pés e mph — "
-            "como os monitores costumam sair configurados no oeste canadense."
+            "bu/ac for grain, lb/ac for fertilizer and seed, acres, feet and mph — "
+            "the way monitors are usually set up in Western Canada."
         ),
         "yield_unit": "bu/ac",
         "input_rate_unit": "lb/ac",
         "seed_rate_unit": "lb/ac",
         "volume_rate_unit": "gal/ac",
-        "count_rate_unit": "sementes/ac",
+        "count_rate_unit": "seeds/ac",
         "area_unit": "ac",
         "length_unit": "ft",
         "speed_unit": "mph",
@@ -381,13 +380,13 @@ UNIT_PRESETS = {
         "crop": "canola",
     },
     "usa": {
-        "label": "Estados Unidos",
-        "description": "Mesmo conjunto imperial do Canadá, com preços em dólar americano.",
+        "label": "United States",
+        "description": "Same imperial set as Canada, priced in US dollars.",
         "yield_unit": "bu/ac",
         "input_rate_unit": "lb/ac",
-        "seed_rate_unit": "sementes/ac",
+        "seed_rate_unit": "seeds/ac",
         "volume_rate_unit": "gal/ac",
-        "count_rate_unit": "sementes/ac",
+        "count_rate_unit": "seeds/ac",
         "area_unit": "ac",
         "length_unit": "ft",
         "speed_unit": "mph",
@@ -395,14 +394,14 @@ UNIT_PRESETS = {
         "currency": "USD",
         "crop": "corn",
     },
-    "brasil": {
-        "label": "Brasil",
-        "description": "Sacas por hectare, quilos, hectares e metros; preços em real.",
+    "brazil": {
+        "label": "Brazil",
+        "description": "Bags per hectare, kilograms, hectares and metres; priced in reais.",
         "yield_unit": "sc/ha",
         "input_rate_unit": "kg/ha",
-        "seed_rate_unit": "sementes/ha",
+        "seed_rate_unit": "seeds/ha",
         "volume_rate_unit": "L/ha",
-        "count_rate_unit": "sementes/ha",
+        "count_rate_unit": "seeds/ha",
         "area_unit": "ha",
         "length_unit": "m",
         "speed_unit": "km/h",
@@ -410,14 +409,14 @@ UNIT_PRESETS = {
         "currency": "BRL",
         "crop": "soybean",
     },
-    "metrico": {
-        "label": "Métrico puro",
-        "description": "Tudo no SI: kg/ha, hectares, metros e km/h.",
+    "metric": {
+        "label": "Metric",
+        "description": "Everything in SI: kg/ha, hectares, metres and km/h.",
         "yield_unit": "kg/ha",
         "input_rate_unit": "kg/ha",
-        "seed_rate_unit": "sementes/ha",
+        "seed_rate_unit": "seeds/ha",
         "volume_rate_unit": "L/ha",
-        "count_rate_unit": "sementes/ha",
+        "count_rate_unit": "seeds/ha",
         "area_unit": "ha",
         "length_unit": "m",
         "speed_unit": "km/h",
@@ -427,5 +426,5 @@ UNIT_PRESETS = {
     },
 }
 
-#: Predefinição aplicada quando o app abre pela primeira vez.
+#: Preset applied when the app first opens.
 DEFAULT_PRESET = "canada"

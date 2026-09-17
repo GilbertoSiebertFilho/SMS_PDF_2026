@@ -1,20 +1,20 @@
-"""Leitura de dados no padrão Augmenta.
+"""Reading data in the Augmenta format.
 
-O Augmenta é um sistema de visão embarcado que classifica a cultura em tempo
-real e comanda a aplicação em taxa variável. As exportações chegam em três
-arranjos, todos cobertos aqui:
+Augmenta is an on-board vision system that classifies the crop in real time
+and drives variable rate application. Its exports arrive in three shapes, all
+covered here:
 
-1. **GeoJSON de sessão** — ``FeatureCollection`` cujas *features* são os
-   pontos ou células da passagem, com propriedades de vigor/biomassa e a
-   dose efetivamente aplicada.
-2. **JSON envelopado** — o GeoJSON embrulhado num objeto com metadados da
-   sessão (``session``/``field``/``machine``) sob alguma chave.
-3. **CSV/SHP** — tratados pelos leitores genéricos, que reconhecem as
-   colunas de índice do Augmenta pelo dicionário de aliases.
+1. **Session GeoJSON** — a ``FeatureCollection`` whose features are the
+   points or cells of the pass, with vigour/biomass properties and the rate
+   that was actually applied.
+2. **Wrapped JSON** — the same GeoJSON inside an object carrying session
+   metadata (``session``/``field``/``machine``) under some key.
+3. **CSV/SHP** — handled by the generic readers, which recognize Augmenta's
+   index columns through the alias dictionary.
 
-O que distingue o Augmenta dos demais é a semântica: além da dose aplicada
-ele traz um índice de vigor por ponto, e é esse par (vigor, dose) que
-alimenta as análises de eficiência de aplicação do app.
+What sets Augmenta apart is the semantics: besides the applied rate it
+carries a vigour index per point, and it is that (vigour, rate) pair that
+feeds the app's application-efficiency analysis.
 """
 
 from __future__ import annotations
@@ -28,7 +28,7 @@ import pandas as pd
 from ..core import schema as sch
 from ..core.dataset import Dataset, DatasetMeta
 
-#: Chaves de propriedade que caracterizam uma exportação do Augmenta.
+#: Property keys that characterize an Augmenta export.
 AUGMENTA_KEYS = {
     "vigor", "biomass", "biomass_index", "canopy", "canopy_cover",
     "crop_coverage", "weed_coverage", "applied_rate", "vra_rate",
@@ -36,14 +36,14 @@ AUGMENTA_KEYS = {
     "green_index", "plant_count", "coverage_percent",
 }
 
-#: Ordem de preferência para eleger a variável principal do dataset.
+#: Preference order for choosing the dataset's main variable.
 VALUE_PRIORITY = (
     "applied_rate", "vra_rate", "spray_rate", "rate",
     "vigor", "biomass_index", "biomass", "ndvi", "ndre",
     "canopy_cover", "crop_coverage", "green_index",
 )
 
-#: Índices de vigor reconhecidos — separados da dose para a análise cruzada.
+#: Recognized vigour indices, kept apart from the rate for the cross analysis.
 VIGOR_KEYS = (
     "vigor", "biomass_index", "biomass", "ndvi", "ndre",
     "canopy_cover", "canopy", "crop_coverage", "green_index",
@@ -51,7 +51,7 @@ VIGOR_KEYS = (
 
 
 def _feature_collection(payload: Any) -> dict | None:
-    """Localiza a ``FeatureCollection`` dentro de um payload possivelmente envelopado."""
+    """Locate the ``FeatureCollection`` inside a possibly wrapped payload."""
     if isinstance(payload, dict):
         if payload.get("type") == "FeatureCollection" and isinstance(payload.get("features"), list):
             return payload
@@ -68,7 +68,7 @@ def _feature_collection(payload: Any) -> dict | None:
 
 
 def is_augmenta_payload(payload: Any) -> bool:
-    """Diz se um JSON já carregado tem a assinatura do Augmenta."""
+    """Say whether an already-loaded JSON carries the Augmenta signature."""
     fc = _feature_collection(payload)
     if fc is None:
         return False
@@ -84,7 +84,7 @@ def is_augmenta_payload(payload: Any) -> bool:
 
 
 def _session_metadata(payload: Any) -> dict[str, Any]:
-    """Extrai metadados de sessão do envelope, quando presentes."""
+    """Extract session metadata from the wrapper, when present."""
     meta: dict[str, Any] = {}
     if not isinstance(payload, dict):
         return meta
@@ -105,14 +105,14 @@ def _session_metadata(payload: Any) -> dict[str, Any]:
 
 
 def read_augmenta(path: Path, payload: Any | None = None) -> Dataset:
-    """Lê uma exportação do Augmenta e devolve o dataset normalizado."""
+    """Read an Augmenta export and return the normalized dataset."""
     path = Path(path)
     if payload is None:
         payload = json.loads(path.read_text(encoding="utf-8-sig", errors="replace"))
 
     fc = _feature_collection(payload)
     if fc is None:
-        raise ValueError("Arquivo Augmenta sem FeatureCollection reconhecível.")
+        raise ValueError("Augmenta file with no recognizable FeatureCollection.")
 
     import geopandas as gpd
     from shapely.geometry import shape
@@ -144,14 +144,14 @@ def read_augmenta(path: Path, payload: Any | None = None) -> Dataset:
         geometries.append(geom)
 
     if not rows:
-        raise ValueError("Nenhuma feição válida encontrada na exportação Augmenta.")
+        raise ValueError("No valid feature found in the Augmenta export.")
 
     df = pd.DataFrame(rows)
     original_columns = [c for c in df.columns if c not in (sch.LON, sch.LAT)]
     df.columns = [str(c).strip() for c in df.columns]
 
-    # Elege a variável principal antes do mapeamento genérico, para que a
-    # dose aplicada tenha prioridade sobre qualquer outro numérico.
+    # Choose the main variable before the generic mapping, so the applied rate
+    # takes priority over any other numeric column.
     norm_lookup = {sch.normalize_name(c): c for c in df.columns}
     value_source = next((norm_lookup[k] for k in VALUE_PRIORITY if k in norm_lookup), None)
 
@@ -162,16 +162,16 @@ def read_augmenta(path: Path, payload: Any | None = None) -> Dataset:
 
     if value_source:
         df[sch.VALUE] = pd.to_numeric(df[value_source], errors="coerce")
-        notes.append(f"Variável principal: '{value_source}'.")
+        notes.append(f"Main variable: '{value_source}'.")
 
     vigor_source = next((norm_lookup[k] for k in VIGOR_KEYS if k in norm_lookup), None)
     if vigor_source:
         df["vigor_index"] = pd.to_numeric(df[vigor_source], errors="coerce")
-        notes.append(f"Índice de vigor lido de '{vigor_source}'.")
+        notes.append(f"Vigour index read from '{vigor_source}'.")
 
     session = _session_metadata(payload)
     if polygonal:
-        notes.append("Células poligonais do Augmenta: centroides usados na análise.")
+        notes.append("Augmenta polygon cells: representative points used for analysis.")
 
     operation = "application" if value_source in (
         norm_lookup.get("applied_rate"), norm_lookup.get("vra_rate"), norm_lookup.get("spray_rate")
@@ -186,7 +186,7 @@ def read_augmenta(path: Path, payload: Any | None = None) -> Dataset:
         operation=operation,
         crop=session.get("crop"),
         field_name=session.get("field_name") or session.get("field"),
-        value_label="Dose aplicada" if operation == "application" else "Índice de vigor",
+        value_label="Applied rate" if operation == "application" else "Vigour index",
         geometry_type="polygon" if polygonal else "point",
         notes=notes,
         extra={
@@ -200,58 +200,59 @@ def read_augmenta(path: Path, payload: Any | None = None) -> Dataset:
 
 
 def vigor_rate_summary(ds: Dataset, bins: int = 6) -> dict[str, Any]:
-    """Cruza índice de vigor com dose aplicada.
+    """Cross the vigour index against the applied rate.
 
-    É a leitura que dá sentido a um dado do Augmenta: se o sistema está
-    modulando corretamente, a dose deve variar de forma monótona ao longo
-    das classes de vigor. Uma relação plana indica aplicação praticamente
-    uniforme — ou seja, o VRA não atuou.
+    This is the reading that makes sense of Augmenta data: if the system is
+    modulating properly, the rate should vary monotonically across the vigour
+    classes. A flat relationship means the application was effectively
+    uniform — that is, variable rate did not engage.
     """
     import numpy as np
 
     if "vigor_index" not in ds.df.columns or sch.VALUE not in ds.df.columns:
-        return {"available": False, "reason": "Dataset sem par vigor/dose."}
+        return {"available": False, "reason": "Dataset has no vigour/rate pair."}
 
     frame = ds.df[["vigor_index", sch.VALUE]].apply(pd.to_numeric, errors="coerce").dropna()
     if len(frame) < 10:
-        return {"available": False, "reason": "Pontos insuficientes para cruzar vigor e dose."}
+        return {"available": False, "reason": "Too few points to cross vigour and rate."}
 
     try:
         classes = pd.qcut(frame["vigor_index"], q=bins, duplicates="drop")
     except ValueError:
-        return {"available": False, "reason": "Índice de vigor sem variação suficiente."}
+        return {"available": False, "reason": "Vigour index does not vary enough."}
 
     grouped = frame.groupby(classes, observed=True)[sch.VALUE].agg(["count", "mean", "std"])
     rows = [
         {
-            "classe": f"{interval.left:.3g} – {interval.right:.3g}",
+            "class": f"{interval.left:.3g} - {interval.right:.3g}",
             "n": int(row["count"]),
-            "dose_media": round(float(row["mean"]), 3),
-            "desvio": round(float(row["std"]), 3) if pd.notna(row["std"]) else 0.0,
+            "mean_rate": round(float(row["mean"]), 3),
+            "sd": round(float(row["std"]), 3) if pd.notna(row["std"]) else 0.0,
         }
         for interval, row in grouped.iterrows()
     ]
 
     corr = float(frame["vigor_index"].corr(frame[sch.VALUE]))
-    doses = grouped["mean"].to_numpy()
-    spread = float(np.ptp(doses) / np.mean(doses) * 100.0) if np.mean(doses) else 0.0
+    rates = grouped["mean"].to_numpy()
+    spread = float(np.ptp(rates) / np.mean(rates) * 100.0) if np.mean(rates) else 0.0
 
     if spread < 5:
-        reading = ("A dose praticamente não variou entre as classes de vigor: "
-                   "a aplicação foi, na prática, uniforme.")
+        reading = ("The rate barely changed across the vigour classes: the "
+                   "application was, in practice, uniform.")
     elif corr < -0.3:
-        reading = ("Dose maior onde o vigor é menor — comportamento compensatório, "
-                   "típico de aplicação corretiva.")
+        reading = ("Higher rate where vigour is lower — compensatory behaviour, "
+                   "typical of a corrective application.")
     elif corr > 0.3:
-        reading = ("Dose maior onde o vigor é maior — comportamento proporcional à biomassa, "
-                   "típico de fungicida e dessecação.")
+        reading = ("Higher rate where vigour is higher — proportional to biomass, "
+                   "typical of fungicide and desiccation.")
     else:
-        reading = "Relação fraca entre vigor e dose; verifique a configuração do mapa de resposta."
+        reading = ("Weak relationship between vigour and rate; check how the response "
+                   "map was configured.")
 
     return {
         "available": True,
         "classes": rows,
-        "correlacao": round(corr, 3) if pd.notna(corr) else None,
-        "amplitude_relativa_pct": round(spread, 1),
-        "leitura": reading,
+        "correlation": round(corr, 3) if pd.notna(corr) else None,
+        "relative_spread_pct": round(spread, 1),
+        "reading": reading,
     }

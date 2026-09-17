@@ -1,17 +1,17 @@
-"""Leitores de arquivos de campo.
+"""Readers for field files.
 
-Cobre os formatos que efetivamente circulam entre monitores e escritório:
+Covers the formats that actually move between monitors and the office:
 
-* **Shapefile** (.shp + .dbf + .shx + .prj) — a moeda corrente entre
-  plataformas; todo fabricante da lista consegue ler ou escrever.
-* **GeoJSON / JSON** — saída padrão do Augmenta e de serviços web.
-* **CSV / TXT** — exportação de log dos monitores, com todas as variações
-  de separador, decimal e codificação que aparecem no mundo real.
-* **Excel** (.xlsx) — planilhas de amostragem e de ensaios.
-* **KML/KMZ** — contornos de talhão.
+* **Shapefile** (.shp + .dbf + .shx + .prj) — the common currency between
+  platforms; every manufacturer on the list can read or write it.
+* **GeoJSON / JSON** — Augmenta's standard output and that of web services.
+* **CSV / TXT** — monitor log exports, with every separator, decimal mark and
+  encoding variation that turns up in the real world.
+* **Excel** (.xlsx) — sampling and trial spreadsheets.
+* **KML/KMZ** — field boundaries.
 
-O ISOXML tem módulo próprio (:mod:`agrosuite.formats.isoxml`) por ser um
-formato de pasta com cabeçalho XML e logs binários.
+ISOXML has its own module (:mod:`agrosuite.formats.isoxml`), being a folder
+format with an XML header and binary logs.
 """
 
 from __future__ import annotations
@@ -30,20 +30,20 @@ from ..core.crs import WGS84, looks_geographic
 from ..core.dataset import Dataset, DatasetMeta
 from . import brands as brands_mod
 
-#: Codificações testadas em ordem — DBF antigo e CSV brasileiro costumam
-#: vir em latin-1, e monitores europeus às vezes em cp1252.
+#: Encodings tried in order — older DBF and non-US CSV often come in latin-1,
+#: and European monitors sometimes in cp1252.
 ENCODINGS = ("utf-8-sig", "utf-8", "latin-1", "cp1252")
 
-#: Separadores candidatos para arquivos tabulares.
+#: Candidate separators for tabular files.
 DELIMITERS = (",", ";", "\t", "|")
 
 
 # ==========================================================================
-# Utilidades
+# Helpers
 # ==========================================================================
 
 def _read_text(path: Path, limit: int | None = None) -> str:
-    """Lê um arquivo de texto tentando as codificações usuais."""
+    """Read a text file, trying the usual encodings."""
     raw = path.read_bytes() if limit is None else path.open("rb").read(limit)
     for enc in ENCODINGS:
         try:
@@ -54,7 +54,7 @@ def _read_text(path: Path, limit: int | None = None) -> str:
 
 
 def _sniff_delimiter(sample: str) -> str:
-    """Descobre o separador de colunas de um CSV."""
+    """Work out a CSV's column separator."""
     try:
         return csv.Sniffer().sniff(sample, delimiters="".join(DELIMITERS)).delimiter
     except csv.Error:
@@ -66,10 +66,10 @@ def _sniff_delimiter(sample: str) -> str:
 
 
 def _looks_like_unit_row(row: pd.Series) -> bool:
-    """Detecta a linha de unidades que alguns monitores inserem sob o cabeçalho.
+    """Detect the unit row some monitors insert under the header.
 
-    Ex.: ``Yield, Moisture, Speed`` seguido de ``bu/ac, %, mph``. Essa linha
-    é textual em colunas que deveriam ser numéricas.
+    For example ``Yield, Moisture, Speed`` followed by ``bu/ac, %, mph``. That
+    row is text in columns that should be numeric.
     """
     values = [str(v).strip() for v in row.tolist() if str(v).strip() not in ("", "nan")]
     if not values:
@@ -90,7 +90,7 @@ def _looks_like_unit_row(row: pd.Series) -> bool:
 
 
 def _decimal_comma_ratio(sample: str, delimiter: str) -> float:
-    """Fração de campos que parecem número com vírgula decimal."""
+    """Fraction of fields that look like numbers with a decimal comma."""
     lines = [ln for ln in sample.splitlines()[1:40] if ln.strip()]
     if not lines:
         return 0.0
@@ -107,7 +107,7 @@ def _decimal_comma_ratio(sample: str, delimiter: str) -> float:
 
 
 def _normalize_frame(df: pd.DataFrame) -> tuple[pd.DataFrame, dict[str, str]]:
-    """Renomeia colunas reconhecidas para o esquema canônico."""
+    """Rename recognized columns to the canonical schema."""
     df = df.copy()
     df.columns = [str(c).strip() for c in df.columns]
     mapping = sch.map_columns(df.columns)
@@ -117,34 +117,34 @@ def _normalize_frame(df: pd.DataFrame) -> tuple[pd.DataFrame, dict[str, str]]:
 
 
 def _resolve_coordinates(df: pd.DataFrame, notes: list[str]) -> pd.DataFrame:
-    """Garante colunas ``lon``/``lat`` a partir do que existir na tabela."""
+    """Ensure ``lon``/``lat`` columns from whatever the table provides."""
     if sch.LON in df.columns and sch.LAT in df.columns:
         return df
-    # Alguns exports nomeiam as colunas simplesmente X e Y.
+    # Some exports name the columns simply X and Y.
     candidates = [(c, sch.normalize_name(c)) for c in df.columns]
     x_col = next((c for c, n in candidates if n in ("x", "coord_x", "este", "easting")), None)
     y_col = next((c for c, n in candidates if n in ("y", "coord_y", "norte", "northing")), None)
     if x_col and y_col:
         if looks_geographic(df[x_col], df[y_col]):
             df = df.rename(columns={x_col: sch.LON, y_col: sch.LAT})
-            notes.append("Colunas X/Y interpretadas como longitude/latitude (WGS84).")
+            notes.append("X/Y columns read as longitude/latitude (WGS84).")
         else:
             notes.append(
-                "Colunas X/Y em unidades projetadas sem CRS declarado — "
-                "informe o EPSG de origem para reprojetar corretamente."
+                "X/Y columns are in projected units with no CRS declared — give the "
+                "source EPSG so they can be reprojected correctly."
             )
     return df
 
 
 def _pick_value_column(df: pd.DataFrame, notes: list[str]) -> pd.DataFrame:
-    """Elege a variável principal quando o mapeamento não encontrou ``value``."""
+    """Choose the main variable when the mapping found no ``value`` column."""
     if sch.VALUE in df.columns:
         return df
     priority = (sch.APPLIED_RATE, sch.TARGET_RATE, sch.FLOW)
     for col in priority:
         if col in df.columns:
             df[sch.VALUE] = pd.to_numeric(df[col], errors="coerce")
-            notes.append(f"Variável principal assumida a partir de '{sch.LABELS[col]}'.")
+            notes.append(f"Main variable taken from '{sch.LABELS[col]}'.")
             return df
     ignore = {sch.LON, sch.LAT, sch.X, sch.Y, sch.ELEVATION, sch.SPEED, sch.SWATH,
               sch.HEADING, sch.DISTANCE, sch.PASS, sch.SECTION, sch.ELAPSED}
@@ -153,7 +153,7 @@ def _pick_value_column(df: pd.DataFrame, notes: list[str]) -> pd.DataFrame:
         if c not in ignore and pd.api.types.is_numeric_dtype(df[c]) and df[c].notna().any()
     ]
     if numeric:
-        # A coluna numérica com maior variabilidade relativa costuma ser a medida.
+        # The numeric column with the highest relative variability is usually the measurement.
         best, best_cv = None, -1.0
         for c in numeric:
             s = df[c].dropna()
@@ -164,12 +164,12 @@ def _pick_value_column(df: pd.DataFrame, notes: list[str]) -> pd.DataFrame:
                 best, best_cv = c, cv
         chosen = best or numeric[0]
         df[sch.VALUE] = pd.to_numeric(df[chosen], errors="coerce")
-        notes.append(f"Variável principal assumida a partir da coluna '{chosen}'.")
+        notes.append(f"Main variable taken from column '{chosen}'.")
     return df
 
 
 def _guess_operation(df: pd.DataFrame, path: Path, brand: str) -> str:
-    """Infere o tipo de operação a partir de nomes de coluna e do caminho."""
+    """Infer the operation type from column names and from the path."""
     cols = {sch.normalize_name(c) for c in df.columns}
     text = sch.normalize_name(str(path))
     if any(k in text for k in ("boundary", "contorno", "limite", "field_border")):
@@ -180,8 +180,8 @@ def _guess_operation(df: pd.DataFrame, path: Path, brand: str) -> str:
         return "prescription"
     if any(k in cols for k in ("yield", "yld", "dry_yield", "moisture_pct", "flow_kgs")):
         return "harvest"
-    # Um log que traz dose alvo **e** medida é registro de aplicação: o alvo
-    # veio do mapa e o valor é o que a máquina entregou.
+    # A log carrying both a target rate **and** a measurement is an application
+    # record: the target came from the map and the value is what the machine put out.
     if sch.TARGET_RATE in cols and sch.VALUE in cols:
         return "application"
     if any(k in text for k in ("harvest", "colheita", "yield", "rendimento")):
@@ -208,7 +208,7 @@ def _build_dataset(
     brand_hint: str | None = None,
     extra_text: str = "",
 ) -> Dataset:
-    """Monta o :class:`Dataset` final a partir de uma tabela já lida."""
+    """Build the final :class:`Dataset` from an already-read table."""
     original_columns = list(df.columns)
     df, mapping = _normalize_frame(df)
     df = _resolve_coordinates(df, notes)
@@ -240,11 +240,11 @@ def _build_dataset(
 
 
 # ==========================================================================
-# Leitores por formato
+# Readers, by format
 # ==========================================================================
 
 def read_shapefile(path: Path, brand_hint: str | None = None) -> Dataset:
-    """Lê shapefile (ou qualquer fonte vetorial suportada pelo GDAL)."""
+    """Read a shapefile, or any vector source GDAL supports."""
     import geopandas as gpd
 
     gdf = gpd.read_file(path)
@@ -252,12 +252,12 @@ def read_shapefile(path: Path, brand_hint: str | None = None) -> Dataset:
 
     if gdf.crs is None:
         notes.append(
-            "Shapefile sem arquivo .prj — coordenadas assumidas em WGS84. "
-            "Se o talhão aparecer fora de lugar no mapa, informe o EPSG correto."
+            "Shapefile with no .prj — coordinates assumed to be WGS84. If the field "
+            "shows up in the wrong place on the map, give the correct EPSG."
         )
         gdf = gdf.set_crs(WGS84, allow_override=True)
     elif gdf.crs.to_string() != WGS84:
-        notes.append(f"Reprojetado de {gdf.crs.to_string()} para WGS84.")
+        notes.append(f"Reprojected from {gdf.crs.to_string()} to WGS84.")
         gdf = gdf.to_crs(WGS84)
 
     geom_types = set(gdf.geom_type.dropna().unique())
@@ -271,7 +271,7 @@ def read_shapefile(path: Path, brand_hint: str | None = None) -> Dataset:
 
     geometry = list(gdf.geometry) if (polygonal or linear) else None
     if polygonal:
-        notes.append("Camada poligonal: centroides usados para posicionamento e análise.")
+        notes.append("Polygon layer: representative points used for placement and analysis.")
 
     ds = _build_dataset(df, Path(path), "shapefile", notes, geometry, brand_hint)
     if polygonal and ds.meta.operation == "unknown":
@@ -281,16 +281,16 @@ def read_shapefile(path: Path, brand_hint: str | None = None) -> Dataset:
         if ds.meta.operation == "unknown":
             ds.meta.operation = "guidance"
 
-    # Um shapefile de contorno ou de linha AB é material de setup, não de
-    # análise: guardar a geometria em WGS84 permite reexportá-la para outro
-    # monitor sem passar por nenhuma conversão com perda.
+    # A boundary or AB-line shapefile is setup material, not analysis material:
+    # keeping the geometry in WGS84 lets it be re-exported to another monitor
+    # without any lossy conversion in between.
     if ds.meta.operation in ("boundary", "guidance"):
         ds.meta.extra["field_setup"] = _setup_from_geometry(gdf, ds.meta.operation)
     return ds
 
 
 def read_geojson(path: Path, brand_hint: str | None = None) -> Dataset:
-    """Lê GeoJSON/JSON — inclusive o formato de sessão do Augmenta."""
+    """Read GeoJSON/JSON, including Augmenta's session format."""
     from .augmenta import is_augmenta_payload, read_augmenta
 
     payload = json.loads(_read_text(Path(path)))
@@ -316,18 +316,18 @@ def read_geojson(path: Path, brand_hint: str | None = None) -> Dataset:
 
 
 def read_tabular(path: Path, brand_hint: str | None = None) -> Dataset:
-    """Lê CSV/TXT de monitor, lidando com separador, decimal e codificação."""
+    """Read a monitor CSV/TXT, handling separator, decimal mark and encoding."""
     path = Path(path)
     sample = _read_text(path, limit=64_000)
     if not sample.strip():
-        raise ValueError(f"Arquivo vazio: {path.name}")
+        raise ValueError(f"Empty file: {path.name}")
 
     notes: list[str] = []
     delimiter = _sniff_delimiter(sample)
     decimal = "." 
     if delimiter != "," and _decimal_comma_ratio(sample, delimiter) > 0.25:
         decimal = ","
-        notes.append("Vírgula interpretada como separador decimal.")
+        notes.append("Comma read as the decimal separator.")
 
     last_error: Exception | None = None
     df = None
@@ -341,12 +341,12 @@ def read_tabular(path: Path, brand_hint: str | None = None) -> Dataset:
         except (UnicodeDecodeError, pd.errors.ParserError) as exc:
             last_error = exc
     if df is None:
-        raise ValueError(f"Não foi possível interpretar {path.name}: {last_error}")
+        raise ValueError(f"Could not parse {path.name}: {last_error}")
 
     if len(df) and _looks_like_unit_row(df.iloc[0]):
         units_row = {c: str(v).strip() for c, v in df.iloc[0].items()}
         df = df.iloc[1:].reset_index(drop=True)
-        notes.append("Linha de unidades sob o cabeçalho descartada.")
+        notes.append("Unit row under the header discarded.")
         for col in df.columns:
             df[col] = pd.to_numeric(df[col], errors="ignore")
         ds = _build_dataset(df, path, "csv", notes, brand_hint=brand_hint, extra_text=sample[:2000])
@@ -357,14 +357,14 @@ def read_tabular(path: Path, brand_hint: str | None = None) -> Dataset:
 
 
 def read_excel(path: Path, brand_hint: str | None = None) -> Dataset:
-    """Lê a primeira planilha de um arquivo Excel."""
+    """Read the first sheet of an Excel file."""
     df = pd.read_excel(path)
-    notes = ["Planilha Excel: primeira aba importada."]
+    notes = ["Excel workbook: first sheet imported."]
     return _build_dataset(df, Path(path), "excel", notes, brand_hint=brand_hint)
 
 
 def read_kml(path: Path, brand_hint: str | None = None) -> Dataset:
-    """Lê KML/KMZ — tipicamente contornos de talhão."""
+    """Read KML/KMZ — typically field boundaries."""
     import geopandas as gpd
 
     path = Path(path)
@@ -373,10 +373,10 @@ def read_kml(path: Path, brand_hint: str | None = None) -> Dataset:
         with zipfile.ZipFile(path) as zf:
             inner = next((n for n in zf.namelist() if n.lower().endswith(".kml")), None)
             if inner is None:
-                raise ValueError("KMZ não contém arquivo .kml.")
+                raise ValueError("The KMZ holds no .kml file.")
             data = zf.read(inner)
         gdf = gpd.read_file(io.BytesIO(data))
-        notes.append(f"KMZ descompactado ({inner}).")
+        notes.append(f"KMZ unpacked ({inner}).")
     else:
         gdf = gpd.read_file(path)
 
@@ -397,7 +397,7 @@ def read_kml(path: Path, brand_hint: str | None = None) -> Dataset:
 
 
 def _setup_from_geometry(gdf, operation: str) -> dict:
-    """Extrai contorno ou linhas de orientação de uma camada vetorial."""
+    """Extract a boundary or guidance lines from a vector layer."""
     rings: list[list[tuple[float, float]]] = []
     lines: list[dict] = []
 
@@ -416,11 +416,11 @@ def _setup_from_geometry(gdf, operation: str) -> dict:
                 name = next(
                     (str(row[c]) for c in ("name", "NAME", "Name", "label", "LABEL")
                      if c in gdf.columns and row.get(c) is not None),
-                    f"Linha {len(lines) + 1}",
+                    f"Line {len(lines) + 1}",
                 )
                 lines.append({
                     "name": name,
-                    "type": 1 if len(points) == 2 else 3,  # AB ou curva gravada
+                    "type": 1 if len(points) == 2 else 3,  # AB line or recorded curve
                     "a": points[0],
                     "b": points[-1],
                     "points": points,

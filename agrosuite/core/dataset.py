@@ -1,12 +1,11 @@
-"""Modelo de dados canônico do AgroSuite.
+"""AgroSuite's canonical data model.
 
-Um :class:`Dataset` é a representação única para a qual convergem todos os
-formatos de entrada (shapefile, CSV de monitor, ISOXML, GeoJSON do Augmenta).
-Internamente ele guarda um ``pandas.DataFrame`` — e não um ``GeoDataFrame`` —
-porque as operações pesadas do app (filtros de limpeza, vizinhança, junções
-por grade) são vetoriais sobre colunas ``x``/``y`` projetadas; a geometria
-shapely só é materializada quando realmente necessária (recorte por
-contorno, exportação, cálculo de sobreposição).
+A :class:`Dataset` is the single representation every input format converges
+to — shapefile, monitor CSV, ISOXML, Augmenta GeoJSON. Internally it holds a
+``pandas.DataFrame`` rather than a ``GeoDataFrame``, because the app's heavy
+operations (cleaning filters, neighbourhoods, grid joins) are vectorised over
+projected ``x``/``y`` columns; shapely geometry is materialised only when it
+is genuinely needed — clipping to a boundary, exporting, computing overlap.
 """
 
 from __future__ import annotations
@@ -22,35 +21,35 @@ from . import crs as crs_mod
 from . import schema as sch
 from . import units as units_mod
 
-#: Operações reconhecidas pelo app.
+#: Operations the app recognizes.
 OPERATIONS = (
-    "harvest",       # colheita / mapa de rendimento
-    "application",   # aplicação (as-applied) de fertilizante/defensivo
-    "planting",      # plantio / semeadura
-    "prescription",  # mapa de prescrição (Rx)
-    "boundary",      # contorno de talhão
-    "guidance",      # linhas de orientação
-    "vigor",         # índice de vegetação / Augmenta
-    "soil",          # amostragem de solo
+    "harvest",       # harvest / yield map
+    "application",   # as-applied fertilizer or crop protection
+    "planting",      # seeding / planting
+    "prescription",  # variable rate prescription (Rx)
+    "boundary",      # field boundary
+    "guidance",      # guidance lines
+    "vigor",         # vegetation index / Augmenta
+    "soil",          # soil sampling
     "unknown",
 )
 
 OPERATION_LABELS = {
-    "harvest": "Colheita (rendimento)",
-    "application": "Aplicação (as-applied)",
-    "planting": "Plantio / semeadura",
-    "prescription": "Prescrição (Rx)",
-    "boundary": "Contorno do talhão",
-    "guidance": "Linhas de orientação",
-    "vigor": "Vigor / índice vegetativo",
-    "soil": "Amostragem de solo",
-    "unknown": "Não identificado",
+    "harvest": "Harvest (yield)",
+    "application": "Application (as-applied)",
+    "planting": "Seeding / planting",
+    "prescription": "Prescription (Rx)",
+    "boundary": "Field boundary",
+    "guidance": "Guidance lines",
+    "vigor": "Vigour / vegetation index",
+    "soil": "Soil sampling",
+    "unknown": "Not identified",
 }
 
 
 @dataclass
 class DatasetMeta:
-    """Metadados de procedência e interpretação de um dataset."""
+    """Provenance and interpretation metadata for a dataset."""
 
     name: str = "dataset"
     source_path: str = ""
@@ -60,7 +59,7 @@ class DatasetMeta:
     operation: str = "unknown"
     crop: str | None = None
     field_name: str | None = None
-    value_label: str = "Valor"
+    value_label: str = "Value"
     value_unit: str = ""
     source_value_unit: str = ""
     geometry_type: str = "point"
@@ -74,17 +73,17 @@ class DatasetMeta:
 
 
 class Dataset:
-    """Conjunto de pontos (ou polígonos) georreferenciados já normalizado.
+    """A normalized set of georeferenced points (or polygons).
 
     Parameters
     ----------
     df:
-        Tabela com, no mínimo, as colunas ``lon`` e ``lat`` em WGS84.
+        Table with at least ``lon`` and ``lat`` columns in WGS84.
     meta:
-        Metadados de procedência.
+        Provenance metadata.
     geometry:
-        Lista opcional de geometrias shapely alinhada com ``df`` — usada
-        quando a fonte é poligonal (contorno, grade de prescrição).
+        Optional list of shapely geometries aligned with ``df`` — used when
+        the source is polygonal (boundary, prescription grid).
     """
 
     def __init__(
@@ -100,10 +99,10 @@ class Dataset:
         self._prepare()
 
     # ------------------------------------------------------------------
-    # Preparação
+    # Preparation
     # ------------------------------------------------------------------
     def _prepare(self) -> None:
-        """Garante tipos, coordenadas projetadas e campos derivados."""
+        """Ensure types, projected coordinates and derived fields."""
         for col in sch.NUMERIC_COLUMNS:
             if col in self.df.columns and not pd.api.types.is_numeric_dtype(self.df[col]):
                 self.df[col] = pd.to_numeric(self.df[col], errors="coerce")
@@ -118,7 +117,7 @@ class Dataset:
             self.project()
 
     def project(self, target: str | None = None) -> None:
-        """Preenche ``x``/``y`` num CRS métrico (UTM automático por padrão)."""
+        """Fill ``x``/``y`` in a metric CRS (automatic UTM by default)."""
         from pyproj import Transformer
 
         lon = self.df[sch.LON].to_numpy(dtype="float64", na_value=np.nan)
@@ -132,14 +131,14 @@ class Dataset:
         self.df[sch.Y] = y
 
     # ------------------------------------------------------------------
-    # Campos derivados
+    # Derived fields
     # ------------------------------------------------------------------
     def ensure_derived(self, default_swath_m: float | None = None) -> None:
-        """Calcula distância, velocidade, rumo e passadas quando ausentes.
+        """Compute distance, speed, heading and passes when they are missing.
 
-        Muitos CSVs de monitor trazem apenas posição e valor. Sem velocidade
-        e largura de faixa nenhum filtro de limpeza sério funciona, então
-        essas grandezas são reconstruídas a partir da própria trajetória.
+        Many monitor CSVs carry only position and value. Without speed and
+        swath width no serious cleaning filter works, so those quantities are
+        reconstructed from the track itself.
         """
         self.sort_by_time()
         n = len(self.df)
@@ -170,26 +169,26 @@ class Dataset:
                     speed = np.where(dt > 0, step / dt * 3.6, np.nan)
                 self.df[sch.SPEED] = pd.Series(speed).ffill().bfill().to_numpy()
                 self.meta.notes.append(
-                    "Velocidade reconstruída a partir da trajetória e do tempo."
+                    "Speed reconstructed from the track and the timestamps."
                 )
 
         if sch.SPEED in self.df.columns:
             unit = units_mod.guess_speed_unit(self.df[sch.SPEED])
             if unit != "km/h":
                 self.df[sch.SPEED] = units_mod.speed_to_kmh(self.df[sch.SPEED], unit)
-                self.meta.notes.append(f"Velocidade convertida de {unit} para km/h.")
+                self.meta.notes.append(f"Speed converted from {unit} to km/h.")
 
         if sch.SWATH not in self.df.columns and default_swath_m:
             self.df[sch.SWATH] = float(default_swath_m)
             self.meta.notes.append(
-                f"Largura de faixa ausente no arquivo; adotado {default_swath_m:g} m."
+                f"Swath width missing from the file; {default_swath_m:g} m assumed."
             )
 
         if sch.PASS not in self.df.columns and sch.HEADING in self.df.columns:
             self.df[sch.PASS] = self._detect_passes()
 
     def _time_delta_seconds(self) -> np.ndarray | None:
-        """Intervalo entre registros consecutivos, em segundos."""
+        """Interval between consecutive records, in seconds."""
         if sch.TIMESTAMP in self.df.columns:
             ts = self.df[sch.TIMESTAMP]
             if pd.api.types.is_datetime64_any_dtype(ts) and ts.notna().any():
@@ -198,7 +197,7 @@ class Dataset:
                 dt = np.diff(seconds, prepend=seconds[0])
                 if len(dt) > 1:
                     dt[0] = dt[1]
-                # Intervalos absurdos indicam salto entre operações distintas.
+                # Absurd gaps mean a jump between separate operations.
                 dt[(dt <= 0) | (dt > 60)] = np.nan
                 return dt
         if sch.ELAPSED in self.df.columns:
@@ -211,11 +210,10 @@ class Dataset:
         return None
 
     def _detect_passes(self, angle_tol_deg: float = 35.0) -> np.ndarray:
-        """Numera as passadas agrupando registros com rumo estável.
+        """Number the passes by grouping records with a stable heading.
 
-        Uma passada termina quando a máquina gira mais do que ``angle_tol_deg``
-        em relação ao rumo médio corrente — o que corresponde à manobra de
-        cabeceira.
+        A pass ends when the machine turns more than ``angle_tol_deg`` away
+        from the running mean heading — which is the headland turn.
         """
         heading = self.df[sch.HEADING].to_numpy(dtype="float64", na_value=np.nan)
         n = len(heading)
@@ -235,21 +233,21 @@ class Dataset:
                 current += 1
                 reference = h
             else:
-                # Média circular amortecida mantém a referência estável em curvas suaves.
+                # A damped circular mean keeps the reference stable on gentle curves.
                 reference = reference + 0.15 * ((h - reference + 180.0) % 360.0 - 180.0)
                 reference %= 360.0
             pass_id[i] = current
         return pass_id
 
     def sort_by_time(self) -> None:
-        """Ordena cronologicamente — pré-requisito de todos os filtros sequenciais."""
+        """Sort chronologically — a prerequisite for every sequential filter."""
         if sch.TIMESTAMP in self.df.columns and self.df[sch.TIMESTAMP].notna().any():
             self.df = self.df.sort_values(sch.TIMESTAMP, kind="stable").reset_index(drop=True)
         elif sch.ELAPSED in self.df.columns and self.df[sch.ELAPSED].notna().any():
             self.df = self.df.sort_values(sch.ELAPSED, kind="stable").reset_index(drop=True)
 
     # ------------------------------------------------------------------
-    # Consultas
+    # Queries
     # ------------------------------------------------------------------
     def __len__(self) -> int:
         return len(self.df)
@@ -259,7 +257,7 @@ class Dataset:
         return list(self.df.columns)
 
     def numeric_columns(self) -> list[str]:
-        """Colunas numéricas candidatas a virar a variável analisada."""
+        """Numeric columns that could serve as the analysed variable."""
         skip = {sch.LON, sch.LAT, sch.X, sch.Y, sch.ELAPSED}
         return [
             c for c in self.df.columns
@@ -267,7 +265,7 @@ class Dataset:
         ]
 
     def bounds(self) -> list[float] | None:
-        """Retângulo envolvente em WGS84: ``[oeste, sul, leste, norte]``."""
+        """Bounding box in WGS84: ``[west, south, east, north]``."""
         if sch.LON not in self.df.columns or self.df.empty:
             return None
         lon = self.df[sch.LON].to_numpy(dtype="float64", na_value=np.nan)
@@ -281,7 +279,7 @@ class Dataset:
         ]
 
     def stats(self, column: str = sch.VALUE) -> dict[str, float | int]:
-        """Estatísticas descritivas da coluna informada."""
+        """Descriptive statistics for the given column."""
         if column not in self.df.columns:
             return {}
         s = pd.to_numeric(self.df[column], errors="coerce").dropna()
@@ -305,7 +303,7 @@ class Dataset:
         }
 
     def area_ha(self) -> float:
-        """Área trabalhada estimada pela soma das faixas (largura × avanço)."""
+        """Worked area estimated by summing the swaths (width x advance)."""
         if sch.SWATH not in self.df.columns or sch.DISTANCE not in self.df.columns:
             return 0.0
         swath = self.df[sch.SWATH].to_numpy(dtype="float64", na_value=np.nan)
@@ -314,10 +312,10 @@ class Dataset:
         return float(area / 10_000.0)
 
     # ------------------------------------------------------------------
-    # Interoperabilidade
+    # Interoperability
     # ------------------------------------------------------------------
     def to_geodataframe(self, metric: bool = False):
-        """Converte para ``GeoDataFrame`` (WGS84 ou no CRS métrico)."""
+        """Convert to a ``GeoDataFrame`` (WGS84 or the metric CRS)."""
         import geopandas as gpd
         from shapely.geometry import Point
 
@@ -331,7 +329,7 @@ class Dataset:
         return gdf
 
     def copy(self) -> "Dataset":
-        """Cópia independente, preservando metadados e CRS métrico."""
+        """Independent copy, preserving metadata and metric CRS."""
         import copy as _copy
 
         clone = Dataset.__new__(Dataset)
@@ -342,7 +340,7 @@ class Dataset:
         return clone
 
     def subset(self, mask) -> "Dataset":
-        """Novo dataset contendo apenas as linhas onde ``mask`` é verdadeiro."""
+        """New dataset holding only the rows where ``mask`` is true."""
         mask = np.asarray(mask, dtype=bool)
         clone = self.copy()
         clone.df = self.df.loc[mask].reset_index(drop=True)
@@ -351,7 +349,7 @@ class Dataset:
         return clone
 
     def summary(self) -> dict[str, Any]:
-        """Resumo serializável usado pela interface."""
+        """Serializable summary used by the interface."""
         return {
             "meta": self.meta.to_dict(),
             "rows": len(self.df),
@@ -363,7 +361,7 @@ class Dataset:
             "stats": self.stats(),
         }
 
-#: Colunas que aceitam declaração de unidade de origem, e o grupo de cada uma.
+#: Columns that accept a source unit declaration, and each one's group.
 SOURCE_UNIT_COLUMNS = {
     sch.VALUE: "rate_mass",
     sch.TARGET_RATE: "rate_mass",
@@ -380,24 +378,25 @@ def apply_source_units(
     declared: dict[str, str],
     crop: str | None = None,
 ) -> list[str]:
-    """Converte colunas da unidade declarada no arquivo para a unidade interna.
+    """Convert columns from the unit declared in the file to the internal one.
 
-    O monitor grava no sistema em que foi configurado — um John Deere norte-
-    americano entrega bu/ac, mph e pés; um Väderstad europeu entrega kg/ha,
-    km/h e metros. Sem declarar isso, um mapa em bu/ac seria lido como se
-    fosse kg/ha e todos os números sairiam 60 vezes menores.
+    A monitor writes in whatever system it was configured for: a North
+    American John Deere delivers bu/ac, mph and feet; a European Väderstad
+    delivers kg/ha, km/h and metres. Without declaring that, a map in bu/ac
+    would be read as if it were kg/ha and every number would come out far too
+    small.
 
     Parameters
     ----------
     declared:
-        Mapa ``{coluna: unidade}``, ex. ``{"value": "bu/ac", "speed": "mph"}``.
+        Map of ``{column: unit}``, e.g. ``{"value": "bu/ac", "speed": "mph"}``.
     crop:
-        Cultura, necessária para as unidades em bushel.
+        Crop, needed for the bushel-based units.
 
     Returns
     -------
     list[str]
-        Descrição das conversões aplicadas, para registro nas notas.
+        Description of the conversions applied, for the notes.
     """
     applied: list[str] = []
     for column, unit in (declared or {}).items():
@@ -415,7 +414,7 @@ def apply_source_units(
             continue
         dataset.df[column] = pd.to_numeric(dataset.df[column], errors="coerce") * factor
         label = sch.LABELS.get(column, column)
-        applied.append(f"{label}: convertido de {unit} para {internal}.")
+        applied.append(f"{label}: converted from {unit} to {internal}.")
 
     if applied:
         dataset.meta.notes.extend(applied)

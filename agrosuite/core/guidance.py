@@ -1,10 +1,10 @@
-"""Linhas de orientação (AB).
+"""Guidance (AB) lines.
 
-Uma linha AB é o par de pontos que define a direção de trabalho; o monitor
-gera as passadas paralelas a partir dela, espaçadas pela largura do
-implemento. Quando o ensaio em faixas é desenhado numa direção, a linha AB
-precisa seguir exatamente essa direção — senão as passadas do operador
-cruzam as faixas e o experimento se perde.
+An AB line is the pair of points that defines the working direction; the
+monitor generates the parallel passes from it, spaced by the implement
+width. When a strip trial is laid out along a direction, the AB line has to
+follow exactly that direction — otherwise the operator's passes cut across
+the strips and the experiment is lost.
 """
 
 from __future__ import annotations
@@ -19,17 +19,17 @@ def ab_line_from_direction(
     name: str = "AB",
     extend_m: float = 100.0,
 ) -> dict[str, Any]:
-    """Cria uma linha AB atravessando o talhão numa direção dada.
+    """Create an AB line crossing the field along a given direction.
 
     Parameters
     ----------
     angle_deg:
-        Direção em graus **matemáticos** — 0 aponta para leste, crescendo no
-        sentido anti-horário. É o mesmo ângulo devolvido pelo desenho de
-        ensaio, para que a linha e as faixas fiquem alinhadas.
+        Direction in **mathematical** degrees — 0 points east and increases
+        counter-clockwise. It is the same angle the trial layout returns, so
+        that the line and the strips end up aligned.
     extend_m:
-        Quanto prolongar a linha além do talhão, em metros. Sobra é boa: o
-        monitor precisa da referência antes da máquina entrar na área.
+        How far to extend the line beyond the field, in metres. Extra length
+        helps: the monitor needs the reference before the machine enters.
     """
     from pyproj import Transformer
     from shapely.geometry import Polygon
@@ -37,7 +37,7 @@ def ab_line_from_direction(
     from .crs import WGS84, pick_metric_crs
 
     if len(boundary_lonlat) < 3:
-        raise ValueError("Contorno insuficiente para gerar uma linha AB.")
+        raise ValueError("Boundary too small to build an AB line from.")
 
     lons = [p[0] for p in boundary_lonlat]
     lats = [p[1] for p in boundary_lonlat]
@@ -51,8 +51,8 @@ def ab_line_from_direction(
         field = field.buffer(0)
     centroid = field.centroid
 
-    # Meia diagonal do retângulo envolvente garante que a linha atravesse o
-    # talhão inteiro em qualquer direção.
+    # Half the bounding box diagonal guarantees the line crosses the whole
+    # field in any direction.
     min_x, min_y, max_x, max_y = field.bounds
     half = math.hypot(max_x - min_x, max_y - min_y) / 2.0 + extend_m
 
@@ -61,7 +61,7 @@ def ab_line_from_direction(
     a = to_wgs.transform(centroid.x - dx, centroid.y - dy)
     b = to_wgs.transform(centroid.x + dx, centroid.y + dy)
 
-    # Rumo de bússola: 0 = norte, crescendo no sentido horário.
+    # Compass bearing: 0 = north, increasing clockwise.
     heading = (90.0 - angle_deg) % 360.0
     return {
         "name": name,
@@ -77,7 +77,7 @@ def ab_line_from_points(
     b_lonlat: tuple[float, float],
     name: str = "AB",
 ) -> dict[str, Any]:
-    """Monta uma linha AB a partir de dois pontos escolhidos no mapa."""
+    """Build an AB line from two points picked on the map."""
     from pyproj import Transformer
 
     from .crs import WGS84, pick_metric_crs
@@ -90,8 +90,8 @@ def ab_line_from_points(
     length = math.hypot(bx - ax, by - ay)
     if length < 1.0:
         raise ValueError(
-            "Os pontos A e B estão a menos de um metro um do outro; a direção "
-            "resultante seria imprecisa. Afaste-os ao longo da passada."
+            "Points A and B are less than a metre apart, so the resulting "
+            "direction would be unreliable. Move them apart along the pass."
         )
     heading = (math.degrees(math.atan2(bx - ax, by - ay)) + 360.0) % 360.0
     return {
@@ -105,7 +105,7 @@ def ab_line_from_points(
 
 
 def ab_lines_to_geojson(lines: list[dict[str, Any]]) -> dict[str, Any]:
-    """Converte linhas AB em GeoJSON, para desenhar no mapa e exportar."""
+    """Convert AB lines to GeoJSON, for drawing on the map and exporting."""
     features = []
     for line in lines:
         if line.get("a") and line.get("b"):

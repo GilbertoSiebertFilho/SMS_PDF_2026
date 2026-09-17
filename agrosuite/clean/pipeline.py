@@ -1,14 +1,14 @@
-"""Execução e laudo da limpeza.
+"""Running the cleaning and writing its report.
 
-A limpeza acontece em duas fases. Primeiro as **correções**, que alteram
-valores sem descartar nada (atraso de fluxo, conversão para massa seca).
-Depois os **filtros**, que só marcam registros para remoção. A separação
-importa: corrigir depois de filtrar aplicaria a correção sobre uma série
-com buracos, e o deslocamento temporal do fluxo deixaria de fazer sentido.
+Cleaning happens in two phases. First the **corrections**, which change
+values without discarding anything (flow delay, dry-mass conversion). Then
+the **filters**, which only mark records for removal. The split matters:
+correcting after filtering would apply the correction to a series full of
+holes, and the flow's time shift would stop making sense.
 
-Nada é sobrescrito. O resultado traz o conjunto limpo, o conjunto removido
-com o motivo de cada descarte, e o laudo comparativo — que é o material
-para julgar se a limpeza foi adequada ou exagerada.
+Nothing is overwritten. The result carries the clean set, the removed set
+with the reason for each discard, and the comparative report — which is the
+material for judging whether the cleaning was appropriate or overdone.
 """
 
 from __future__ import annotations
@@ -23,14 +23,14 @@ from ..core import schema as sch
 from ..core.dataset import Dataset
 from . import steps as steps_mod
 
-#: Configurações iniciais por tipo de operação. São ponto de partida —
-#: a interface expõe cada parâmetro para ajuste.
+#: Starting configuration per operation type. These are a starting point —
+#: the interface exposes every parameter for adjustment.
 PRESETS: dict[str, dict[str, Any]] = {
     "harvest": {
-        "label": "Colheita (mapa de rendimento)",
+        "label": "Harvest (yield map)",
         "description": (
-            "Sequência completa: corrige o atraso de fluxo e aplica todos os "
-            "filtros, incluindo sobreposição e bordadura."
+            "Full sequence: corrects the flow delay and applies every filter, "
+            "including overlap and field edge."
         ),
         "corrections": {"flow_delay_s": 12.0},
         "steps": {
@@ -50,11 +50,11 @@ PRESETS: dict[str, dict[str, Any]] = {
         },
     },
     "application": {
-        "label": "Aplicação (as-applied)",
+        "label": "Application (as-applied)",
         "description": (
-            "Sem atraso de fluxo e sem filtro de outlier local: numa aplicação "
-            "em taxa variável, a mudança brusca de dose entre zonas é o sinal, "
-            "não o ruído."
+            "No flow delay and no local outlier filter: in a variable rate "
+            "application, an abrupt rate change between zones is the signal, "
+            "not the noise."
         ),
         "corrections": {"flow_delay_s": 0.0},
         "steps": {
@@ -75,8 +75,8 @@ PRESETS: dict[str, dict[str, Any]] = {
         },
     },
     "planting": {
-        "label": "Plantio / semeadura",
-        "description": "Foco em falhas de dosador e trechos de manobra.",
+        "label": "Seeding / planting",
+        "description": "Focused on metering faults and turning stretches.",
         "corrections": {"flow_delay_s": 0.0},
         "steps": {
             "null_value": {"enabled": True},
@@ -95,10 +95,10 @@ PRESETS: dict[str, dict[str, Any]] = {
         },
     },
     "vigor": {
-        "label": "Vigor / Augmenta",
+        "label": "Vigour / Augmenta",
         "description": (
-            "Limpeza leve: o índice de vigor varia legitimamente entre plantas "
-            "vizinhas, então só posição e extremos são tratados."
+            "Light cleaning: a vigour index legitimately varies between "
+            "neighbouring plants, so only position and extremes are treated."
         ),
         "corrections": {"flow_delay_s": 0.0},
         "steps": {
@@ -119,8 +119,8 @@ PRESETS: dict[str, dict[str, Any]] = {
         },
     },
     "minimal": {
-        "label": "Mínima (apenas erros evidentes)",
-        "description": "Só descarta o que é indefensável: nulo, posição inválida, duplicata.",
+        "label": "Minimal (obvious errors only)",
+        "description": "Discards only the indefensible: nulls, invalid positions, duplicates.",
         "corrections": {"flow_delay_s": 0.0},
         "steps": {
             "null_value": {"enabled": True},
@@ -142,13 +142,13 @@ PRESETS: dict[str, dict[str, Any]] = {
 
 
 def preset_for(operation: str) -> str:
-    """Preset recomendado para um tipo de operação."""
+    """Recommended preset for an operation type."""
     return operation if operation in PRESETS else "minimal"
 
 
 @dataclass
 class CleaningResult:
-    """Saída completa de uma execução de limpeza."""
+    """Complete output of a cleaning run."""
 
     clean: Dataset
     removed: Dataset
@@ -156,27 +156,27 @@ class CleaningResult:
 
 
 # --------------------------------------------------------------------------
-# Correções
+# Corrections
 # --------------------------------------------------------------------------
 
 def apply_flow_delay(ds: Dataset, delay_s: float, value_column: str = sch.VALUE) -> str | None:
-    """Desloca a variável no tempo para compensar o trânsito dentro da máquina.
+    """Shift the variable in time to compensate for transit inside the machine.
 
-    Do corte até o sensor de fluxo passam-se alguns segundos. Sem essa
-    correção, o valor medido é atribuído ao ponto onde a máquina está
-    **agora**, e não ao ponto de onde o produto realmente veio — o que
-    desloca todo o mapa alguns metros no sentido do deslocamento.
+    A few seconds pass between the cut and the flow sensor. Without this
+    correction, the measured value is attributed to where the machine is
+    **now** rather than where the crop actually came from — which shifts the
+    whole map several metres along the direction of travel.
     """
     if not delay_s or delay_s <= 0 or value_column not in ds.df.columns:
         return None
 
     dt = ds._time_delta_seconds()
     if dt is None or not np.isfinite(dt).any():
-        return "Atraso de fluxo não aplicado: intervalo entre registros indisponível."
+        return "Flow delay not applied: interval between records unavailable."
 
     median_dt = float(np.nanmedian(dt))
     if not np.isfinite(median_dt) or median_dt <= 0:
-        return "Atraso de fluxo não aplicado: intervalo entre registros inconsistente."
+        return "Flow delay not applied: interval between records is inconsistent."
 
     shift = int(round(delay_s / median_dt))
     if shift <= 0:
@@ -184,13 +184,13 @@ def apply_flow_delay(ds: Dataset, delay_s: float, value_column: str = sch.VALUE)
 
     ds.df[value_column] = ds.df[value_column].shift(-shift)
     return (
-        f"Atraso de fluxo de {delay_s:g} s aplicado "
-        f"({shift} registros a {median_dt:.2f} s cada)."
+        f"Flow delay of {delay_s:g} s applied "
+        f"({shift} records at {median_dt:.2f} s each)."
     )
 
 
 # --------------------------------------------------------------------------
-# Execução
+# Execution
 # --------------------------------------------------------------------------
 
 def run(
@@ -198,17 +198,17 @@ def run(
     config: dict[str, Any] | None = None,
     value_column: str = sch.VALUE,
 ) -> CleaningResult:
-    """Executa a limpeza e devolve dados limpos, removidos e laudo.
+    """Run the cleaning and return clean data, removed data and the report.
 
     Parameters
     ----------
     dataset:
-        Dataset já importado e com campos derivados calculados.
+        A dataset already imported and with derived fields computed.
     config:
-        Dicionário no formato dos presets. Ausente, usa o preset do tipo de
-        operação detectado.
+        Dictionary in the presets' shape. When absent, the preset for the
+        detected operation type is used.
     value_column:
-        Coluna a tratar como variável principal.
+        Column to treat as the main variable.
     """
     if config is None:
         config = PRESETS[preset_for(dataset.meta.operation)]
@@ -246,8 +246,8 @@ def run(
         removed.df["removal_reason"] = ctx.reason[~ctx.alive]
 
     clean.meta.notes = list(clean.meta.notes) + corrections
-    clean.meta.name = f"{dataset.meta.name} (limpo)"
-    removed.meta.name = f"{dataset.meta.name} (removidos)"
+    clean.meta.name = f"{dataset.meta.name} (clean)"
+    removed.meta.name = f"{dataset.meta.name} (removed)"
 
     report = build_report(
         dataset, clean, removed, results, corrections,
@@ -257,7 +257,7 @@ def run(
 
 
 # --------------------------------------------------------------------------
-# Laudo
+# Report
 # --------------------------------------------------------------------------
 
 def _histogram(series: pd.Series, bins: int = 30) -> dict[str, list[float]]:
@@ -269,42 +269,42 @@ def _histogram(series: pd.Series, bins: int = 30) -> dict[str, list[float]]:
 
 
 def _assess(removed_pct: float, before: dict, after: dict) -> list[dict[str, str]]:
-    """Traduz os números do laudo em leituras acionáveis.
+    """Turn the report's numbers into readings you can act on.
 
-    Não basta dizer quantos pontos saíram; o que interessa é se a limpeza
-    ficou dentro do razoável e o que mudou na distribuição.
+    Saying how many points came out is not enough; what matters is whether the
+    cleaning stayed reasonable and what changed in the distribution.
     """
     findings: list[dict[str, str]] = []
 
     if removed_pct > 45:
         findings.append({
-            "nivel": "alerta",
-            "texto": (
-                f"{removed_pct:.1f}% dos registros foram descartados. Acima de ~40% "
-                "o mapa passa a refletir mais os filtros do que a lavoura — "
-                "reveja os parâmetros mais agressivos antes de usar o resultado."
+            "level": "alert",
+            "text": (
+                f"{removed_pct:.1f}% of the records were discarded. Past roughly 40% "
+                "the map starts reflecting the filters more than the crop — revisit "
+                "the most aggressive parameters before using the result."
             ),
         })
     elif removed_pct > 25:
         findings.append({
-            "nivel": "atencao",
-            "texto": (
-                f"{removed_pct:.1f}% dos registros descartados. É defensável em dado "
-                "de colheita com muita manobra, mas confira quais filtros dominaram."
+            "level": "warning",
+            "text": (
+                f"{removed_pct:.1f}% of the records discarded. That is defensible on "
+                "harvest data with a lot of turning, but check which filters dominated."
             ),
         })
     elif removed_pct < 2:
         findings.append({
-            "nivel": "atencao",
-            "texto": (
-                f"Apenas {removed_pct:.1f}% foi descartado. Dado bruto de monitor "
-                "raramente é tão limpo — verifique se os filtros estavam ativos."
+            "level": "warning",
+            "text": (
+                f"Only {removed_pct:.1f}% was discarded. Raw monitor data is rarely "
+                "this clean — check that the filters were actually enabled."
             ),
         })
     else:
         findings.append({
-            "nivel": "ok",
-            "texto": f"{removed_pct:.1f}% dos registros descartados — dentro do usual.",
+            "level": "ok",
+            "text": f"{removed_pct:.1f}% of the records discarded — within the usual range.",
         })
 
     cv_before = before.get("cv")
@@ -313,20 +313,20 @@ def _assess(removed_pct: float, before: dict, after: dict) -> list[dict[str, str
         delta = cv_after - cv_before
         if delta < -3:
             findings.append({
-                "nivel": "ok",
-                "texto": (
-                    f"Coeficiente de variação caiu de {cv_before:.1f}% para "
-                    f"{cv_after:.1f}% — o ruído saiu e a variação restante tende a "
-                    "ser a do talhão."
+                "level": "ok",
+                "text": (
+                    f"Coefficient of variation fell from {cv_before:.1f}% to "
+                    f"{cv_after:.1f}% — the noise came out and what is left is likely "
+                    "the field's own variation."
                 ),
             })
         elif delta > 2:
             findings.append({
-                "nivel": "alerta",
-                "texto": (
-                    f"Coeficiente de variação subiu de {cv_before:.1f}% para "
-                    f"{cv_after:.1f}%. Uma limpeza que aumenta a dispersão costuma "
-                    "indicar filtro cortando de um lado só da distribuição."
+                "level": "alert",
+                "text": (
+                    f"Coefficient of variation rose from {cv_before:.1f}% to "
+                    f"{cv_after:.1f}%. A cleaning that increases spread usually means "
+                    "a filter cutting from only one side of the distribution."
                 ),
             })
 
@@ -335,17 +335,17 @@ def _assess(removed_pct: float, before: dict, after: dict) -> list[dict[str, str
         shift = (mean_after - mean_before) / mean_before * 100.0
         if abs(shift) > 8:
             findings.append({
-                "nivel": "alerta",
-                "texto": (
-                    f"A média mudou {shift:+.1f}% com a limpeza. Um deslocamento "
-                    "desse tamanho muda a conclusão agronômica: confirme que os "
-                    "pontos removidos eram mesmo erro, e não área de baixa produção."
+                "level": "alert",
+                "text": (
+                    f"The mean moved {shift:+.1f}% with the cleaning. A shift that "
+                    "size changes the agronomic conclusion: confirm the removed "
+                    "points were errors and not genuinely low-yielding ground."
                 ),
             })
         else:
             findings.append({
-                "nivel": "ok",
-                "texto": f"Média deslocou {shift:+.1f}% — a limpeza preservou o patamar do talhão.",
+                "level": "ok",
+                "text": f"The mean moved {shift:+.1f}% — the cleaning kept the field's level.",
             })
 
     return findings
@@ -361,7 +361,7 @@ def build_report(
     before_values: pd.Series,
     value_column: str,
 ) -> dict[str, Any]:
-    """Monta o laudo comparativo da limpeza."""
+    """Assemble the comparative cleaning report."""
     total = len(original)
     kept = len(clean)
     removed_count = len(removed)
@@ -373,30 +373,30 @@ def build_report(
         counts = removed.df["removal_reason"].value_counts()
         by_reason = [
             {
-                "motivo": str(reason),
-                "registros": int(count),
-                "pct_do_total": round(count / total * 100.0, 2) if total else 0.0,
+                "reason": str(reason),
+                "records": int(count),
+                "pct_of_total": round(count / total * 100.0, 2) if total else 0.0,
             }
             for reason, count in counts.items()
         ]
 
     return {
-        "totais": {
-            "entrada": total,
-            "mantidos": kept,
-            "removidos": removed_count,
-            "pct_removido": round(removed_pct, 2),
-            "area_ha_antes": round(original.area_ha(), 2),
-            "area_ha_depois": round(clean.area_ha(), 2),
+        "totals": {
+            "input": total,
+            "kept": kept,
+            "removed": removed_count,
+            "removed_pct": round(removed_pct, 2),
+            "area_ha_before": round(original.area_ha(), 2),
+            "area_ha_after": round(clean.area_ha(), 2),
         },
-        "coluna_analisada": value_column,
-        "correcoes": corrections,
-        "etapas": [r.to_dict() for r in results],
-        "por_motivo": by_reason,
-        "estatisticas": {"antes": before_stats, "depois": after_stats},
-        "histograma": {
-            "antes": _histogram(before_values),
-            "depois": _histogram(clean.df.get(value_column, pd.Series(dtype="float64"))),
+        "value_column": value_column,
+        "corrections": corrections,
+        "steps": [r.to_dict() for r in results],
+        "by_reason": by_reason,
+        "statistics": {"before": before_stats, "after": after_stats},
+        "histogram": {
+            "before": _histogram(before_values),
+            "after": _histogram(clean.df.get(value_column, pd.Series(dtype="float64"))),
         },
-        "leitura": _assess(removed_pct, before_stats, after_stats),
+        "findings": _assess(removed_pct, before_stats, after_stats),
     }

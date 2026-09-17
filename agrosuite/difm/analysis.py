@@ -1,17 +1,16 @@
-"""Análise DIFM de ensaios em faixas.
+"""DIFM analysis of strip trials.
 
-DIFM (*Data-Intensive Farm Management*) trata o talhão comercial como o
-próprio experimento: faixas de doses diferentes são aplicadas com a
-máquina do produtor e a resposta é lida no monitor de colheita. A análise
-precisa de três cuidados que a diferenciam de um experimento de parcelas:
+DIFM (*Data-Intensive Farm Management*) treats the commercial field as the
+experiment itself: strips of different rates are applied with the grower's
+own machine and the response is read off the yield monitor. The analysis
+needs three precautions that set it apart from a small-plot experiment:
 
-1. **Agregação.** Ponto a ponto, o erro de GPS e o ruído do sensor dominam.
-   Os dados são agregados em células ou em trechos de faixa antes de ajustar
-   qualquer curva.
-2. **Borda de faixa.** Onde duas doses se encontram há mistura e efeito de
-   vizinhança. Uma margem interna descarta essa zona.
-3. **Heterogeneidade.** A dose ótima muda dentro do talhão. Analisar por zona
-   é o que justifica economicamente a taxa variável.
+1. **Aggregation.** Point by point, GPS error and sensor noise dominate. The
+   data is aggregated into cells or strip segments before any curve is fitted.
+2. **Strip edges.** Where two rates meet there is mixing and neighbour
+   effects. An inward margin discards that zone.
+3. **Heterogeneity.** The optimum rate changes within the field. Analysing by
+   zone is what economically justifies variable rate in the first place.
 """
 
 from __future__ import annotations
@@ -27,17 +26,17 @@ from . import response as response_mod
 
 
 def rate_levels(rates: np.ndarray, max_levels: int = 12) -> tuple[np.ndarray, list[float]]:
-    """Reduz as doses observadas aos níveis de tratamento do ensaio.
+    """Reduce the observed rates to the trial's treatment levels.
 
-    Um ensaio em faixas tem um punhado de doses planejadas, mas o log da
-    máquina registra pequenas oscilações em torno de cada uma. Agrupar pelo
-    valor bruto criaria dezenas de "doses" de um ponto só; agrupar pelo nível
-    devolve o desenho real do experimento.
+    A strip trial has a handful of planned rates, but the machine log records
+    small wobbles around each one. Grouping by the raw value would create
+    dozens of one-point "rates"; grouping by level gives back the experiment's
+    real design.
 
     Returns
     -------
-    (nivel_por_ponto, lista_de_niveis)
-        ``nivel_por_ponto`` traz a dose nominal de cada registro.
+    (level_per_point, list_of_levels)
+        ``level_per_point`` carries the nominal rate of each record.
     """
     rates = np.asarray(rates, dtype="float64")
     finite = rates[np.isfinite(rates)]
@@ -49,7 +48,7 @@ def rate_levels(rates: np.ndarray, max_levels: int = 12) -> tuple[np.ndarray, li
     if unique.size <= max_levels:
         levels = unique
     else:
-        # Muitas doses distintas: agrupa por quantis, preservando a ordem.
+        # Many distinct rates: group by quantiles, preserving the order.
         edges = np.quantile(finite, np.linspace(0, 1, max_levels + 1))
         edges = np.unique(edges)
         centers = (edges[:-1] + edges[1:]) / 2.0
@@ -68,31 +67,31 @@ def aggregate_cells(
     group_columns: tuple[str, ...] = (),
     min_points: int = 3,
 ) -> pd.DataFrame:
-    """Agrega os registros em células quadradas de ``cell_m`` metros.
+    """Aggregate records into square cells of ``cell_m`` metres.
 
-    A média dentro da célula absorve o erro de posicionamento e o ruído do
-    sensor. A agregação inclui o **nível de dose** na chave de agrupamento:
-    sem isso, uma célula que pega duas faixas vizinhas produziria uma dose
-    média que ninguém aplicou, e o ponto resultante não pertenceria a
-    nenhum tratamento do ensaio.
+    The mean within a cell absorbs positioning error and sensor noise. The
+    aggregation includes the **rate level** in the grouping key: without it, a
+    cell straddling two neighbouring strips would produce an average rate
+    nobody applied, and the resulting point would belong to no treatment in
+    the trial.
     """
     required = {sch.X, sch.Y, rate_column, value_column}
     missing = required - set(df.columns)
     if missing:
-        raise ValueError(f"Colunas ausentes para agregar: {', '.join(sorted(missing))}.")
+        raise ValueError(f"Columns missing for aggregation: {', '.join(sorted(missing))}.")
 
     work = df.copy()
     work[rate_column] = pd.to_numeric(work[rate_column], errors="coerce")
     work[value_column] = pd.to_numeric(work[value_column], errors="coerce")
     work = work.dropna(subset=[sch.X, sch.Y, rate_column, value_column])
     if work.empty:
-        raise ValueError("Nenhum registro com dose e rendimento simultaneamente válidos.")
+        raise ValueError("No record has a valid rate and a valid yield at the same time.")
 
-    work["_nivel"], _ = rate_levels(work[rate_column].to_numpy())
+    work["_level"], _ = rate_levels(work[rate_column].to_numpy())
     work["_col"] = np.floor(work[sch.X] / cell_m).astype("int64")
     work["_row"] = np.floor(work[sch.Y] / cell_m).astype("int64")
 
-    keys = ["_col", "_row", "_nivel"] + [c for c in group_columns if c in work.columns]
+    keys = ["_col", "_row", "_level"] + [c for c in group_columns if c in work.columns]
     aggregation = {
         value_column: ["mean", "std", "count"],
         rate_column: ["mean", "std"],
@@ -107,23 +106,23 @@ def aggregate_cells(
     grouped = grouped.reset_index()
 
     rename = {
-        f"{value_column}_mean": "rendimento",
-        f"{value_column}_std": "rendimento_dp",
+        f"{value_column}_mean": "yield",
+        f"{value_column}_std": "yield_sd",
         f"{value_column}_count": "n",
-        f"{rate_column}_mean": "dose_media",
-        f"{rate_column}_std": "dose_dp",
+        f"{rate_column}_mean": "rate_mean",
+        f"{rate_column}_std": "rate_sd",
         f"{sch.X}_mean": sch.X,
         f"{sch.Y}_mean": sch.Y,
         f"{sch.LON}_mean": sch.LON,
         f"{sch.LAT}_mean": sch.LAT,
     }
     grouped = grouped.rename(columns={k: v for k, v in rename.items() if k in grouped.columns})
-    grouped = grouped.rename(columns={"_nivel": "dose"})
+    grouped = grouped.rename(columns={"_level": "rate"})
     grouped = grouped[grouped["n"] >= min_points]
     if grouped.empty:
         raise ValueError(
-            f"Nenhuma célula de {cell_m:g} m reuniu ao menos {min_points} registros. "
-            "Reduza o tamanho da célula ou o mínimo exigido."
+            f"No {cell_m:g} m cell gathered at least {min_points} records. "
+            "Reduce the cell size or the minimum required."
         )
     return grouped
 
@@ -133,17 +132,17 @@ def drop_strip_edges(
     rate_column: str = sch.APPLIED_RATE,
     margin_m: float = 6.0,
 ) -> tuple[pd.DataFrame, int]:
-    """Descarta registros próximos à transição entre doses vizinhas.
+    """Discard records near the transition between neighbouring rates.
 
-    Na fronteira entre duas faixas a aplicação se mistura e a cultura sofre
-    efeito da parcela vizinha. Manter esses pontos achata a curva de resposta
-    e puxa a dose ótima para o centro da faixa testada.
+    At the border between two strips the application mixes and the crop feels
+    its neighbour. Keeping those points flattens the response curve and pulls
+    the optimum toward the middle of the tested range.
 
-    A fronteira não fica sobre os pontos, e sim **entre** duas passadas: se o
-    registro mais próximo com dose diferente está a ``d`` metros, a transição
-    está a aproximadamente ``d/2``. É essa distância — e não ``d`` — que é
-    comparada com a margem, senão nenhum ponto seria marcado quando o
-    espaçamento entre passadas excede a margem pedida.
+    The border does not sit on the points, it sits **between** two passes: if
+    the nearest record with a different rate is ``d`` metres away, the
+    transition is roughly at ``d/2``. It is that distance, not ``d``, that is
+    compared against the margin — otherwise no point would be flagged whenever
+    pass spacing exceeds the requested margin.
     """
     if margin_m <= 0 or sch.X not in df.columns:
         return df, 0
@@ -172,7 +171,7 @@ def drop_strip_edges(
     near_edge = boundary_distance < margin_m
     keep_index = work.index[~near_edge]
     dropped = int(near_edge.sum())
-    # Uma margem que engole o ensaio inteiro é erro de parâmetro, não limpeza.
+    # A margin that swallows the whole trial is a parameter mistake, not cleaning.
     if dropped >= len(work) * 0.9:
         return df, 0
     return df.loc[keep_index], dropped
@@ -190,28 +189,28 @@ def analyze(
     models: list[str] | None = None,
     rate_max: float | None = None,
 ) -> dict[str, Any]:
-    """Executa a análise DIFM completa e devolve o laudo.
+    """Run the full DIFM analysis and return the report.
 
-    O laudo traz a curva ajustada, a dose econômica ótima, a comparação
-    entre taxa uniforme e taxa variável por zona, e o resumo por dose
-    aplicada — que é a leitura mais direta para conferir se o ensaio saiu
-    como planejado.
+    The report carries the fitted curve, the economic optimum rate, the
+    comparison between uniform and zone-based variable rate, and the summary
+    by applied rate — which is the most direct way to check whether the trial
+    came out as planned.
     """
     df = dataset.df
     if rate_column not in df.columns:
         raise ValueError(
-            f"Coluna de dose '{rate_column}' não encontrada. Colunas numéricas "
-            f"disponíveis: {', '.join(dataset.numeric_columns())}."
+            f"Rate column '{rate_column}' not found. Numeric columns available: "
+            f"{', '.join(dataset.numeric_columns())}."
         )
     if value_column not in df.columns:
-        raise ValueError(f"Coluna de rendimento '{value_column}' não encontrada.")
+        raise ValueError(f"Yield column '{value_column}' not found.")
 
     notes: list[str] = []
     trimmed, dropped = drop_strip_edges(df, rate_column, edge_margin_m)
     if dropped:
         notes.append(
-            f"{dropped} registros descartados por caírem dentro da margem de borda "
-            "das faixas, onde as doses vizinhas se misturam."
+            f"{dropped} records discarded for falling inside the strip edge margin, "
+            "where neighbouring rates mix."
         )
 
     group_columns = (zone_column,) if zone_column and zone_column in df.columns else ()
@@ -219,10 +218,10 @@ def analyze(
         trimmed, cell_m=cell_m, rate_column=rate_column,
         value_column=value_column, group_columns=group_columns,
     )
-    notes.append(f"{len(cells)} células utilizadas no ajuste da curva.")
+    notes.append(f"{len(cells)} cells used to fit the curve.")
 
-    rates = cells["dose"].to_numpy(dtype="float64")
-    yields = cells["rendimento"].to_numpy(dtype="float64")
+    rates = cells["rate"].to_numpy(dtype="float64")
+    yields = cells["yield"].to_numpy(dtype="float64")
     observed_max = float(np.max(rates))
     search_max = float(rate_max) if rate_max else observed_max
 
@@ -237,23 +236,21 @@ def analyze(
         curve = response_mod.profit_curve(
             best, crop_price, input_cost, rate_min=0.0, rate_max=search_max
         )
-        if economics["dose_otima"] > observed_max - 1e-6:
+        if economics["optimum_rate"] > observed_max - 1e-6:
             notes.append(
-                "A dose ótima caiu no limite superior da faixa testada: o ensaio "
-                "não chegou a mostrar o ponto de retorno decrescente. Trate o "
-                "valor como 'pelo menos isso' e inclua doses maiores no próximo ano."
+                "The optimum rate landed at the top of the tested range: the trial "
+                "never reached the point of diminishing returns. Treat the value as "
+                "'at least this much' and include higher rates next season."
             )
 
     by_rate = (
-        cells.groupby("dose", observed=True)
-        .agg(n=("rendimento", "size"), rendimento_medio=("rendimento", "mean"),
-             desvio=("rendimento", "std"))
+        cells.groupby("rate", observed=True)
+        .agg(n=("yield", "size"), mean_yield=("yield", "mean"), sd=("yield", "std"))
         .reset_index()
-        .rename(columns={"dose": "dose"})
     )
     if crop_price > 0:
-        by_rate["lucro_medio"] = (
-            by_rate["rendimento_medio"] * crop_price - by_rate["dose"] * input_cost
+        by_rate["mean_profit"] = (
+            by_rate["mean_yield"] * crop_price - by_rate["rate"] * input_cost
         )
     rate_table = [
         {k: (round(float(v), 2) if isinstance(v, (int, float, np.floating)) and pd.notna(v) else None)
@@ -266,33 +263,27 @@ def analyze(
     ) if group_columns else None
 
     return {
-        "coluna_dose": rate_column,
-        "coluna_rendimento": value_column,
-        "celulas": len(cells),
-        # Parâmetros ecoados em unidade interna, para a interface reexibi-los
-        # na unidade que o usuário escolheu.
-        "parametros": {
+        "rate_column": rate_column,
+        "yield_column": value_column,
+        "cells": len(cells),
+        # Parameters echoed back in internal units, so the interface can show
+        # them in whatever unit the user picked.
+        "parameters": {
             "cell_m": cell_m,
             "edge_margin_m": edge_margin_m,
-            "registros_descartados_borda": dropped,
+            "edge_records_dropped": dropped,
         },
-        "doses_testadas": sorted({round(float(r), 1) for r in np.unique(rates)}),
-        "modelo_escolhido": best.to_dict(),
-        "modelos_avaliados": [f.to_dict() for f in all_fits],
-        "economia": economics,
-        "curva": curve,
-        "por_dose": rate_table,
-        "zonas": zones,
-        "observacoes": notes,
-        "precos": {"preco_produto": crop_price, "custo_insumo": input_cost},
-        "celulas_geojson": _cells_geojson(cells),
+        "rates_tested": sorted({round(float(r), 1) for r in np.unique(rates)}),
+        "chosen_model": best.to_dict(),
+        "models_evaluated": [f.to_dict() for f in all_fits],
+        "economics": economics,
+        "curve": curve,
+        "by_rate": rate_table,
+        "zones": zones,
+        "notes": notes,
+        "prices": {"crop_price": crop_price, "input_cost": input_cost},
+        "cells_geojson": _cells_geojson(cells),
     }
-
-
-def _brl(value: float) -> str:
-    """Formata um valor em reais no padrão brasileiro (1.234,56)."""
-    formatted = f"{value:,.2f}"
-    return "R$ " + formatted.replace(",", "\u0000").replace(".", ",").replace("\u0000", ".")
 
 
 def _zone_analysis(
@@ -303,37 +294,37 @@ def _zone_analysis(
     rate_max: float,
     models: list[str] | None,
 ) -> dict[str, Any]:
-    """Ajusta uma curva por zona e compara taxa uniforme com taxa variável.
+    """Fit one curve per zone and compare uniform against variable rate.
 
-    O ganho da taxa variável é a diferença entre somar o lucro de cada zona
-    na sua própria dose ótima e aplicar a todas as zonas a melhor dose única.
-    Se essa diferença não paga o trabalho de gerar e carregar o mapa, a taxa
-    uniforme é a decisão correta — e o laudo diz isso.
+    The variable rate gain is the difference between summing each zone's
+    profit at its own optimum and applying the single best rate everywhere. If
+    that difference does not pay for building and loading the map, uniform
+    rate is the right call — and the report says so.
     """
     results: list[dict[str, Any]] = []
     weights: list[float] = []
     fits: list[response_mod.ResponseFit] = []
 
     for zone_value, group in cells.groupby(zone_column, observed=True):
-        rates = group["dose"].to_numpy(dtype="float64")
-        yields = group["rendimento"].to_numpy(dtype="float64")
+        rates = group["rate"].to_numpy(dtype="float64")
+        yields = group["yield"].to_numpy(dtype="float64")
         if len(np.unique(rates)) < 3:
             results.append({
-                "zona": str(zone_value),
-                "celulas": int(len(group)),
-                "erro": "Menos de 3 doses distintas nesta zona.",
+                "zone": str(zone_value),
+                "cells": int(len(group)),
+                "error": "Fewer than 3 distinct rates in this zone.",
             })
             continue
         try:
             fit, _ = response_mod.fit_best(rates, yields, models)
         except ValueError as exc:
-            results.append({"zona": str(zone_value), "celulas": int(len(group)), "erro": str(exc)})
+            results.append({"zone": str(zone_value), "cells": int(len(group)), "error": str(exc)})
             continue
 
         entry: dict[str, Any] = {
-            "zona": str(zone_value),
-            "celulas": int(len(group)),
-            "modelo": fit.label,
+            "zone": str(zone_value),
+            "cells": int(len(group)),
+            "model": fit.label,
             "r2": round(fit.r2, 4),
         }
         if crop_price > 0:
@@ -361,25 +352,28 @@ def _zone_analysis(
 
         gain = float(variable_profit - uniform_profit_by_rate[best_uniform_index])
         comparison = {
-            "dose_unica_otima": round(float(grid[best_uniform_index]), 2),
-            "lucro_taxa_unica": round(float(uniform_profit_by_rate[best_uniform_index]), 2),
-            "lucro_taxa_variavel": round(float(variable_profit), 2),
-            "ganho_por_ha": round(gain, 2),
-            "leitura": (
-                f"A taxa variável por zona rende {_brl(gain)}/ha a mais que a melhor "
-                f"dose única. Compare esse valor com o custo de gerar e operar o mapa "
-                f"antes de decidir."
+            "best_uniform_rate": round(float(grid[best_uniform_index]), 2),
+            "uniform_profit": round(float(uniform_profit_by_rate[best_uniform_index]), 2),
+            "variable_profit": round(float(variable_profit), 2),
+            "gain_per_ha": round(gain, 2),
+            # The gain is computed per hectare in the crop's currency; the
+            # interface converts it to the chosen area unit and currency symbol,
+            # so the wording here stays free of any unit.
+            "reading": (
+                "Zone-based variable rate beats the best single rate. Weigh the "
+                "gain shown here against the cost of building and running the map "
+                "before deciding."
             )
             if gain > 0 else
-            "Neste conjunto a taxa variável não superou a melhor dose única: as zonas "
-            "responderam de forma parecida demais para justificar o mapa.",
+            "On this dataset variable rate did not beat the best single rate: the "
+            "zones responded too similarly to justify the map.",
         }
 
-    return {"coluna_zona": zone_column, "por_zona": results, "comparacao": comparison}
+    return {"zone_column": zone_column, "by_zone": results, "comparison": comparison}
 
 
 def _cells_geojson(cells: pd.DataFrame, limit: int = 8000) -> dict[str, Any]:
-    """Células agregadas como GeoJSON para desenhar no mapa."""
+    """Aggregated cells as GeoJSON, for drawing on the map."""
     if sch.LON not in cells.columns or sch.LAT not in cells.columns:
         return {"type": "FeatureCollection", "features": []}
     sample = cells if len(cells) <= limit else cells.sample(limit, random_state=0)
@@ -388,8 +382,8 @@ def _cells_geojson(cells: pd.DataFrame, limit: int = 8000) -> dict[str, Any]:
             "type": "Feature",
             "geometry": {"type": "Point", "coordinates": [float(row[sch.LON]), float(row[sch.LAT])]},
             "properties": {
-                "dose": round(float(row["dose"]), 2),
-                "rendimento": round(float(row["rendimento"]), 1),
+                "rate": round(float(row["rate"]), 2),
+                "yield": round(float(row["yield"]), 1),
                 "n": int(row["n"]),
             },
         }

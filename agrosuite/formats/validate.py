@@ -1,21 +1,21 @@
-"""Verificação dos arquivos antes de levá-los ao monitor.
+"""Checking the files before taking them to the monitor.
 
-Descobrir que o mapa não abre acontece no pior lugar possível: com a máquina
-ligada, o operador esperando e o pen drive na mão. Este módulo confere o que
-dá para conferir no computador — as causas conhecidas de recusa, uma a uma —
-e devolve um laudo em três níveis:
+Finding out the map will not open happens in the worst possible place: engine
+running, operator waiting, USB stick in hand. This module checks what can be
+checked on the computer — the known causes of rejection, one by one — and
+returns a report at three levels:
 
 ``ok``
-    O item foi conferido e está conforme.
-``atencao``
-    Funciona na maioria dos casos, mas depende de firmware ou de configuração
-    do display; vale confirmar na tela.
-``falha``
-    O monitor vai recusar o arquivo. Não leve assim.
+    The item was checked and conforms.
+``warning``
+    Works in most cases, but depends on firmware or display configuration;
+    worth confirming on screen.
+``fail``
+    The monitor will refuse this file. Do not take it as it is.
 
-O que **não** dá para garantir daqui: versão de firmware, menu de importação
-e formatos proprietários. Por isso nenhuma verificação afirma "vai funcionar":
-ela afirma que a causa conhecida de falha foi eliminada.
+What **cannot** be guaranteed from here: firmware version, import menus and
+proprietary formats. That is why no check claims "this will work" — it claims
+that a known cause of failure has been ruled out.
 """
 
 from __future__ import annotations
@@ -28,13 +28,13 @@ from typing import Any
 
 import numpy as np
 
-#: Extensões que precisam acompanhar um .shp para o monitor abri-lo.
+#: Extensions that must travel with a .shp for the monitor to open it.
 REQUIRED_SIDECARS = (".shx", ".dbf", ".prj")
 
-#: Limite de caracteres de um nome de campo no DBF.
+#: Character limit for a field name in DBF.
 DBF_FIELD_LIMIT = 10
 
-#: Acima disto, muitos terminais demoram demais ou recusam o carregamento.
+#: Above this, many terminals take far too long or refuse to load.
 MAX_RX_FEATURES = 20_000
 MAX_GRID_CELLS = 2_000_000
 MAX_FILE_MB = 32
@@ -42,10 +42,10 @@ MAX_FILE_MB = 32
 
 @dataclass
 class Check:
-    """Um item verificado."""
+    """A single checked item."""
 
     item: str
-    status: str          # 'ok' | 'atencao' | 'falha'
+    status: str          # 'ok' | 'warning' | 'fail'
     message: str
     fix: str = ""
 
@@ -58,11 +58,11 @@ def _ok(item, message):
 
 
 def _warn(item, message, fix=""):
-    return Check(item, "atencao", message, fix)
+    return Check(item, "warning", message, fix)
 
 
 def _fail(item, message, fix=""):
-    return Check(item, "falha", message, fix)
+    return Check(item, "fail", message, fix)
 
 
 # ==========================================================================
@@ -74,127 +74,128 @@ def validate_shapefile(
     rate_field: str | None = None,
     expect_polygons: bool = True,
 ) -> list[Check]:
-    """Confere um shapefile contra o que os monitores exigem."""
+    """Check a shapefile against what monitors require."""
     import geopandas as gpd
 
     shp_path = Path(shp_path)
     checks: list[Check] = []
 
     if not shp_path.exists():
-        return [_fail("Arquivo", f"{shp_path.name} não existe.")]
+        return [_fail("File", f"{shp_path.name} does not exist.")]
 
-    # --- acompanhantes
+    # --- companion files
     missing = [ext for ext in REQUIRED_SIDECARS if not shp_path.with_suffix(ext).exists()]
     if missing:
         checks.append(_fail(
-            "Arquivos do conjunto",
-            f"Faltam {', '.join(missing)} ao lado de {shp_path.name}.",
-            "Copie sempre .shp, .shx, .dbf e .prj juntos — o monitor não abre sem os quatro.",
+            "File set",
+            f"Missing {', '.join(missing)} alongside {shp_path.name}.",
+            "Always copy .shp, .shx, .dbf and .prj together — the monitor will not "
+            "open the map without all four.",
         ))
     else:
-        checks.append(_ok("Arquivos do conjunto", ".shp, .shx, .dbf e .prj presentes."))
+        checks.append(_ok("File set", ".shp, .shx, .dbf and .prj all present."))
 
     try:
         gdf = gpd.read_file(shp_path)
     except Exception as exc:
-        return checks + [_fail("Leitura", f"O arquivo não pôde ser lido de volta: {exc}")]
+        return checks + [_fail("Readback", f"The file could not be read back: {exc}")]
 
-    # --- geometria
+    # --- geometry
     if gdf.empty:
-        checks.append(_fail("Feições", "O shapefile não tem nenhuma feição.",
-                            "Verifique os parâmetros que geraram o mapa."))
+        checks.append(_fail("Features", "The shapefile holds no features at all.",
+                            "Check the parameters that produced the map."))
         return checks
 
     geom_types = set(gdf.geom_type.dropna().unique())
     if expect_polygons:
         if geom_types <= {"Polygon", "MultiPolygon"}:
-            checks.append(_ok("Tipo de geometria",
-                              f"{len(gdf)} polígono(s) — é o que o monitor espera numa prescrição."))
+            checks.append(_ok("Geometry type",
+                              f"{len(gdf)} polygon(s) — what a monitor expects in a prescription."))
         else:
             checks.append(_fail(
-                "Tipo de geometria",
-                f"Geometria é {', '.join(sorted(geom_types))}; prescrição precisa ser polígono.",
-                "Gere a prescrição a partir do ensaio desenhado ou de uma grade, não de pontos.",
+                "Geometry type",
+                f"Geometry is {', '.join(sorted(geom_types))}; a prescription must be polygons.",
+                "Build the prescription from the trial layout or a grid, not from points.",
             ))
 
     invalid = int((~gdf.geometry.is_valid).sum())
     if invalid:
         checks.append(_warn(
-            "Validade dos polígonos",
-            f"{invalid} polígono(s) com geometria inválida (auto-interseção ou anel aberto).",
-            "Alguns monitores ignoram a feição inválida; outros recusam o arquivo inteiro.",
+            "Polygon validity",
+            f"{invalid} polygon(s) with invalid geometry (self-intersection or open ring).",
+            "Some monitors skip the invalid feature; others refuse the whole file.",
         ))
     else:
-        checks.append(_ok("Validade dos polígonos", "Todas as geometrias são válidas."))
+        checks.append(_ok("Polygon validity", "Every geometry is valid."))
 
     empty = int(gdf.geometry.is_empty.sum())
     if empty:
-        checks.append(_fail("Geometrias vazias", f"{empty} feição(ões) sem geometria.",
-                            "Remova-as antes de exportar."))
+        checks.append(_fail("Empty geometries", f"{empty} feature(s) with no geometry.",
+                            "Remove them before exporting."))
 
     if len(gdf) > MAX_RX_FEATURES:
         checks.append(_warn(
-            "Quantidade de feições",
-            f"{len(gdf):,} polígonos. Acima de ~{MAX_RX_FEATURES:,} muitos terminais "
-            "demoram minutos para carregar, ou desistem.".replace(",", "."),
-            "Aumente o tamanho da célula ou simplifique as zonas.",
+            "Feature count",
+            f"{len(gdf):,} polygons. Past roughly {MAX_RX_FEATURES:,} many terminals "
+            "take minutes to load, or give up.",
+            "Increase the cell size or simplify the zones.",
         ))
     else:
-        checks.append(_ok("Quantidade de feições", f"{len(gdf)} polígono(s)."))
+        checks.append(_ok("Feature count", f"{len(gdf)} polygon(s)."))
 
-    # --- projeção
+    # --- projection
     if gdf.crs is None:
-        checks.append(_fail("Projeção", "Sem .prj — o monitor não sabe onde o mapa fica.",
-                            "Exporte novamente pelo AgroSuite, que sempre grava o .prj."))
+        checks.append(_fail("Projection", "No .prj — the monitor cannot tell where the map is.",
+                            "Export again from AgroSuite, which always writes the .prj."))
     elif gdf.crs.to_epsg() == 4326:
-        checks.append(_ok("Projeção", "WGS84 geográfico (EPSG:4326), aceito por todos os monitores."))
+        checks.append(_ok("Projection", "Geographic WGS84 (EPSG:4326), accepted by every monitor."))
     else:
         checks.append(_warn(
-            "Projeção",
-            f"CRS {gdf.crs.to_string()} em vez de WGS84. Displays antigos costumam "
-            "assumir WGS84 e deslocam o mapa.",
-            "Reexporte em EPSG:4326 se o mapa aparecer fora de lugar.",
+            "Projection",
+            f"CRS is {gdf.crs.to_string()} rather than WGS84. Older displays tend to "
+            "assume WGS84 and shift the map.",
+            "Re-export in EPSG:4326 if the map shows up in the wrong place.",
         ))
 
-    # --- coordenadas plausíveis
+    # --- plausible coordinates
     bounds = gdf.total_bounds
     if gdf.crs is not None and gdf.crs.to_epsg() == 4326:
         if not (-180 <= bounds[0] <= 180 and -90 <= bounds[1] <= 90
                 and -180 <= bounds[2] <= 180 and -90 <= bounds[3] <= 90):
-            checks.append(_fail("Coordenadas", "Valores fora da faixa de latitude/longitude."))
+            checks.append(_fail("Coordinates", "Values outside the latitude/longitude range."))
         else:
             checks.append(_ok(
-                "Localização",
-                f"Entre {bounds[1]:.4f}, {bounds[0]:.4f} e {bounds[3]:.4f}, {bounds[2]:.4f}.",
+                "Location",
+                f"Between {bounds[1]:.4f}, {bounds[0]:.4f} and {bounds[3]:.4f}, {bounds[2]:.4f}.",
             ))
 
-    # --- nomes de campo
+    # --- field names
     attributes = [c for c in gdf.columns if c != gdf.geometry.name]
     too_long = [c for c in attributes if len(c) > DBF_FIELD_LIMIT]
     if too_long:
         checks.append(_fail(
-            "Nomes de campo",
-            f"Campos acima de {DBF_FIELD_LIMIT} caracteres: {', '.join(too_long)}.",
-            "O DBF trunca sem avisar e pode colidir dois campos num só.",
+            "Field names",
+            f"Fields longer than {DBF_FIELD_LIMIT} characters: {', '.join(too_long)}.",
+            "DBF truncates silently and can collapse two fields into one.",
         ))
     else:
-        checks.append(_ok("Nomes de campo", f"{len(attributes)} campo(s) dentro do limite do DBF."))
+        checks.append(_ok("Field names", f"{len(attributes)} field(s) within the DBF limit."))
 
-    # --- campo de dose
+    # --- rate field
     if rate_field:
         if rate_field not in gdf.columns:
             checks.append(_fail(
-                "Campo de dose",
-                f"O campo '{rate_field}' não existe no arquivo. "
-                f"Campos disponíveis: {', '.join(attributes)}.",
-                "Sem ele o monitor não encontra a dose na hora de importar.",
+                "Rate field",
+                f"Field '{rate_field}' does not exist in the file. "
+                f"Available fields: {', '.join(attributes)}.",
+                "Without it the monitor cannot find the rate at import time.",
             ))
         else:
             series = gdf[rate_field]
             if not np.issubdtype(series.dtype, np.number):
                 checks.append(_fail(
-                    "Campo de dose",
-                    f"'{rate_field}' é do tipo {series.dtype}, e precisa ser numérico.",
+                    "Rate field",
+                    f"'{rate_field}' has type {series.dtype} and must be numeric.",
                 ))
             else:
                 values = series.to_numpy(dtype="float64")
@@ -203,25 +204,25 @@ def validate_shapefile(
                 zeros = int((values == 0).sum())
                 if nulls:
                     checks.append(_fail(
-                        "Doses nulas", f"{nulls} polígono(s) sem valor de dose.",
-                        "Preencha com zero explícito onde não se quer aplicar.",
+                        "Null rates", f"{nulls} polygon(s) with no rate value.",
+                        "Write an explicit zero where nothing should be applied.",
                     ))
                 if negatives:
-                    checks.append(_fail("Doses negativas", f"{negatives} polígono(s) com dose negativa."))
+                    checks.append(_fail("Negative rates", f"{negatives} polygon(s) with a negative rate."))
                 if not nulls and not negatives:
-                    detail = (f"{np.nanmin(values):.4g} a {np.nanmax(values):.4g}"
-                              f" em {len(values)} polígonos")
+                    detail = (f"{np.nanmin(values):.4g} to {np.nanmax(values):.4g}"
+                              f" across {len(values)} polygons")
                     if zeros:
-                        detail += f"; {zeros} com dose zero (área sem aplicação)"
-                    checks.append(_ok("Campo de dose", f"'{rate_field}': {detail}."))
+                        detail += f"; {zeros} at zero (no-application area)"
+                    checks.append(_ok("Rate field", f"'{rate_field}': {detail}."))
                 if np.nanmax(values) > 1e6:
                     checks.append(_warn(
-                        "Magnitude da dose",
-                        f"Dose máxima de {np.nanmax(values):.4g} — valor alto demais para a "
-                        "maioria dos insumos. Confira se a unidade está certa.",
+                        "Rate magnitude",
+                        f"Maximum rate of {np.nanmax(values):.4g} — too high for most "
+                        "inputs. Check that the unit is right.",
                     ))
 
-    # --- acentuação no DBF
+    # --- non-ASCII text in the DBF
     text_columns = [c for c in attributes if gdf[c].dtype == object]
     has_accents = any(
         isinstance(v, str) and any(ord(ch) > 127 for ch in v)
@@ -230,14 +231,15 @@ def validate_shapefile(
     cpg = shp_path.with_suffix(".cpg")
     if has_accents and not cpg.exists():
         checks.append(_warn(
-            "Acentuação",
-            "Há texto com acento e não existe .cpg declarando a codificação.",
-            "Displays antigos mostram caracteres trocados; evite acento nos nomes.",
+            "Character encoding",
+            "There is non-ASCII text and no .cpg declaring the encoding.",
+            "Older displays show garbled characters; avoid accents in names.",
         ))
     elif has_accents:
-        checks.append(_ok("Acentuação", f"Texto acentuado com codificação declarada em {cpg.name}."))
+        checks.append(_ok("Character encoding",
+                          f"Non-ASCII text with the encoding declared in {cpg.name}."))
 
-    # --- tamanho
+    # --- size
     total_mb = sum(
         shp_path.with_suffix(ext).stat().st_size
         for ext in (".shp", ".shx", ".dbf", ".prj")
@@ -245,12 +247,12 @@ def validate_shapefile(
     ) / 1e6
     if total_mb > MAX_FILE_MB:
         checks.append(_warn(
-            "Tamanho", f"{total_mb:.1f} MB no conjunto. Terminais antigos travam acima de "
-            f"~{MAX_FILE_MB} MB.",
-            "Reduza o número de polígonos ou aumente a célula.",
+            "Size", f"{total_mb:.1f} MB across the file set. Older terminals stall past "
+            f"about {MAX_FILE_MB} MB.",
+            "Cut the number of polygons or increase the cell size.",
         ))
     else:
-        checks.append(_ok("Tamanho", f"{total_mb:.2f} MB no conjunto."))
+        checks.append(_ok("Size", f"{total_mb:.2f} MB across the file set."))
 
     return checks
 
@@ -260,48 +262,48 @@ def validate_shapefile(
 # ==========================================================================
 
 def validate_taskdata(taskdata_dir: Path) -> list[Check]:
-    """Confere uma pasta TASKDATA contra o ISO 11783-10."""
+    """Check a TASKDATA folder against ISO 11783-10."""
     taskdata_dir = Path(taskdata_dir)
     checks: list[Check] = []
 
     if taskdata_dir.name.upper() != "TASKDATA":
         checks.append(_fail(
-            "Nome da pasta",
-            f"A pasta se chama '{taskdata_dir.name}' e precisa se chamar TASKDATA.",
-            "O terminal procura exatamente esse nome na raiz do pen drive.",
+            "Folder name",
+            f"The folder is called '{taskdata_dir.name}' and must be called TASKDATA.",
+            "The terminal looks for exactly that name at the root of the stick.",
         ))
     else:
-        checks.append(_ok("Nome da pasta", "TASKDATA, como o padrão exige."))
+        checks.append(_ok("Folder name", "TASKDATA, as the standard requires."))
 
     xml_path = next(
         (p for p in taskdata_dir.iterdir() if p.name.upper() == "TASKDATA.XML"), None
     )
     if xml_path is None:
-        return checks + [_fail("TASKDATA.XML", "Arquivo principal ausente.")]
+        return checks + [_fail("TASKDATA.XML", "The main file is missing.")]
     if xml_path.name != "TASKDATA.XML":
         checks.append(_warn(
             "TASKDATA.XML",
-            f"O arquivo está como '{xml_path.name}'. Alguns terminais só reconhecem "
-            "o nome todo em maiúsculas.",
-            "Renomeie para TASKDATA.XML.",
+            f"The file is named '{xml_path.name}'. Some terminals only recognize "
+            "the name in full upper case.",
+            "Rename it to TASKDATA.XML.",
         ))
 
     try:
         root = ET.parse(xml_path).getroot()
     except ET.ParseError as exc:
-        return checks + [_fail("TASKDATA.XML", f"XML inválido: {exc}")]
+        return checks + [_fail("TASKDATA.XML", f"Invalid XML: {exc}")]
 
     if root.tag != "ISO11783_TaskData":
-        checks.append(_fail("Elemento raiz",
-                            f"Raiz é '{root.tag}' em vez de ISO11783_TaskData."))
+        checks.append(_fail("Root element",
+                            f"Root is '{root.tag}' instead of ISO11783_TaskData."))
     else:
         version = f"{root.get('VersionMajor', '?')}.{root.get('VersionMinor', '?')}"
-        checks.append(_ok("Estrutura", f"ISO 11783-10 versão {version}."))
+        checks.append(_ok("Structure", f"ISO 11783-10 version {version}."))
 
-    # --- talhão, contorno, linhas
+    # --- field, boundary, lines
     fields = list(root.iter("PFD"))
     if not fields:
-        checks.append(_warn("Talhão", "Nenhum PFD declarado; o terminal não terá campo para associar."))
+        checks.append(_warn("Field", "No PFD declared; the terminal will have no field to attach to."))
     for pfd in fields:
         name = pfd.get("C") or pfd.get("A")
         rings = [lsg for pln in pfd.findall("PLN") for lsg in pln.findall("LSG")]
@@ -314,12 +316,12 @@ def validate_taskdata(taskdata_dir: Path) -> list[Check]:
                 closed_ok = False
         if rings:
             if closed_ok:
-                checks.append(_ok("Contorno", f"Talhão '{name}': {len(rings)} anel(éis) fechado(s)."))
+                checks.append(_ok("Boundary", f"Field '{name}': {len(rings)} closed ring(s)."))
             else:
                 checks.append(_warn(
-                    "Contorno",
-                    f"Talhão '{name}': algum anel não fecha no ponto inicial.",
-                    "A maioria dos terminais fecha sozinha, mas alguns recusam.",
+                    "Boundary",
+                    f"Field '{name}': one of the rings does not close on its first point.",
+                    "Most terminals close it themselves, but some refuse the file.",
                 ))
 
         for ggp in pfd.findall("GGP"):
@@ -329,15 +331,15 @@ def validate_taskdata(taskdata_dir: Path) -> list[Check]:
                 }
                 if gpn.get("C") == "1" and not {"6", "7"} <= types:
                     checks.append(_fail(
-                        "Linha AB",
-                        f"'{gpn.get('B')}' é do tipo AB mas não traz os dois pontos de "
-                        "referência (tipos 6 e 7).",
-                        "Sem os dois pontos o terminal não consegue gerar as passadas.",
+                        "AB line",
+                        f"'{gpn.get('B')}' is typed as an AB line but carries no pair of "
+                        "reference points (types 6 and 7).",
+                        "Without both points the terminal cannot generate the passes.",
                     ))
                 else:
-                    checks.append(_ok("Linha AB", f"'{gpn.get('B')}' com pontos A e B declarados."))
+                    checks.append(_ok("AB line", f"'{gpn.get('B')}' declares points A and B."))
 
-    # --- grade de prescrição
+    # --- prescription grid
     for grd in root.iter("GRD"):
         name = grd.get("G")
         declared_length = int(grd.get("H") or 0)
@@ -351,70 +353,70 @@ def validate_taskdata(taskdata_dir: Path) -> list[Check]:
             None,
         )
         if bin_path is None:
-            checks.append(_fail("Grade", f"O binário {name}.BIN não está na pasta."))
+            checks.append(_fail("Grid", f"The binary {name}.BIN is not in the folder."))
             continue
 
         actual = bin_path.stat().st_size
         expected = rows * cols * (4 if grid_type == "2" else 1)
         if actual != expected:
             checks.append(_fail(
-                "Grade",
-                f"{bin_path.name} tem {actual} bytes, mas {cols}×{rows} células do tipo "
-                f"{grid_type} exigem {expected}.",
-                "O terminal lê a grade deslocada e aplica a dose no lugar errado.",
+                "Grid",
+                f"{bin_path.name} holds {actual} bytes, but {cols}x{rows} cells of type "
+                f"{grid_type} need {expected}.",
+                "The terminal reads the grid shifted and applies the rate in the wrong place.",
             ))
         elif declared_length and declared_length != actual:
             checks.append(_warn(
-                "Grade",
-                f"O atributo de tamanho declara {declared_length} bytes e o arquivo tem {actual}.",
-                "Alguns terminais confiam no valor declarado.",
+                "Grid",
+                f"The length attribute declares {declared_length} bytes and the file holds {actual}.",
+                "Some terminals trust the declared value.",
             ))
         else:
             values = np.frombuffer(bin_path.read_bytes(),
                                    dtype="<u4" if grid_type == "2" else "<u1")
             with_rate = int((values > 0).sum())
             checks.append(_ok(
-                "Grade",
-                f"{cols}×{rows} células, {actual} bytes conferem; "
-                f"{with_rate} célula(s) com dose.",
+                "Grid",
+                f"{cols}x{rows} cells, {actual} bytes match; "
+                f"{with_rate} cell(s) carry a rate.",
             ))
             if with_rate == 0:
                 checks.append(_fail(
-                    "Grade sem dose",
-                    "Todas as células estão zeradas — a máquina não aplicaria nada.",
-                    "Verifique o tamanho da célula: células pequenas demais podem não "
-                    "alcançar metade de cobertura em nenhum polígono.",
+                    "Grid with no rate",
+                    "Every cell is zero — the machine would apply nothing.",
+                    "Check the cell size: cells that are too small may never reach half "
+                    "coverage inside any polygon.",
                 ))
             if rows * cols > MAX_GRID_CELLS:
                 checks.append(_warn(
-                    "Tamanho da grade",
-                    f"{rows * cols:,} células.".replace(",", ".") +
-                    " Terminais antigos demoram demais para carregar.",
-                    "Aumente o tamanho da célula.",
+                    "Grid size",
+                    f"{rows * cols:,} cells. Older terminals take far too long to load.",
+                    "Increase the cell size.",
                 ))
 
-        # A dose precisa ter um DDI declarado, senão o terminal não sabe o que é.
+        # The rate needs a declared DDI, or the terminal cannot tell what it is.
         task = next((t for t in root.iter("TSK") if grd in list(t.iter("GRD"))), None)
         pdv = list(task.iter("PDV")) if task is not None else []
         if not pdv:
             checks.append(_fail(
-                "Unidade da dose",
-                "A tarefa não declara um PDV com o DDI da grandeza aplicada.",
-                "Sem o DDI, o terminal não sabe se o número é kg/ha, L/ha ou sementes/ha.",
+                "Rate unit",
+                "The task declares no PDV carrying the DDI of the applied quantity.",
+                "Without the DDI, the terminal cannot tell whether the number is kg/ha, "
+                "L/ha or seeds/ha.",
             ))
         else:
-            checks.append(_ok("Unidade da dose",
-                              f"DDI {pdv[0].get('A')} declarado na zona de tratamento."))
+            checks.append(_ok("Rate unit",
+                              f"DDI {pdv[0].get('A')} declared in the treatment zone."))
 
     return checks
 
 
 # ==========================================================================
-# Pacote inteiro
+# Whole package
 # ==========================================================================
 
 def validate_package(folder: Path, monitor: str = "generic") -> dict[str, Any]:
-    """Verifica todos os arquivos de um pacote e resume o resultado."""
+    """Check every file in a package and summarize the result."""
     from . import packages as packages_mod
 
     folder = Path(folder)
@@ -424,19 +426,19 @@ def validate_package(folder: Path, monitor: str = "generic") -> dict[str, Any]:
     for taskdata in sorted(folder.rglob("TASKDATA")):
         if taskdata.is_dir():
             groups.append({
-                "arquivo": str(taskdata.relative_to(folder)),
-                "tipo": "ISOXML",
+                "file": str(taskdata.relative_to(folder)),
+                "kind": "ISOXML",
                 "checks": [c.to_dict() for c in validate_taskdata(taskdata)],
             })
 
     for shp in sorted(folder.rglob("*.shp")):
         import geopandas as gpd
 
-        # O contorno não tem campo de dose; a prescrição tem.
-        is_boundary = "contorno" in shp.stem.lower() or "boundary" in shp.stem.lower()
+        # A boundary has no rate field; a prescription does.
+        is_boundary = "boundary" in shp.stem.lower() or "contorno" in shp.stem.lower()
         groups.append({
-            "arquivo": str(shp.relative_to(folder)),
-            "tipo": "Contorno (shapefile)" if is_boundary else "Prescrição (shapefile)",
+            "file": str(shp.relative_to(folder)),
+            "kind": "Boundary (shapefile)" if is_boundary else "Prescription (shapefile)",
             "checks": [
                 c.to_dict() for c in validate_shapefile(
                     shp,
@@ -447,30 +449,30 @@ def validate_package(folder: Path, monitor: str = "generic") -> dict[str, Any]:
         })
 
     all_checks = [c for g in groups for c in g["checks"]]
-    failures = sum(1 for c in all_checks if c["status"] == "falha")
-    warnings = sum(1 for c in all_checks if c["status"] == "atencao")
+    failures = sum(1 for c in all_checks if c["status"] == "fail")
+    warnings = sum(1 for c in all_checks if c["status"] == "warning")
 
     if failures:
-        verdict = "falha"
+        verdict = "fail"
         summary = (
-            f"{failures} problema(s) que o {profile.label} recusaria. "
-            "Corrija antes de levar o pen drive."
+            f"{failures} problem(s) the {profile.label} would refuse. "
+            "Fix them before taking the stick out."
         )
     elif warnings:
-        verdict = "atencao"
+        verdict = "warning"
         summary = (
-            f"Nenhum impedimento, mas {warnings} ponto(s) dependem do firmware ou da "
-            "configuração do display. Confirme na tela antes de começar."
+            f"Nothing blocking, but {warnings} point(s) depend on firmware or display "
+            "configuration. Confirm them on screen before starting."
         )
     elif all_checks:
         verdict = "ok"
         summary = (
-            f"Todas as {len(all_checks)} verificações passaram. As causas conhecidas de "
-            f"recusa no {profile.label} estão eliminadas."
+            f"All {len(all_checks)} checks passed. The known causes of rejection on the "
+            f"{profile.label} have been ruled out."
         )
     else:
-        verdict = "atencao"
-        summary = "Nenhum arquivo verificável foi encontrado no pacote."
+        verdict = "warning"
+        summary = "No checkable file was found in the package."
 
     return {
         "monitor": profile.key,
@@ -479,14 +481,14 @@ def validate_package(folder: Path, monitor: str = "generic") -> dict[str, Any]:
         "summary": summary,
         "totals": {
             "ok": sum(1 for c in all_checks if c["status"] == "ok"),
-            "atencao": warnings,
-            "falha": failures,
+            "warning": warnings,
+            "fail": failures,
         },
         "groups": groups,
-        "ressalva": (
-            "Esta verificação confere o conteúdo dos arquivos contra o padrão e contra "
-            "as causas conhecidas de recusa. Ela não tem como testar a versão de "
-            "firmware do seu display nem formatos proprietários — a confirmação final "
-            "é carregar o pacote no monitor antes de ir para a lavoura."
+        "caveat": (
+            "This check compares the file contents against the standard and against the "
+            "known causes of rejection. It cannot test your display's firmware version "
+            "or proprietary formats — the final confirmation is loading the package on "
+            "the monitor before heading to the field."
         ),
     }

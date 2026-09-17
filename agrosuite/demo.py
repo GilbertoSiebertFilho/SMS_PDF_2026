@@ -1,18 +1,18 @@
-"""Gerador de dados sintéticos de monitor.
+"""Synthetic monitor data generator.
 
-Serve a dois propósitos: permitir experimentar o app sem ter um arquivo em
-mãos e, sobretudo, dar um conjunto com **defeitos conhecidos** contra o qual
-os filtros de limpeza podem ser conferidos — se o filtro de sobreposição não
-encontra a sobreposição que foi plantada de propósito, ele está errado.
+It serves two purposes: letting you try the app without a file in hand and,
+above all, providing a dataset with **known defects** to check the cleaning
+filters against — if the overlap filter does not find the overlap that was
+planted on purpose, the filter is wrong.
 
-O talhão simulado tem:
+The simulated field has:
 
-* trajetória em vaivém com manobras de cabeceira reais;
-* padrão espacial de produtividade suave (a variabilidade legítima);
-* atraso de fluxo do sensor;
-* uma passada de repasse sobre área já colhida;
-* picos e zeros de sensor espalhados;
-* trechos de velocidade fora da faixa operacional.
+* a back-and-forth track with real headland turns;
+* a smooth spatial yield pattern (the legitimate variability);
+* sensor flow delay;
+* one pass driven back over already-harvested ground;
+* scattered sensor spikes and zeros;
+* stretches of speed outside the operating range.
 """
 
 from __future__ import annotations
@@ -32,21 +32,21 @@ def synthetic_harvest(
     origin_lat: float = -23.5000,
     with_defects: bool = True,
 ) -> Dataset:
-    """Gera um mapa de colheita sintético com defeitos plantados.
+    """Generate a synthetic harvest map with planted defects.
 
     Returns
     -------
     Dataset
-        Com a coluna extra ``truth_kg_ha``, o valor limpo antes dos defeitos,
-        para medir quanto da limpeza recuperou o sinal original.
+        Carrying an extra ``truth_kg_ha`` column — the clean value before the
+        defects — to measure how much of the original signal cleaning recovers.
     """
     rng = np.random.default_rng(seed)
 
-    # ~1 grau de latitude = 111,32 km; a longitude encolhe com o cosseno.
+    # One degree of latitude is about 111.32 km; longitude shrinks with the cosine.
     m_per_deg_lat = 111_320.0
     m_per_deg_lon = m_per_deg_lat * np.cos(np.radians(origin_lat))
 
-    step_m = 1.4  # avanço típico entre registros a ~5 km/h com log de 1 s
+    step_m = 1.4  # typical advance between records at ~5 km/h with 1 s logging
     rows: list[dict] = []
     time_s = 0.0
 
@@ -59,7 +59,7 @@ def synthetic_harvest(
             along = along[::-1]
 
         speed = 5.6 + rng.normal(0, 0.12, n_points)
-        # Entrada e saída de passada: a máquina acelera e desacelera.
+        # Entering and leaving a pass: the machine speeds up and slows down.
         ramp = min(18, n_points // 4)
         speed[:ramp] *= np.linspace(0.35, 1.0, ramp)
         speed[-ramp:] *= np.linspace(1.0, 0.35, ramp)
@@ -78,11 +78,11 @@ def synthetic_harvest(
             })
             time_s += step_m / max(speed[i] / 3.6, 0.5)
 
-        time_s += 14.0  # manobra de cabeceira
+        time_s += 14.0  # headland turn
 
     df = pd.DataFrame(rows)
 
-    # --- produtividade verdadeira: dois harmônicos + gradiente + ruído fino
+    # --- true yield: two harmonics plus a gradient plus fine noise
     xs = df["x_local"].to_numpy()
     ys = df["y_local"].to_numpy()
     field_width = n_passes * swath_m
@@ -99,24 +99,24 @@ def synthetic_harvest(
     observed = truth.copy()
 
     if with_defects:
-        # Atraso de fluxo: o sensor entrega a leitura ~12 s depois do corte.
+        # Flow delay: the sensor reports the reading about 12 s after the cut.
         median_dt = float(np.median(np.diff(df["t"].to_numpy())))
         lag = max(1, int(round(12.0 / max(median_dt, 0.1))))
         observed = np.roll(observed, lag)
         observed[:lag] = observed[lag]
 
-        # A massa em trânsito faz o valor acompanhar a velocidade com atraso.
+        # The mass in transit makes the value track speed with a lag.
         speed = df["speed"].to_numpy()
         speed_effect = np.clip(speed / np.median(speed), 0.25, 1.8)
         observed *= 0.35 + 0.65 * np.roll(speed_effect, lag)
 
-        # Zeros de sensor e picos isolados.
+        # Sensor zeros and isolated spikes.
         n = len(df)
         observed[rng.choice(n, size=int(n * 0.012), replace=False)] = 0.0
         spikes = rng.choice(n, size=int(n * 0.008), replace=False)
         observed[spikes] *= rng.uniform(2.6, 4.5, size=spikes.size)
 
-        # Repasse: uma passada extra sobre a faixa 5, já colhida, com valor baixo.
+        # Re-run: an extra pass over strip 5, already harvested, with a low value.
         overlap_mask = df["pass"] == 5
         extra = df.loc[overlap_mask].copy()
         extra["x_local"] += swath_m * 0.45
@@ -142,17 +142,17 @@ def synthetic_harvest(
     }).sort_values("timestamp").reset_index(drop=True)
 
     meta = DatasetMeta(
-        name="Talhão demonstração",
-        source_path="<sintético>",
+        name="Demo field",
+        source_path="<synthetic>",
         source_format="demo",
         brand="generic",
-        brand_label="Dados sintéticos",
+        brand_label="Synthetic data",
         operation="harvest",
-        crop="milho",
-        field_name="Talhão demonstração",
-        value_label="Rendimento",
+        crop="canola",
+        field_name="Demo field",
+        value_label="Yield",
         value_unit="kg/ha",
-        notes=["Conjunto sintético com defeitos plantados para conferir a limpeza."],
+        notes=["Synthetic dataset with planted defects, for checking the cleaning."],
     )
     ds = Dataset(out, meta)
     ds.ensure_derived(default_swath_m=swath_m)
@@ -160,14 +160,14 @@ def synthetic_harvest(
 
 
 def synthetic_trial(seed: int = 3, rates: tuple[float, ...] = (0, 60, 120, 180, 240)) -> Dataset:
-    """Gera um ensaio DIFM em faixas, com resposta conhecida à dose.
+    """Generate a DIFM strip trial with a known rate response.
 
-    A resposta é quadrática com platô e varia entre duas zonas de fertilidade,
-    que é exatamente o que uma análise DIFM deve conseguir separar.
+    The response is quadratic with a plateau and differs between two fertility
+    zones, which is exactly what a DIFM analysis should be able to separate.
     """
     rng = np.random.default_rng(seed)
-    # Cada faixa do ensaio tem 3 passadas de largura — abaixo disso, a faixa
-    # fica estreita demais para sobrar área útil depois de descartar as bordas.
+    # Each trial strip is 3 passes wide — any narrower and there is no usable
+    # area left once the edges are discarded.
     passes_per_strip = 3
     n_blocks = 4
     n_strips = len(rates) * n_blocks
@@ -189,9 +189,9 @@ def synthetic_trial(seed: int = 3, rates: tuple[float, ...] = (0, 60, 120, 180, 
 
     y = df["y"].to_numpy()
     y_rel = (y - y.min()) / max(float(np.ptp(y)), 1.0)
-    zone = (y_rel > 0.5).astype(int)  # zona 1 = mais fértil
+    zone = (y_rel > 0.5).astype(int)  # zone 1 = the more fertile one
 
-    # Resposta quadrática: platô mais alto e dose ótima menor na zona fértil.
+    # Quadratic response: higher plateau and lower optimum in the fertile zone.
     base = np.where(zone == 1, 9_800.0, 7_600.0)
     gain = np.where(zone == 1, 26.0, 34.0)
     curve = np.where(zone == 1, -0.062, -0.070)
@@ -204,7 +204,7 @@ def synthetic_trial(seed: int = 3, rates: tuple[float, ...] = (0, 60, 120, 180, 
     df = df.drop(columns=["truth_kg_ha"], errors="ignore")
     ds.df = df
 
-    ds.meta.name = "Ensaio DIFM demonstração"
-    ds.meta.notes = ["Ensaio sintético em faixas com resposta quadrática conhecida."]
+    ds.meta.name = "DIFM demo trial"
+    ds.meta.notes = ["Synthetic strip trial with a known quadratic response."]
     ds.meta.extra["rates"] = list(rates)
     return ds

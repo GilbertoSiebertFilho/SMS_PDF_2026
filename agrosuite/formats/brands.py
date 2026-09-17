@@ -1,14 +1,14 @@
-"""Identificação do monitor de origem.
+"""Identifying which monitor a file came from.
 
-Não existe cabeçalho universal que diga "este arquivo veio de um John Deere".
-O que existe são assinaturas: nomes de coluna característicos que cada
-software de exportação produz, marcadores de pasta e extensões próprias.
-Este módulo concentra essas assinaturas e pontua cada fabricante contra o
-arquivo recebido, devolvendo o mais provável.
+There is no universal header saying "this file came from a John Deere". What
+exists are signatures: characteristic column names each export program
+produces, folder markers and proprietary extensions. This module gathers
+those signatures, scores every manufacturer against the file at hand and
+returns the most likely one.
 
-As assinaturas foram levantadas a partir das exportações reais de cada
-plataforma; quando um fabricante pode exportar em vários formatos (o caso
-mais comum), ele aparece com várias entradas de assinatura.
+The signatures come from the real exports of each platform; where a
+manufacturer can export in several formats — the common case — it appears
+with several signature entries.
 """
 
 from __future__ import annotations
@@ -20,21 +20,21 @@ from ..core.schema import normalize_name
 
 @dataclass(frozen=True)
 class BrandProfile:
-    """Perfil de um fabricante/plataforma de monitor."""
+    """Profile of a monitor manufacturer or platform."""
 
     key: str
     label: str
-    #: Colunas cuja simples presença é forte indício deste fabricante.
+    #: Columns whose mere presence strongly indicates this manufacturer.
     signature_columns: tuple[str, ...] = ()
-    #: Colunas de apoio: somam pontos, mas não decidem sozinhas.
+    #: Supporting columns: they add points but do not decide on their own.
     hint_columns: tuple[str, ...] = ()
-    #: Nomes de arquivo/pasta típicos da estrutura de exportação.
+    #: File and folder names typical of the export structure.
     path_markers: tuple[str, ...] = ()
-    #: Extensões proprietárias associadas.
+    #: Proprietary extensions associated with the platform.
     extensions: tuple[str, ...] = ()
-    #: Unidades em que a plataforma normalmente exporta.
+    #: Units the platform normally exports in.
     default_units: dict[str, str] = field(default_factory=dict)
-    #: Formatos que o AgroSuite consegue **escrever** para esta plataforma.
+    #: Formats AgroSuite can **write** for this platform.
     export_formats: tuple[str, ...] = ()
     notes: str = ""
 
@@ -59,9 +59,9 @@ BRANDS: tuple[BrandProfile, ...] = (
         default_units={"yield": "bu/ac", "speed": "mph", "swath": "ft"},
         export_formats=("shapefile_rx", "isoxml", "csv"),
         notes=(
-            "Exportações do Operations Center e do SMS saem em shapefile ou CSV. "
-            "Arquivos binários .gsd/.fdd do GreenStar 2/3 são proprietários e "
-            "precisam ser convertidos no próprio software antes da importação."
+            "Operations Center and SMS exports come out as shapefile or CSV. The "
+            "binary .gsd/.fdd files from GreenStar 2/3 are proprietary and have to "
+            "be converted in their own software before importing."
         ),
     ),
     BrandProfile(
@@ -76,7 +76,7 @@ BRANDS: tuple[BrandProfile, ...] = (
         extensions=(".agdata", ".ilf"),
         default_units={"yield": "bu/ac", "speed": "mph", "swath": "ft"},
         export_formats=("shapefile_rx", "csv"),
-        notes="O SMS Advanced é o formato-ponte mais comum entre plataformas.",
+        notes="SMS Advanced is the most common bridge format between platforms.",
     ),
     BrandProfile(
         key="raven",
@@ -91,8 +91,8 @@ BRANDS: tuple[BrandProfile, ...] = (
         default_units={"rate": "gal/ac", "speed": "mph", "swath": "ft"},
         export_formats=("shapefile_rx", "csv"),
         notes=(
-            "O Viper 4 lê prescrição em shapefile de polígonos com uma coluna "
-            "numérica de dose escolhida no próprio monitor."
+            "The Viper 4 reads a prescription from a polygon shapefile with a "
+            "numeric rate column chosen on the monitor itself."
         ),
     ),
     BrandProfile(
@@ -104,7 +104,7 @@ BRANDS: tuple[BrandProfile, ...] = (
         extensions=(".agdata", ".vrt"),
         default_units={"rate": "lb/ac", "speed": "mph", "swath": "ft"},
         export_formats=("shapefile_rx", "isoxml", "csv"),
-        notes="FmX/GFX/TMX aceitam Rx em shapefile; os modelos ISOBUS também leem ISOXML.",
+        notes="FmX/GFX/TMX accept a shapefile Rx; ISOBUS models also read ISOXML.",
     ),
     BrandProfile(
         key="case_ih",
@@ -116,7 +116,7 @@ BRANDS: tuple[BrandProfile, ...] = (
         extensions=(".vy1", ".vy2", ".vy3"),
         default_units={"yield": "bu/ac", "speed": "mph", "swath": "ft"},
         export_formats=("shapefile_rx", "isoxml", "csv"),
-        notes="AFS Pro 700 / AFS Vision leem ISOXML; formatos Voyager são proprietários.",
+        notes="AFS Pro 700 and AFS Vision read ISOXML; Voyager formats are proprietary.",
     ),
     BrandProfile(
         key="new_holland",
@@ -128,7 +128,7 @@ BRANDS: tuple[BrandProfile, ...] = (
         extensions=(".vy1", ".vy2", ".vy3"),
         default_units={"yield": "bu/ac", "speed": "mph", "swath": "ft"},
         export_formats=("shapefile_rx", "isoxml", "csv"),
-        notes="IntelliView IV/XCN são ISOBUS e consomem TASKDATA.XML diretamente.",
+        notes="IntelliView IV and XCN are ISOBUS and consume TASKDATA.XML directly.",
     ),
     BrandProfile(
         key="bourgault",
@@ -139,7 +139,7 @@ BRANDS: tuple[BrandProfile, ...] = (
         extensions=(),
         default_units={"rate": "lb/ac", "speed": "mph", "swath": "ft"},
         export_formats=("isoxml", "shapefile_rx", "csv"),
-        notes="Os monitores X30/X35 trabalham com ISOXML e com Rx em shapefile.",
+        notes="The X30/X35 monitors work with ISOXML and with a shapefile Rx.",
     ),
     BrandProfile(
         key="vaderstad",
@@ -151,7 +151,7 @@ BRANDS: tuple[BrandProfile, ...] = (
         extensions=(),
         default_units={"rate": "kg/ha", "speed": "km/h", "swath": "m"},
         export_formats=("isoxml", "shapefile_rx"),
-        notes="E-Control / E-Services são ISOBUS — a via oficial é TASKDATA.XML.",
+        notes="E-Control and E-Services are ISOBUS — TASKDATA.XML is the official route.",
     ),
     BrandProfile(
         key="augmenta",
@@ -166,8 +166,8 @@ BRANDS: tuple[BrandProfile, ...] = (
         default_units={"rate": "l/ha", "speed": "km/h", "swath": "m"},
         export_formats=("geojson", "shapefile_rx", "csv"),
         notes=(
-            "O Augmenta exporta GeoJSON/SHP por sessão, com índices de vigor e a "
-            "dose efetivamente aplicada pelo sistema de visão."
+            "Augmenta exports GeoJSON/SHP per session, carrying vigour indices and "
+            "the rate the vision system actually applied."
         ),
     ),
     BrandProfile(
@@ -192,18 +192,18 @@ BRANDS: tuple[BrandProfile, ...] = (
     ),
     BrandProfile(
         key="isoxml",
-        label="ISOBUS / ISOXML genérico",
+        label="Generic ISOBUS / ISOXML",
         signature_columns=("ddi", "tlg", "grd", "pdt", "ctp"),
         hint_columns=(),
         path_markers=("taskdata", "taskdata.xml", "grd", "tlg"),
         extensions=(".iso", ".xml"),
         default_units={"rate": "kg/ha", "speed": "km/h", "swath": "m"},
         export_formats=("isoxml",),
-        notes="Padrão ISO 11783-10, aceito pela maioria dos terminais ISOBUS.",
+        notes="The ISO 11783-10 standard, accepted by most ISOBUS terminals.",
     ),
     BrandProfile(
         key="generic",
-        label="Genérico / não identificado",
+        label="Generic / not identified",
         export_formats=("shapefile_rx", "csv", "geojson", "isoxml"),
     ),
 )
@@ -212,7 +212,7 @@ BRANDS_BY_KEY = {b.key: b for b in BRANDS}
 
 
 def get_brand(key: str | None) -> BrandProfile:
-    """Perfil do fabricante pela chave, caindo para o genérico."""
+    """Manufacturer profile by key, falling back to the generic one."""
     return BRANDS_BY_KEY.get(key or "", BRANDS_BY_KEY["generic"])
 
 
@@ -221,13 +221,13 @@ def detect_brand(
     path: str | None = None,
     extra_text: str | None = None,
 ) -> tuple[str, float]:
-    """Identifica o fabricante mais provável.
+    """Identify the most likely manufacturer.
 
     Returns
     -------
-    (chave, confiança)
-        A confiança vai de 0 a 1; abaixo de ~0.3 o resultado deve ser tratado
-        como palpite e confirmado pelo usuário na interface.
+    (key, confidence)
+        Confidence runs from 0 to 1; below roughly 0.3 the result should be
+        treated as a guess and confirmed by the user in the interface.
     """
     norm_cols = {normalize_name(c) for c in (columns or [])}
     haystack = normalize_name(path or "") + " " + normalize_name(extra_text or "")
@@ -258,13 +258,13 @@ def detect_brand(
     best = max(scores, key=scores.get)
     total = sum(scores.values())
     confidence = scores[best] / total if total else 0.0
-    # Uma pontuação absoluta baixa não vira certeza só por ser a única.
+    # A low absolute score does not become certainty just by being the only one.
     confidence *= min(1.0, scores[best] / 5.0)
     return best, round(confidence, 3)
 
 
 def brand_catalog() -> list[dict]:
-    """Catálogo serializável para a interface."""
+    """Serializable catalogue for the interface."""
     return [
         {
             "key": b.key,

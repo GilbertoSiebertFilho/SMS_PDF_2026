@@ -1,11 +1,10 @@
-"""Suíte de testes do AgroSuite.
+"""AgroSuite test suite.
 
-Os testes são escritos contra comportamentos que importam na prática, não
-contra detalhes de implementação: um mapa em bu/ac precisa virar kg/ha com o
-peso de teste certo, a limpeza precisa recuperar o sinal de um conjunto com
-defeitos conhecidos, a análise precisa achar a dose ótima que foi plantada
-nos dados, e o arquivo gerado precisa passar na mesma verificação que o app
-mostra ao usuário.
+The tests are written against behaviours that matter in practice, not against
+implementation details: a map in bu/ac has to become kg/ha with the right test
+weight, cleaning has to recover the signal from a dataset with known defects,
+the analysis has to find the optimum rate that was planted in the data, and
+the generated file has to pass the same verification the app shows the user.
 """
 
 from __future__ import annotations
@@ -38,13 +37,13 @@ QUARTER_SECTION = [
 
 @pytest.fixture(scope="session")
 def sample_data(tmp_path_factory) -> dict[str, Path]:
-    """Gera uma vez os arquivos de exemplo de todos os monitores."""
+    """Generate the sample files for every monitor once."""
     target = tmp_path_factory.mktemp("sample_data")
     return fx.build_all(target)
 
 
 # ==========================================================================
-# Esquema e unidades
+# Schema and units
 # ==========================================================================
 
 @pytest.mark.parametrize("raw,expected", [
@@ -63,7 +62,7 @@ def test_alias_resolution(raw, expected):
 
 
 def test_map_columns_does_not_duplicate_targets():
-    """Duas colunas que apontam para a mesma canônica: a primeira vence."""
+    """Two columns pointing at the same canonical name: the first one wins."""
     mapping = sch.map_columns(["Yield", "Dry Yield", "Latitude", "Longitude"])
     assert list(mapping.values()).count(sch.VALUE) == 1
 
@@ -81,7 +80,7 @@ def test_rate_to_internal(value, unit, crop, expected):
 
 
 def test_rate_round_trip():
-    """Ida e volta não pode acumular erro perceptível."""
+    """A round trip must not accumulate noticeable error."""
     for unit in ("kg/ha", "t/ha", "sc/ha", "lb/ac", "bu/ac"):
         internal = units_mod.to_internal(137.5, "rate_mass", unit, "wheat")
         back = units_mod.from_internal(internal, "rate_mass", unit, "wheat")
@@ -89,7 +88,7 @@ def test_rate_round_trip():
 
 
 def test_quarter_section_in_acres():
-    """160 acres é a unidade de terra das Pradarias; precisa bater."""
+    """160 acres is the Prairie land unit; it has to come out right."""
     assert units_mod.to_internal(160, "area", "ac") == pytest.approx(64.75, rel=1e-3)
 
 
@@ -105,7 +104,7 @@ def test_canadian_preset_is_default():
 
 
 # ==========================================================================
-# Identificação de monitor
+# Monitor identification
 # ==========================================================================
 
 @pytest.mark.parametrize("columns,path,expected", [
@@ -122,7 +121,7 @@ def test_brand_detection(columns, path, expected):
 
 
 # ==========================================================================
-# Leitura dos formatos de monitor
+# Reading the monitor formats
 # ==========================================================================
 
 @pytest.mark.parametrize("key,brand,operation", [
@@ -147,10 +146,10 @@ def test_reads_monitor_formats(sample_data, key, brand, operation):
 
 
 def test_isoxml_binary_log_decodes_values(sample_data):
-    """O log binário precisa devolver dose, velocidade e largura corretas.
+    """The binary log has to return the right rate, speed and width.
 
-    Os valores gravados no exemplo são 90 e 130 kg/ha, 8 km/h e 18,29 m; se o
-    desempacotamento do binário estiver deslocado, nada disso bate.
+    The values written into the sample are 90 and 130 kg/ha, 8 km/h and
+    18.29 m; if the binary unpacking is off by a byte, none of that matches.
     """
     dataset = registry.read_any(sample_data["isoxml"])
     dataset.ensure_derived()
@@ -168,7 +167,7 @@ def test_isoxml_carries_boundary(sample_data):
 
 
 def test_semicolon_csv_decimal_comma(sample_data):
-    """CSV europeu: ';' como separador e ',' como decimal."""
+    """European CSV: ';' as separator and ',' as decimal mark."""
     dataset = registry.read_any(sample_data["semicolon_csv"])
     dataset.ensure_derived()
     assert dataset.df[sch.SPEED].median() == pytest.approx(8.0, abs=0.5)
@@ -182,23 +181,23 @@ def test_augmenta_pairs_vigor_and_rate(sample_data):
     assert "vigor_index" in dataset.df.columns
     summary = vigor_rate_summary(dataset)
     assert summary["available"]
-    # O exemplo aplica mais onde há mais vigor: a correlação tem que ser forte.
-    assert summary["correlacao"] > 0.8
+    # The sample applies more where vigour is higher: correlation must be strong.
+    assert summary["correlation"] > 0.8
 
 
 def test_unsupported_extension_explains_itself(tmp_path):
     bad = tmp_path / "dados.xyz"
     bad.write_bytes(b"\x00\x01")
-    with pytest.raises(ValueError, match="não suportada"):
+    with pytest.raises(ValueError, match="not supported"):
         registry.read_any(bad)
 
 
 # ==========================================================================
-# Limpeza
+# Cleaning
 # ==========================================================================
 
 def test_cleaning_recovers_the_signal():
-    """A limpeza precisa aproximar o mapa do valor verdadeiro conhecido."""
+    """Cleaning has to move the map closer to the known true value."""
     dataset = synthetic_harvest()
     before = float(np.corrcoef(dataset.df["value"], dataset.df["truth_kg_ha"])[0, 1])
 
@@ -206,16 +205,16 @@ def test_cleaning_recovers_the_signal():
     clean = result.clean.df
     after = float(np.corrcoef(clean["value"], clean["truth_kg_ha"])[0, 1])
 
-    assert after > 0.75, "a limpeza deveria recuperar o sinal"
-    assert after > before + 0.3, "o ganho precisa ser substancial"
-    assert result.report["totais"]["pct_removido"] < 40
+    assert after > 0.75, "cleaning should recover the signal"
+    assert after > before + 0.3, "the gain has to be substantial"
+    assert result.report["totals"]["removed_pct"] < 40
 
 
 def test_overlap_filter_finds_the_planted_overlap():
-    """O conjunto sintético tem uma passada de repasse; o filtro tem que achá-la."""
+    """The synthetic set has one re-run pass; the filter has to find it."""
     dataset = synthetic_harvest()
     result = clean_pipeline.run(dataset, clean_pipeline.PRESETS["harvest"])
-    overlap = next(s for s in result.report["etapas"] if s["key"] == "overlap")
+    overlap = next(s for s in result.report["steps"] if s["key"] == "overlap")
     assert overlap["removed"] > 200
 
 
@@ -229,11 +228,11 @@ def test_cleaning_preserves_the_original():
 def test_minimal_preset_removes_little():
     dataset = synthetic_harvest()
     result = clean_pipeline.run(dataset, clean_pipeline.PRESETS["minimal"])
-    assert result.report["totais"]["pct_removido"] < 5
+    assert result.report["totals"]["removed_pct"] < 5
 
 
 def test_report_flags_excessive_removal():
-    """Uma limpeza agressiva demais tem que aparecer como alerta no laudo."""
+    """Cleaning that is too aggressive has to show up as an alert in the report."""
     dataset = synthetic_harvest()
     config = {
         "corrections": {"flow_delay_s": 0},
@@ -244,110 +243,110 @@ def test_report_flags_excessive_removal():
         },
     }
     result = clean_pipeline.run(dataset, config)
-    levels = {f["nivel"] for f in result.report["leitura"]}
-    assert "alerta" in levels
+    levels = {f["level"] for f in result.report["findings"]}
+    assert "alert" in levels
 
 
 # ==========================================================================
-# Resposta e economia
+# Response and economics
 # ==========================================================================
 
 def test_quadratic_eonr_matches_theory():
-    """Y = 7600 + 34R − 0,070R²; com razão de preços 5, o ótimo é 207,1."""
+    """Y = 7600 + 34R - 0.070R^2; with a price ratio of 5, the optimum is 207.1."""
     rates = np.repeat([0, 60, 120, 180, 240], 40).astype(float)
     yields = 7600 + 34 * rates - 0.070 * rates**2
     fit = difm_response.fit_quadratic(rates, yields)
     optimum = difm_response.optimum_rate(fit, crop_price=1.2, input_cost=6.0, rate_max=300)
-    assert optimum["dose_otima"] == pytest.approx(207.1, abs=1.0)
+    assert optimum["optimum_rate"] == pytest.approx(207.1, abs=1.0)
 
 
 def test_optimum_is_below_agronomic_maximum():
-    """A dose de lucro máximo tem que ficar abaixo da de rendimento máximo."""
+    """The maximum-profit rate has to sit below the maximum-yield rate."""
     rates = np.repeat([0, 60, 120, 180, 240], 40).astype(float)
     yields = 7600 + 34 * rates - 0.070 * rates**2
     fit = difm_response.fit_quadratic(rates, yields)
     optimum = difm_response.optimum_rate(fit, crop_price=1.2, input_cost=6.0, rate_max=300)
-    assert optimum["dose_otima"] < optimum["dose_maximo_agronomico"]
+    assert optimum["optimum_rate"] < optimum["agronomic_maximum"]
 
 
 def test_free_input_optimum_equals_agronomic_maximum():
-    """Insumo de graça: o ótimo econômico coincide com o máximo agronômico."""
+    """Free input: the economic optimum coincides with the agronomic maximum."""
     rates = np.repeat([0, 60, 120, 180, 240], 40).astype(float)
     yields = 7600 + 34 * rates - 0.070 * rates**2
     fit = difm_response.fit_quadratic(rates, yields)
     optimum = difm_response.optimum_rate(fit, crop_price=1.2, input_cost=0.0, rate_max=300)
-    assert optimum["dose_otima"] == pytest.approx(fit.plateau_rate, abs=1.0)
+    assert optimum["optimum_rate"] == pytest.approx(fit.plateau_rate, abs=1.0)
 
 
 def test_needs_three_distinct_rates():
-    with pytest.raises(ValueError, match="3 doses"):
+    with pytest.raises(ValueError, match="3 distinct rates"):
         difm_response.fit_best(np.array([0.0, 0, 100, 100]), np.array([1.0, 2, 3, 4]))
 
 
 def test_difm_recovers_zone_optima():
-    """As zonas do ensaio sintético têm ótimos de 207 e 169 kg/ha."""
+    """The synthetic trial's zones have optima of 207 and 169 kg/ha."""
     dataset = synthetic_trial()
     report = difm_analysis.analyze(
         dataset, crop_price=1.2, input_cost=6.0,
         cell_m=20, edge_margin_m=6, zone_column="zone",
     )
-    optima = {z["zona"]: z["dose_otima"] for z in report["zonas"]["por_zona"] if "dose_otima" in z}
+    optima = {z["zone"]: z["optimum_rate"] for z in report["zones"]["by_zone"] if "optimum_rate" in z}
     assert optima["0"] == pytest.approx(207.1, abs=15)
     assert optima["1"] == pytest.approx(169.4, abs=15)
 
 
 def test_aggregation_never_invents_a_dose():
-    """Célula a cavalo entre duas faixas não pode virar uma dose intermediária."""
+    """A cell straddling two strips must not become an in-between rate."""
     dataset = synthetic_trial()
     applied = set(np.round(dataset.df["applied_rate"].unique(), 1))
     report = difm_analysis.analyze(
         dataset, crop_price=1.2, input_cost=6.0, cell_m=20, edge_margin_m=6,
     )
-    assert set(report["doses_testadas"]) <= applied
+    assert set(report["rates_tested"]) <= applied
 
 
 # ==========================================================================
-# Desenho de ensaio e linhas AB
+# Trial layout and AB lines
 # ==========================================================================
 
 def test_design_is_balanced():
     result = design_strips(QUARTER_SECTION, rates=[0, 50, 100, 150, 200],
                            implement_width_m=18.29, passes_per_strip=2,
                            blocks=4, buffer_m=20)
-    counts = set(result["summary"]["repeticoes_por_dose"].values())
-    assert len(counts) == 1, "cada dose precisa aparecer o mesmo número de vezes"
-    assert result["summary"]["blocos"] >= 2
+    counts = set(result["summary"]["reps_per_rate"].values())
+    assert len(counts) == 1, "each rate has to appear the same number of times"
+    assert result["summary"]["blocks"] >= 2
 
 
 def test_design_refuses_impossible_layout():
-    with pytest.raises(ValueError, match="comporta"):
+    with pytest.raises(ValueError, match="only fits"):
         design_strips(QUARTER_SECTION, rates=[0, 50, 100, 150, 200],
                       implement_width_m=200.0, passes_per_strip=2, blocks=4)
 
 
 def test_design_needs_three_rates():
-    with pytest.raises(ValueError, match="3 doses"):
+    with pytest.raises(ValueError, match="3 distinct rates"):
         design_strips(QUARTER_SECTION, rates=[0, 100], implement_width_m=18.29)
 
 
 def test_ab_line_heading_is_compass_bearing():
     line = ab_line_from_direction(QUARTER_SECTION, angle_deg=0.0)
-    assert line["heading"] == pytest.approx(90.0, abs=0.1)   # leste
+    assert line["heading"] == pytest.approx(90.0, abs=0.1)   # east
     line = ab_line_from_direction(QUARTER_SECTION, angle_deg=90.0)
-    assert line["heading"] == pytest.approx(0.0, abs=0.1)    # norte
+    assert line["heading"] == pytest.approx(0.0, abs=0.1)    # north
 
 
 def test_ab_line_rejects_coincident_points():
-    with pytest.raises(ValueError, match="menos de um metro"):
+    with pytest.raises(ValueError, match="less than a metre"):
         ab_line_from_points((-105.834, 50.452), (-105.834, 50.452))
 
 
 # ==========================================================================
-# ISOXML: ida e volta
+# ISOXML round trips
 # ==========================================================================
 
 def test_prescription_round_trip(tmp_path):
-    """A dose gravada em mg/m² tem que voltar como os mesmos kg/ha."""
+    """A rate written in mg/m2 has to come back as the same kg/ha."""
     grid = np.array([[100.0, 120.0, 140.0], [110.0, 130.0, 150.0]])
     isoxml.write_prescription(tmp_path, grid, -105.834, 50.452, 0.0001, 0.0001,
                               rate_kind="mass", field_name="NW-14-32-W2")
@@ -370,7 +369,7 @@ def test_field_setup_round_trip(tmp_path):
 
 
 # ==========================================================================
-# Pacotes e verificação
+# Packages and verification
 # ==========================================================================
 
 @pytest.fixture
@@ -378,7 +377,7 @@ def built_package(tmp_path):
     design = design_strips(QUARTER_SECTION, rates=[0, 50, 100, 150, 200],
                            implement_width_m=18.29, passes_per_strip=2,
                            blocks=4, buffer_m=20)
-    line = ab_line_from_direction(QUARTER_SECTION, design["summary"]["direcao_graus"])
+    line = ab_line_from_direction(QUARTER_SECTION, design["summary"]["direction_deg"])
     return design, line, tmp_path
 
 
@@ -391,7 +390,7 @@ def test_package_passes_its_own_verification(built_package, monitor):
                           rate_unit="lb/ac", cell_m=10, field_name="NW-14-32-W2")
     report = validate.validate_package(folder, monitor)
     assert report["verdict"] == "ok", report["summary"]
-    assert report["totals"]["falha"] == 0
+    assert report["totals"]["fail"] == 0
 
 
 def test_package_uses_the_expected_rate_field(built_package):
@@ -404,7 +403,7 @@ def test_package_uses_the_expected_rate_field(built_package):
     import geopandas as gpd
 
     columns = set(gpd.read_file(shapefiles[0]).columns)
-    assert "TGT_RATE" in columns, "o Trimble procura a dose em TGT_RATE"
+    assert "TGT_RATE" in columns, "Trimble looks for the rate in TGT_RATE"
 
 
 def test_package_readme_is_written(built_package):
@@ -415,7 +414,7 @@ def test_package_readme_is_written(built_package):
                                    boundary=QUARTER_SECTION)
     readme = Path(result["readme"]).read_text(encoding="utf-8")
     assert "RAVEN VIPER 4" in readme
-    assert "COMO CARREGAR" in readme
+    assert "HOW TO LOAD IT" in readme
 
 
 def test_validator_catches_missing_sidecar(tmp_path):
@@ -428,7 +427,7 @@ def test_validator_catches_missing_sidecar(tmp_path):
                      crs="EPSG:4326").to_file(tmp_path / "rx.shp")
     (tmp_path / "rx.prj").unlink()
     checks = validate.validate_shapefile(tmp_path / "rx.shp", rate_field="RATE")
-    assert any(c.status == "falha" and "prj" in c.message for c in checks)
+    assert any(c.status == "fail" and "prj" in c.message for c in checks)
 
 
 def test_validator_catches_points_used_as_prescription(tmp_path):
@@ -439,20 +438,20 @@ def test_validator_catches_points_used_as_prescription(tmp_path):
     gpd.GeoDataFrame(pd.DataFrame({"RATE": [100.0]}), geometry=[Point(-105.83, 50.45)],
                      crs="EPSG:4326").to_file(tmp_path / "rx.shp")
     checks = validate.validate_shapefile(tmp_path / "rx.shp", rate_field="RATE")
-    assert any(c.status == "falha" and "polígono" in c.message for c in checks)
+    assert any(c.status == "fail" and "polygons" in c.message for c in checks)
 
 
 def test_validator_catches_grid_length_mismatch(tmp_path):
     grid = np.array([[100.0, 120.0], [110.0, 130.0]])
     isoxml.write_prescription(tmp_path, grid, -105.834, 50.452, 0.0001, 0.0001)
     binary = tmp_path / "TASKDATA" / "GRD00001.BIN"
-    binary.write_bytes(binary.read_bytes()[:-4])  # remove uma célula
+    binary.write_bytes(binary.read_bytes()[:-4])  # drop one cell
     checks = validate.validate_taskdata(tmp_path / "TASKDATA")
-    assert any(c.status == "falha" and "bytes" in c.message for c in checks)
+    assert any(c.status == "fail" and "bytes" in c.message for c in checks)
 
 
 # ==========================================================================
-# Cartão John Deere
+# John Deere card
 # ==========================================================================
 
 def test_greenstar_card_is_recognized(tmp_path):
@@ -484,5 +483,5 @@ def test_card_with_only_proprietary_files_explains_the_way_out(tmp_path):
     card = tmp_path / "GS3_2630"
     (card / "SETUP").mkdir(parents=True)
     (card / "SETUP" / "Setup.jdf").write_bytes(b"JDF" + bytes(64))
-    with pytest.raises(ValueError, match="shapefile em vez de GreenStar"):
+    with pytest.raises(ValueError, match="shapefile instead of GreenStar"):
         registry.read_any(tmp_path)

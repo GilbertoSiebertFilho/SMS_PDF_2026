@@ -1,19 +1,20 @@
-"""Pacotes de exportação por monitor.
+"""Export packages, one per monitor.
 
-Gerar o arquivo certo é metade do trabalho; a outra metade é entregá-lo na
-estrutura de pasta que o terminal procura. Este módulo descreve, para cada
-plataforma, o que ela aceita e como o pen drive deve ficar, e monta a pasta
-pronta para copiar.
+Producing the right file is half the job; the other half is handing it over
+in the folder structure the terminal looks for. This module describes, for
+each platform, what it accepts and how the USB stick should end up, and
+assembles the folder ready to copy.
 
-Duas convenções são padronizadas e valem para qualquer terminal ISOBUS:
+Two conventions are standardized and hold for any ISOBUS terminal:
 
-* a pasta se chama ``TASKDATA`` e fica na **raiz** do pen drive;
-* um shapefile só abre com ``.shp``, ``.shx``, ``.dbf`` e ``.prj`` juntos.
+* the folder is named ``TASKDATA`` and sits at the **root** of the stick;
+* a shapefile only opens with ``.shp``, ``.shx``, ``.dbf`` and ``.prj``
+  together.
 
-O resto varia por fabricante e por versão de firmware, então cada pacote sai
-com um arquivo de instruções dizendo o caminho de importação e o que
-conferir na tela — em vez de o app fingir certeza sobre menus que mudam a
-cada atualização.
+Everything else varies by manufacturer and by firmware version, so each
+package ships with an instruction file naming the import path and what to
+confirm on screen — rather than the app pretending certainty about menus
+that change with every update.
 """
 
 from __future__ import annotations
@@ -22,48 +23,48 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-#: Artefatos que um pacote pode conter.
+#: Artifacts a package may contain.
 ARTIFACT_LABELS = {
-    "prescription": "Prescrição (taxa variável)",
-    "boundary": "Contorno do talhão",
-    "guidance": "Linhas de orientação (AB)",
-    "data": "Dados de campo (pontos)",
+    "prescription": "Prescription (variable rate)",
+    "boundary": "Field boundary",
+    "guidance": "Guidance lines (AB)",
+    "data": "Field data (points)",
 }
 
 
 @dataclass(frozen=True)
 class MonitorProfile:
-    """Como preparar arquivos para um monitor específico."""
+    """How to prepare files for a specific monitor."""
 
     key: str
     label: str
-    #: Artefatos que esta plataforma consegue receber.
+    #: Artifacts this platform is able to receive.
     accepts: tuple[str, ...]
-    #: Formato preferido para cada artefato.
+    #: Preferred format for each artifact.
     preferred: dict[str, str]
-    #: Subpasta dentro do pacote, por formato.
+    #: Subfolder inside the package, per format.
     layout: dict[str, str] = field(default_factory=dict)
-    #: Nome do campo de dose que o monitor procura no shapefile.
+    #: Name of the rate field the monitor looks for in the shapefile.
     rate_field: str = "RATE"
     instructions: tuple[str, ...] = ()
 
 
 ISOBUS_STEPS = (
-    "Copie a pasta TASKDATA inteira para a RAIZ do pen drive — não dentro de "
-    "outra pasta, e sem renomear.",
-    "Use um pen drive formatado em FAT32. Muitos terminais não leem exFAT ou NTFS.",
-    "No terminal, entre em Importar / Gerenciador de dados e selecione o pen drive.",
-    "Confira na tela se o talhão, as linhas de orientação e a tarefa apareceram "
-    "antes de ir para a lavoura.",
+    "Copy the whole TASKDATA folder to the ROOT of the USB stick — not inside "
+    "another folder, and without renaming it.",
+    "Use a stick formatted as FAT32. Many terminals will not read exFAT or NTFS.",
+    "On the terminal, open Import / Data Manager and select the USB stick.",
+    "Check on screen that the field, the guidance lines and the task showed up "
+    "before heading out.",
 )
 
 SHAPEFILE_STEPS = (
-    "Copie os quatro arquivos juntos (.shp, .shx, .dbf, .prj). Faltando qualquer "
-    "um deles, o monitor não abre o mapa.",
-    "Na importação, o monitor pergunta qual coluna contém a dose: escolha a "
-    "coluna indicada no arquivo LEIA-ME deste pacote.",
-    "Confirme a unidade da dose na tela do monitor — o shapefile guarda o número, "
-    "não a unidade.",
+    "Copy all four files together (.shp, .shx, .dbf, .prj). Miss any one of "
+    "them and the monitor will not open the map.",
+    "During import the monitor asks which column holds the rate: pick the "
+    "column named in this package's README file.",
+    "Confirm the rate unit on the monitor screen — a shapefile stores the "
+    "number, not the unit.",
 )
 
 
@@ -76,11 +77,11 @@ PROFILES: tuple[MonitorProfile, ...] = (
         layout={"shapefile": "Raven", "isoxml": "."},
         rate_field="RATE",
         instructions=SHAPEFILE_STEPS + (
-            "O Viper 4 importa a prescrição em File Manager → USB, escolhendo o "
-            "shapefile de polígonos e depois a coluna de dose.",
-            "Contorno de talhão também entra como shapefile de polígono.",
-            "Se o seu Viper 4 estiver com firmware ISOBUS habilitado, a pasta "
-            "TASKDATA deste pacote traz as linhas AB e o contorno de uma vez.",
+            "The Viper 4 imports a prescription from File Manager -> USB, picking "
+            "the polygon shapefile and then the rate column.",
+            "A field boundary also goes in as a polygon shapefile.",
+            "If your Viper 4 has ISOBUS enabled, the TASKDATA folder in this "
+            "package carries the AB lines and the boundary in one go.",
         ),
     ),
     MonitorProfile(
@@ -91,12 +92,12 @@ PROFILES: tuple[MonitorProfile, ...] = (
         layout={"shapefile": "Rx", "isoxml": "."},
         rate_field="RATE",
         instructions=SHAPEFILE_STEPS + (
-            "Caminho mais confiável: envie o shapefile ao Operations Center "
-            "(Arquivos → Carregar) e mande o mapa ao monitor pelo Data Sync.",
-            "Sem conexão, importe o shapefile direto do pen drive pelo próprio "
-            "display Gen 4, em Gerenciador de arquivos.",
-            "Displays GreenStar antigos (2600/2630) exigem que o mapa passe antes "
-            "pelo software de escritório.",
+            "Most reliable route: upload the shapefile to Operations Center "
+            "(Files -> Upload) and send the map to the machine over Data Sync.",
+            "With no connectivity, import the shapefile straight from the USB "
+            "stick on the Gen 4 display, under File Manager.",
+            "Older GreenStar displays (2600/2630) need the map to pass through "
+            "desktop software first.",
         ),
     ),
     MonitorProfile(
@@ -106,10 +107,11 @@ PROFILES: tuple[MonitorProfile, ...] = (
         preferred={"prescription": "isoxml", "boundary": "isoxml", "guidance": "isoxml"},
         layout={"isoxml": ".", "shapefile": "Shapefile"},
         instructions=ISOBUS_STEPS + (
-            "O AFS Pro 700 e o AFS Connect leem ISOXML nativamente — é o caminho "
-            "preferido, porque leva contorno, linhas AB e prescrição num arquivo só.",
-            "A pasta Shapefile deste pacote é alternativa, para o caso de o "
-            "terminal recusar o TASKDATA.",
+            "AFS Pro 700 and AFS Connect read ISOXML natively — that is the "
+            "preferred route, because it carries boundary, AB lines and "
+            "prescription in a single set of files.",
+            "The Shapefile folder in this package is the fallback, in case the "
+            "terminal refuses the TASKDATA.",
         ),
     ),
     MonitorProfile(
@@ -119,7 +121,7 @@ PROFILES: tuple[MonitorProfile, ...] = (
         preferred={"prescription": "isoxml", "boundary": "isoxml", "guidance": "isoxml"},
         layout={"isoxml": ".", "shapefile": "Shapefile"},
         instructions=ISOBUS_STEPS + (
-            "IntelliView IV e XCN são ISOBUS: o TASKDATA é o caminho direto.",
+            "IntelliView IV and XCN are ISOBUS, so TASKDATA is the direct route.",
         ),
     ),
     MonitorProfile(
@@ -129,8 +131,8 @@ PROFILES: tuple[MonitorProfile, ...] = (
         preferred={"prescription": "isoxml", "boundary": "isoxml", "guidance": "isoxml"},
         layout={"isoxml": ".", "shapefile": "Shapefile"},
         instructions=ISOBUS_STEPS + (
-            "No X35, a prescrição aparece na tarefa importada; associe cada tanque "
-            "ao produto correspondente antes de iniciar.",
+            "On the X35 the prescription shows up inside the imported task; map "
+            "each tank to its product before starting.",
         ),
     ),
     MonitorProfile(
@@ -157,9 +159,9 @@ PROFILES: tuple[MonitorProfile, ...] = (
         layout={"shapefile": "AgData", "isoxml": "."},
         rate_field="TGT_RATE",
         instructions=SHAPEFILE_STEPS + (
-            "Nos displays GFX/TMX, importe pelo gerenciador de dados escolhendo o "
-            "shapefile e a coluna TGT_RATE.",
-            "Modelos com ISOBUS habilitado também aceitam a pasta TASKDATA.",
+            "On GFX/TMX displays, import through the data manager, choosing the "
+            "shapefile and then the TGT_RATE column.",
+            "Models with ISOBUS enabled also accept the TASKDATA folder.",
         ),
     ),
     MonitorProfile(
@@ -169,7 +171,7 @@ PROFILES: tuple[MonitorProfile, ...] = (
         preferred={"prescription": "shapefile", "boundary": "shapefile"},
         layout={"shapefile": "AgLeader"},
         instructions=SHAPEFILE_STEPS + (
-            "No InCommand, importe em Configuração → Talhão → Prescrição.",
+            "On InCommand, import under Setup -> Field -> Prescription.",
         ),
     ),
     MonitorProfile(
@@ -179,15 +181,16 @@ PROFILES: tuple[MonitorProfile, ...] = (
         preferred={"prescription": "geojson", "boundary": "geojson"},
         layout={"geojson": "Augmenta", "shapefile": "Shapefile"},
         instructions=(
-            "O Augmenta trabalha com GeoJSON e shapefile: use o GeoJSON quando "
-            "for subir pelo painel web, e o shapefile quando for pelo pen drive.",
-            "O sistema decide a dose em tempo real pela câmera; a prescrição entra "
-            "como limite ou como mapa base, conforme a configuração da máquina.",
+            "Augmenta works with GeoJSON and shapefile: use the GeoJSON when "
+            "uploading through the web console, and the shapefile over USB.",
+            "The system decides the rate in real time from the camera; the "
+            "prescription comes in as a cap or as a base map, depending on how "
+            "the machine is configured.",
         ),
     ),
     MonitorProfile(
         key="generic",
-        label="Genérico (qualquer monitor)",
+        label="Generic (any monitor)",
         accepts=("prescription", "boundary", "guidance", "data"),
         preferred={"prescription": "shapefile", "boundary": "shapefile", "guidance": "isoxml"},
         layout={},
@@ -199,12 +202,12 @@ PROFILES_BY_KEY = {p.key: p for p in PROFILES}
 
 
 def get_profile(key: str | None) -> MonitorProfile:
-    """Perfil de exportação pela chave, caindo para o genérico."""
+    """Export profile by key, falling back to the generic one."""
     return PROFILES_BY_KEY.get(key or "", PROFILES_BY_KEY["generic"])
 
 
 def profile_catalog() -> list[dict[str, Any]]:
-    """Catálogo serializável para a interface."""
+    """Serializable catalogue for the interface."""
     return [
         {
             "key": p.key,
@@ -225,46 +228,46 @@ def write_readme(
     rate_field: str | None = None,
     rate_unit: str | None = None,
 ) -> Path:
-    """Escreve o LEIA-ME que acompanha o pacote."""
+    """Write the README that ships inside the package."""
     lines = [
-        f"PACOTE PARA {profile.label.upper()}",
+        f"PACKAGE FOR {profile.label.upper()}",
         "=" * (12 + len(profile.label)),
         "",
-        "Gerado pelo AgroSuite.",
+        "Generated by AgroSuite.",
         "",
-        "CONTEÚDO",
+        "CONTENTS",
         "--------",
     ]
     for item in contents:
         detail = item.get("detail", "")
         lines.append(f"  {item['path']}")
         lines.append(f"      {ARTIFACT_LABELS.get(item['artifact'], item['artifact'])}"
-                     + (f" — {detail}" if detail else ""))
+                     + (f" - {detail}" if detail else ""))
     lines.append("")
 
     if rate_field:
         lines += [
-            "COLUNA DE DOSE",
-            "--------------",
-            f"  No shapefile, a dose está no campo: {rate_field}",
-            f"  Unidade gravada: {rate_unit or 'conforme escolhido na exportação'}",
-            "  O shapefile guarda apenas o número — confirme a unidade no monitor.",
+            "RATE COLUMN",
+            "-----------",
+            f"  In the shapefile, the rate lives in field: {rate_field}",
+            f"  Unit written: {rate_unit or 'as chosen at export time'}",
+            "  A shapefile stores only the number - confirm the unit on the monitor.",
             "",
         ]
 
-    lines += ["COMO CARREGAR", "-------------"]
+    lines += ["HOW TO LOAD IT", "--------------"]
     for index, step in enumerate(profile.instructions, start=1):
         lines.append(f"  {index}. {step}")
     lines += [
         "",
-        "ANTES DE IR PARA A LAVOURA",
-        "--------------------------",
-        "  - Confirme que o talhão certo foi selecionado no monitor.",
-        "  - Confira a dose exibida numa região conhecida do mapa.",
-        "  - Verifique se o produto e a unidade batem com o que está no tanque.",
+        "BEFORE HEADING OUT",
+        "------------------",
+        "  - Confirm the right field is selected on the monitor.",
+        "  - Check the rate shown over a part of the field you know well.",
+        "  - Make sure the product and the unit match what is in the tank.",
         "",
     ]
 
-    path = folder / "LEIA-ME.txt"
+    path = folder / "README.txt"
     path.write_text("\n".join(lines), encoding="utf-8")
     return path

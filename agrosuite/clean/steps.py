@@ -1,14 +1,14 @@
-"""Filtros de limpeza de dados de monitor.
+"""Cleaning filters for monitor data.
 
-Cada etapa é uma classe com a mesma interface: recebe o contexto com os
-vetores já preparados e devolve uma máscara booleana marcando os registros
-a **remover**, mais as estatísticas que alimentam o laudo.
+Every step is a class with the same interface: it receives the context with
+the prepared vectors and returns a boolean mask marking the records to
+**remove**, plus the statistics that feed the report.
 
-A sequência segue a prática consolidada na literatura de edição de mapas de
-rendimento (filtros de posição → tempo → largura → sobreposição → bordadura
-→ estatísticos), porque cada etapa depende da anterior ter saneado o que
-alimenta seus cálculos: não adianta procurar outlier local antes de remover
-os pontos de manobra, que são justamente os que puxam a vizinhança.
+The order follows established practice in the yield-map editing literature
+(position -> time -> width -> overlap -> headland -> statistical filters),
+because each step depends on the previous one having cleaned up what feeds
+its calculation: there is no point hunting local outliers before removing the
+turning points, which are exactly the ones that drag the neighbourhood.
 """
 
 from __future__ import annotations
@@ -21,13 +21,13 @@ import pandas as pd
 
 from ..core import schema as sch
 
-#: Valor sentinela para "nenhum ponto anterior cobriu esta célula".
+#: Sentinel meaning "no earlier point covered this cell".
 _NO_COVER = np.iinfo(np.int32).max
 
 
 @dataclass
 class StepResult:
-    """Resultado de uma etapa de limpeza."""
+    """Result of one cleaning step."""
 
     key: str
     label: str
@@ -50,11 +50,11 @@ class StepResult:
 
 
 class Context:
-    """Estado compartilhado entre as etapas de uma execução de limpeza.
+    """State shared across the steps of a cleaning run.
 
-    Mantém a máscara de registros ainda válidos, o motivo da remoção de cada
-    registro descartado e caches caros (grade de cobertura, vizinhança
-    espacial) que várias etapas reaproveitam.
+    Holds the mask of still-valid records, the removal reason for each
+    discarded record, and the expensive caches — coverage grid, spatial
+    neighbourhood — that several steps reuse.
     """
 
     def __init__(self, df: pd.DataFrame, value_column: str = sch.VALUE) -> None:
@@ -67,9 +67,9 @@ class Context:
         self._kdtree = None
         self.messages: list[str] = []
 
-    # -- acesso a colunas ------------------------------------------------
+    # -- column access ---------------------------------------------------
     def column(self, name: str) -> np.ndarray | None:
-        """Vetor float da coluna, ou ``None`` se ausente."""
+        """Float vector for the column, or ``None`` if absent."""
         if name not in self.df.columns:
             return None
         return pd.to_numeric(self.df[name], errors="coerce").to_numpy(dtype="float64")
@@ -79,7 +79,7 @@ class Context:
         return self.column(self.value_column)
 
     def apply(self, remove: np.ndarray, reason: str) -> int:
-        """Descarta os registros marcados, registrando o motivo."""
+        """Discard the marked records, recording the reason."""
         remove = np.asarray(remove, dtype=bool) & self.alive
         count = int(remove.sum())
         if count:
@@ -89,12 +89,12 @@ class Context:
 
     # -- caches ----------------------------------------------------------
     def coverage(self, cell_size: float | None = None) -> dict[str, Any] | None:
-        """Grade de cobertura do talhão, construída sob demanda.
+        """Coverage grid for the field, built on demand.
 
-        Para cada célula guarda o índice do **primeiro** registro que a
-        cobriu. Com isso, a sobreposição de um registro é simplesmente a
-        fração das suas células já cobertas por registros anteriores — o que
-        evita unir dezenas de milhares de polígonos.
+        For each cell it stores the index of the **first** record that covered
+        it. With that, a record's overlap is simply the fraction of its cells
+        already covered by earlier records — which avoids unioning tens of
+        thousands of polygons.
         """
         if self._coverage is not None:
             return self._coverage
@@ -118,7 +118,7 @@ class Context:
         x0, y0 = x0 - margin, y0 - margin
         x1, y1 = x1 + margin, y1 + margin
 
-        # Limita a memória da grade ajustando a célula se preciso.
+        # Cap the grid's memory by growing the cell if needed.
         max_cells = 24_000_000
         while ((x1 - x0) / cell + 1) * ((y1 - y0) / cell + 1) > max_cells:
             cell *= 1.5
@@ -126,12 +126,12 @@ class Context:
         ncols = int((x1 - x0) / cell) + 1
         nrows = int((y1 - y0) / cell) + 1
 
-        # Amostras transversais à direção de deslocamento cobrem a faixa.
+        # Cross-track samples cover the swath.
         heading = self.column(sch.HEADING)
         if heading is None:
             heading = np.zeros(self.n)
         rad = np.radians(np.nan_to_num(heading))
-        # Rumo 0 = norte; o vetor perpendicular à direção é (cos, -sin).
+        # Heading 0 = north; the vector perpendicular to it is (cos, -sin).
         perp_x, perp_y = np.cos(rad), -np.sin(rad)
 
         samples = max(3, int(np.ceil(median_swath / cell)) + 1)
@@ -167,7 +167,7 @@ class Context:
         return self._coverage
 
     def neighbors(self, k: int = 12):
-        """Índices dos ``k`` vizinhos mais próximos de cada registro vivo."""
+        """Indices of the ``k`` nearest neighbours of each surviving record."""
         if self._kdtree is not None:
             return self._kdtree
 
@@ -183,19 +183,19 @@ class Context:
         points = np.column_stack([x[alive_idx], y[alive_idx]])
         tree = cKDTree(points)
         _, idx = tree.query(points, k=min(k + 1, alive_idx.size), workers=-1)
-        self._kdtree = (alive_idx, idx[:, 1:])  # descarta o próprio ponto
+        self._kdtree = (alive_idx, idx[:, 1:])  # drop the point itself
         return self._kdtree
 
 
 # ==========================================================================
-# Etapas
+# Steps
 # ==========================================================================
 
 class CleaningStep:
-    """Contrato comum das etapas de limpeza."""
+    """Common contract for the cleaning steps."""
 
     key = "step"
-    label = "Etapa"
+    label = "Step"
     description = ""
     defaults: dict[str, Any] = {}
 
@@ -214,20 +214,21 @@ class CleaningStep:
 
 
 class NullValueFilter(CleaningStep):
-    """Descarta registros sem leitura válida da variável."""
+    """Discard records with no valid reading of the variable."""
 
     key = "null_value"
-    label = "Valores nulos e não positivos"
+    label = "Null and non-positive values"
     description = (
-        "Remove registros sem leitura ou com valor ≤ 0. São paradas, trechos "
-        "com o implemento levantado e falhas de sensor — nunca produção real."
+        "Removes records with no reading or a value at or below zero. Those are "
+        "stops, stretches with the implement lifted and sensor faults — never "
+        "real production."
     )
     defaults = {"drop_zero": True, "drop_negative": True}
 
     def run(self, ctx: Context) -> StepResult:
         values = ctx.values
         if values is None:
-            return self._result(0, ctx, "Coluna de valor ausente.", skipped=True)
+            return self._result(0, ctx, "Value column missing.", skipped=True)
         remove = ~np.isfinite(values)
         if self.params.get("drop_negative", True):
             remove |= values < 0
@@ -237,23 +238,23 @@ class NullValueFilter(CleaningStep):
 
 
 class ValueRangeFilter(CleaningStep):
-    """Aplica limites absolutos, definidos pelo agrônomo."""
+    """Apply absolute bounds chosen by the agronomist."""
 
     key = "value_range"
-    label = "Faixa absoluta da variável"
+    label = "Absolute value range"
     description = (
-        "Corta valores fora do intervalo fisicamente plausível para a cultura. "
-        "Deixe em branco para não aplicar um dos limites."
+        "Cuts values outside the physically plausible range for the crop. Leave "
+        "a box empty to skip that bound."
     )
     defaults = {"min": None, "max": None}
 
     def run(self, ctx: Context) -> StepResult:
         values = ctx.values
         if values is None:
-            return self._result(0, ctx, "Coluna de valor ausente.", skipped=True)
+            return self._result(0, ctx, "Value column missing.", skipped=True)
         lo, hi = self.params.get("min"), self.params.get("max")
         if lo is None and hi is None:
-            return self._result(0, ctx, "Sem limites definidos.", skipped=True)
+            return self._result(0, ctx, "No bounds set.", skipped=True)
         remove = np.zeros(ctx.n, dtype=bool)
         if lo is not None:
             remove |= values < float(lo)
@@ -264,50 +265,50 @@ class ValueRangeFilter(CleaningStep):
 
 
 class SpeedRangeFilter(CleaningStep):
-    """Remove registros fora da faixa operacional de velocidade."""
+    """Remove records outside the operating speed range."""
 
     key = "speed_range"
-    label = "Faixa de velocidade"
+    label = "Speed range"
     description = (
-        "Abaixo do mínimo a máquina está parando ou manobrando; acima do "
-        "máximo é deslocamento em estrada ou erro de GPS."
+        "Below the minimum the machine is stopping or turning; above the maximum "
+        "it is road travel or a GPS error."
     )
     defaults = {"min": 1.5, "max": 20.0}
 
     def run(self, ctx: Context) -> StepResult:
         speed = ctx.column(sch.SPEED)
         if speed is None:
-            return self._result(0, ctx, "Velocidade indisponível.", skipped=True)
+            return self._result(0, ctx, "Speed unavailable.", skipped=True)
         lo = float(self.params.get("min") or 0)
         hi = float(self.params.get("max") or 1e9)
         remove = np.isfinite(speed) & ((speed < lo) | (speed > hi))
         remove |= ~np.isfinite(speed)
         return self._result(
             ctx.apply(remove, self.label), ctx,
-            detail=f"Faixa aceita: {lo:g}–{hi:g} km/h.",
+            detail=f"Accepted range: {lo:g}-{hi:g} km/h.",
         )
 
 
 class SpeedChangeFilter(CleaningStep):
-    """Remove registros durante aceleração ou frenagem brusca.
+    """Remove records during sharp acceleration or braking.
 
-    Numa colheitadeira, a massa de grão em trânsito dentro da máquina faz o
-    sensor continuar registrando o fluxo da velocidade anterior. O resultado
-    são picos e vales artificiais sempre que a velocidade muda depressa.
+    On a combine, the grain in transit inside the machine keeps the sensor
+    reporting the flow of the previous speed. The result is artificial peaks
+    and troughs every time the speed changes quickly.
     """
 
     key = "speed_change"
-    label = "Variação brusca de velocidade"
+    label = "Sharp speed change"
     description = (
-        "Descarta registros em que a velocidade variou acima do limite entre "
-        "leituras consecutivas — a inércia do fluxo distorce o valor medido."
+        "Discards records where speed changed more than the limit between "
+        "consecutive readings — flow inertia distorts the measured value."
     )
     defaults = {"max_change_pct": 25.0}
 
     def run(self, ctx: Context) -> StepResult:
         speed = ctx.column(sch.SPEED)
         if speed is None:
-            return self._result(0, ctx, "Velocidade indisponível.", skipped=True)
+            return self._result(0, ctx, "Speed unavailable.", skipped=True)
         limit = float(self.params.get("max_change_pct", 25.0)) / 100.0
         previous = np.roll(speed, 1)
         previous[0] = speed[0]
@@ -316,58 +317,59 @@ class SpeedChangeFilter(CleaningStep):
         remove = np.isfinite(change) & (change > limit)
         return self._result(
             ctx.apply(remove, self.label), ctx,
-            detail=f"Variação máxima tolerada: {limit * 100:g}%.",
+            detail=f"Maximum change tolerated: {limit * 100:g}%.",
         )
 
 
 class SwathWidthFilter(CleaningStep):
-    """Remove passadas com plataforma parcialmente cheia."""
+    """Remove passes made with a partially filled header."""
 
     key = "swath_partial"
-    label = "Faixa parcial"
+    label = "Partial swath"
     description = (
-        "Quando a plataforma não trabalha na largura cheia, o monitor divide "
-        "a massa por uma área maior que a real e o valor cai artificialmente."
+        "When the header is not working at full width, the monitor divides the "
+        "mass by an area larger than the real one and the value drops "
+        "artificially."
     )
     defaults = {"min_fraction": 0.5}
 
     def run(self, ctx: Context) -> StepResult:
         swath = ctx.column(sch.SWATH)
         if swath is None:
-            return self._result(0, ctx, "Largura de faixa indisponível.", skipped=True)
+            return self._result(0, ctx, "Swath width unavailable.", skipped=True)
         valid = np.isfinite(swath) & (swath > 0)
         if valid.sum() < 10:
-            return self._result(0, ctx, "Larguras insuficientes.", skipped=True)
+            return self._result(0, ctx, "Not enough width readings.", skipped=True)
         full = float(np.percentile(swath[valid], 90))
         fraction = float(self.params.get("min_fraction", 0.5))
         remove = valid & (swath < full * fraction)
         remove |= ~valid
         return self._result(
             ctx.apply(remove, self.label), ctx,
-            detail=f"Largura cheia estimada: {full:.2f} m; mínimo aceito: {full * fraction:.2f} m.",
+            detail=f"Full width estimated at {full:.2f} m; minimum accepted {full * fraction:.2f} m.",
         )
 
 
 class OverlapFilter(CleaningStep):
-    """Remove registros sobre área já trabalhada.
+    """Remove records over already-worked ground.
 
-    Ao repassar por cima de uma faixa já colhida, a plataforma recolhe pouco
-    ou nenhum produto, mas o monitor continua contando a área cheia. É a
-    principal fonte de valores baixos espúrios num mapa de rendimento.
+    Driving back over a strip that was already harvested, the header picks up
+    little or no crop, but the monitor keeps counting the full area. It is the
+    main source of spurious low values in a yield map.
     """
 
     key = "overlap"
-    label = "Sobreposição de faixas"
+    label = "Swath overlap"
     description = (
-        "Compara a área coberta por cada registro com o que já havia sido "
-        "trabalhado antes e descarta o que excede a fração tolerada."
+        "Compares the area each record covers against what had already been "
+        "worked, and discards whatever exceeds the tolerated fraction."
     )
     defaults = {"max_overlap_pct": 40.0}
 
     def run(self, ctx: Context) -> StepResult:
         coverage = ctx.coverage()
         if coverage is None:
-            return self._result(0, ctx, "Sem geometria de faixa para calcular.", skipped=True)
+            return self._result(0, ctx, "No swath geometry to work from.", skipped=True)
 
         first_cover = coverage["first_cover"]
         flat = coverage["flat"]
@@ -382,37 +384,37 @@ class OverlapFilter(CleaningStep):
         return self._result(
             removed, ctx,
             detail=(
-                f"Célula de {coverage['cell']:.2f} m; tolerância de "
-                f"{limit * 100:g}% de área repetida."
+                f"{coverage['cell']:.2f} m cell; tolerating {limit * 100:g}% "
+                "of repeated area."
             ),
         )
 
 
 class BoundaryFilter(CleaningStep):
-    """Remove a bordadura (cabeceiras e contorno do talhão).
+    """Remove the headland and field edge.
 
-    A distância até a borda é medida sobre a própria grade de cobertura:
-    uma transformada de distância dá, para cada célula trabalhada, quantos
-    metros faltam até a área não trabalhada. Isso acompanha talhões de
-    formato irregular, o que um simples envoltório convexo não faria.
+    Distance to the edge is measured over the coverage grid itself: a distance
+    transform gives, for each worked cell, how many metres remain until the
+    unworked area. That follows irregularly shaped fields, which a simple
+    convex hull would not.
     """
 
     key = "boundary"
-    label = "Bordadura do talhão"
+    label = "Field edge"
     description = (
-        "Descarta registros a menos da distância informada da borda da área "
-        "trabalhada — onde há manobra, compactação e sobreposição."
+        "Discards records closer than the given distance to the edge of the "
+        "worked area — where turning, compaction and overlap happen."
     )
     defaults = {"buffer_m": 0.0}
 
     def run(self, ctx: Context) -> StepResult:
         buffer_m = float(self.params.get("buffer_m") or 0.0)
         if buffer_m <= 0:
-            return self._result(0, ctx, "Desativado.", skipped=True)
+            return self._result(0, ctx, "Disabled.", skipped=True)
 
         coverage = ctx.coverage()
         if coverage is None:
-            return self._result(0, ctx, "Sem geometria de faixa para calcular.", skipped=True)
+            return self._result(0, ctx, "No swath geometry to work from.", skipped=True)
 
         from scipy import ndimage
 
@@ -429,37 +431,37 @@ class BoundaryFilter(CleaningStep):
         remove = coverage["valid"] & (point_distance < buffer_m)
         return self._result(
             ctx.apply(remove, self.label), ctx,
-            detail=f"Faixa de {buffer_m:g} m a partir da borda trabalhada.",
+            detail=f"{buffer_m:g} m strip in from the worked edge.",
         )
 
 
 class PassEndsFilter(CleaningStep):
-    """Remove o início e o fim de cada passada.
+    """Remove the start and end of every pass.
 
-    Na entrada da passada o fluxo ainda não estabilizou; na saída, o que
-    resta dentro da máquina continua sendo pesado sobre uma área que já
-    acabou. Os dois trechos produzem valores sem relação com o local.
+    Entering a pass the flow has not settled yet; leaving it, whatever remains
+    inside the machine keeps being weighed against ground that is already
+    finished. Both stretches produce values unrelated to where they are logged.
     """
 
     key = "pass_ends"
-    label = "Início e fim de passada"
+    label = "Pass start and end"
     description = (
-        "Descarta os primeiros e os últimos metros de cada passada, onde o "
-        "fluxo dentro da máquina ainda não corresponde ao ponto medido."
+        "Discards the first and last metres of each pass, where the flow inside "
+        "the machine does not yet match the point being logged."
     )
     defaults = {"start_m": 6.0, "end_m": 6.0}
 
     def run(self, ctx: Context) -> StepResult:
         if sch.PASS not in ctx.df.columns:
-            return self._result(0, ctx, "Passadas não identificadas.", skipped=True)
+            return self._result(0, ctx, "Passes not identified.", skipped=True)
         distance = ctx.column(sch.DISTANCE)
         if distance is None:
-            return self._result(0, ctx, "Distância entre registros indisponível.", skipped=True)
+            return self._result(0, ctx, "Distance between records unavailable.", skipped=True)
 
         start_m = float(self.params.get("start_m") or 0.0)
         end_m = float(self.params.get("end_m") or 0.0)
         if start_m <= 0 and end_m <= 0:
-            return self._result(0, ctx, "Desativado.", skipped=True)
+            return self._result(0, ctx, "Disabled.", skipped=True)
 
         step = np.nan_to_num(distance, nan=0.0)
         pass_id = ctx.df[sch.PASS].to_numpy()
@@ -476,73 +478,73 @@ class PassEndsFilter(CleaningStep):
 
         return self._result(
             ctx.apply(remove, self.label), ctx,
-            detail=f"{start_m:g} m no início e {end_m:g} m no fim de cada passada.",
+            detail=f"{start_m:g} m at the start and {end_m:g} m at the end of each pass.",
         )
 
 
 class ShortPassFilter(CleaningStep):
-    """Remove passadas curtas demais para serem confiáveis."""
+    """Remove passes too short to be trusted."""
 
     key = "short_pass"
-    label = "Passadas curtas"
+    label = "Short passes"
     description = (
-        "Passadas com poucos registros costumam ser manobra, retoque de "
-        "cabeceira ou entrada equivocada — não representam a lavoura."
+        "Passes with only a few records are usually turns, headland touch-ups "
+        "or a wrong entry — they do not represent the crop."
     )
     defaults = {"min_points": 8}
 
     def run(self, ctx: Context) -> StepResult:
         if sch.PASS not in ctx.df.columns:
-            return self._result(0, ctx, "Passadas não identificadas.", skipped=True)
+            return self._result(0, ctx, "Passes not identified.", skipped=True)
         minimum = int(self.params.get("min_points", 8))
         pass_id = pd.Series(ctx.df[sch.PASS].to_numpy())
         counts = pass_id.map(pass_id[ctx.alive].value_counts()).fillna(0).to_numpy()
         remove = counts < minimum
         return self._result(
             ctx.apply(remove, self.label), ctx,
-            detail=f"Mínimo de {minimum} registros por passada.",
+            detail=f"At least {minimum} records per pass.",
         )
 
 
 class MoistureFilter(CleaningStep):
-    """Aplica limites de umidade do grão."""
+    """Apply grain moisture bounds."""
 
     key = "moisture"
-    label = "Faixa de umidade"
+    label = "Moisture range"
     description = (
-        "Umidade fora da faixa esperada indica sensor descalibrado ou "
-        "leitura em vazio, e contamina a correção para massa seca."
+        "Moisture outside the expected range points to an uncalibrated sensor "
+        "or a reading taken empty, and it corrupts the dry-mass correction."
     )
     defaults = {"min": 5.0, "max": 40.0}
 
     def run(self, ctx: Context) -> StepResult:
         moisture = ctx.column(sch.MOISTURE)
         if moisture is None:
-            return self._result(0, ctx, "Umidade indisponível.", skipped=True)
+            return self._result(0, ctx, "Moisture unavailable.", skipped=True)
         lo = float(self.params.get("min") or 0)
         hi = float(self.params.get("max") or 100)
         remove = np.isfinite(moisture) & ((moisture < lo) | (moisture > hi))
         return self._result(
             ctx.apply(remove, self.label), ctx,
-            detail=f"Faixa aceita: {lo:g}–{hi:g}%.",
+            detail=f"Accepted range: {lo:g}-{hi:g}%.",
         )
 
 
 class PositionFilter(CleaningStep):
-    """Remove coordenadas repetidas ou com salto impossível."""
+    """Remove repeated coordinates or impossible jumps."""
 
     key = "position"
-    label = "Posição inconsistente"
+    label = "Inconsistent position"
     description = (
-        "Coordenada repetida indica GPS travado; salto grande demais entre "
-        "leituras consecutivas indica perda de correção."
+        "A repeated coordinate means the GPS froze; too large a jump between "
+        "consecutive readings means correction was lost."
     )
     defaults = {"max_jump_m": 25.0, "drop_duplicates": True}
 
     def run(self, ctx: Context) -> StepResult:
         x, y = ctx.column(sch.X), ctx.column(sch.Y)
         if x is None or y is None:
-            return self._result(0, ctx, "Coordenadas projetadas indisponíveis.", skipped=True)
+            return self._result(0, ctx, "Projected coordinates unavailable.", skipped=True)
 
         remove = ~np.isfinite(x) | ~np.isfinite(y)
         if self.params.get("drop_duplicates", True):
@@ -559,74 +561,76 @@ class PositionFilter(CleaningStep):
 
         return self._result(
             ctx.apply(remove, self.label), ctx,
-            detail=f"Salto máximo aceito: {max_jump:g} m.",
+            detail=f"Maximum jump accepted: {max_jump:g} m.",
         )
 
 
 class GlobalOutlierFilter(CleaningStep):
-    """Remove valores extremos em relação ao conjunto todo."""
+    """Remove extreme values relative to the whole dataset."""
 
     key = "global_outlier"
-    label = "Outliers globais"
+    label = "Global outliers"
     description = (
-        "Corta a cauda da distribuição do talhão inteiro. Use o desvio padrão "
-        "quando a distribuição for simétrica e o percentil quando for torta."
+        "Trims the tail of the whole field's distribution. Use standard "
+        "deviation when the distribution is symmetric and percentiles when it "
+        "is skewed."
     )
     defaults = {"method": "std", "k": 3.0, "lower_pct": 1.0, "upper_pct": 99.0}
 
     def run(self, ctx: Context) -> StepResult:
         values = ctx.values
         if values is None:
-            return self._result(0, ctx, "Coluna de valor ausente.", skipped=True)
+            return self._result(0, ctx, "Value column missing.", skipped=True)
         alive_values = values[ctx.alive]
         alive_values = alive_values[np.isfinite(alive_values)]
         if alive_values.size < 20:
-            return self._result(0, ctx, "Registros insuficientes.", skipped=True)
+            return self._result(0, ctx, "Not enough records.", skipped=True)
 
         method = self.params.get("method", "std")
         if method == "percentile":
             lo = float(np.percentile(alive_values, float(self.params.get("lower_pct", 1.0))))
             hi = float(np.percentile(alive_values, float(self.params.get("upper_pct", 99.0))))
-            detail = f"Percentis {self.params.get('lower_pct')}–{self.params.get('upper_pct')}."
+            detail = f"Percentiles {self.params.get('lower_pct')}-{self.params.get('upper_pct')}."
         else:
             k = float(self.params.get("k", 3.0))
             mean = float(np.mean(alive_values))
             std = float(np.std(alive_values, ddof=1))
             lo, hi = mean - k * std, mean + k * std
-            detail = f"Média {mean:.1f} ± {k:g}·{std:.1f}."
+            detail = f"Mean {mean:.1f} +/- {k:g} x {std:.1f}."
 
         remove = np.isfinite(values) & ((values < lo) | (values > hi))
         return self._result(
             ctx.apply(remove, self.label), ctx,
-            detail=f"{detail} Intervalo aceito: {lo:.1f} a {hi:.1f}.",
+            detail=f"{detail} Accepted interval: {lo:.1f} to {hi:.1f}.",
         )
 
 
 class LocalOutlierFilter(CleaningStep):
-    """Remove valores discrepantes em relação à vizinhança imediata.
+    """Remove values that disagree with their immediate neighbourhood.
 
-    É o filtro que separa variabilidade real de ruído: numa lavoura, pontos
-    próximos tendem a se parecer. Um registro muito distante da mediana dos
-    seus vizinhos, medido em desvios absolutos medianos, é erro de sensor —
-    não um ponto de alta produtividade.
+    This is the filter that separates real variability from noise: in a crop,
+    nearby points tend to look alike. A record far from the median of its
+    neighbours, measured in median absolute deviations, is a sensor error —
+    not a high-yielding spot.
     """
 
     key = "local_outlier"
-    label = "Outliers locais"
+    label = "Local outliers"
     description = (
-        "Compara cada registro com a mediana dos vizinhos mais próximos e "
-        "descarta os que se afastam além do limite, em desvios absolutos medianos."
+        "Compares each record with the median of its nearest neighbours and "
+        "discards those further away than the limit, in median absolute "
+        "deviations."
     )
     defaults = {"k_neighbors": 12, "threshold": 3.5}
 
     def run(self, ctx: Context) -> StepResult:
         values = ctx.values
         if values is None:
-            return self._result(0, ctx, "Coluna de valor ausente.", skipped=True)
+            return self._result(0, ctx, "Value column missing.", skipped=True)
 
         neighbors = ctx.neighbors(int(self.params.get("k_neighbors", 12)))
         if neighbors is None:
-            return self._result(0, ctx, "Vizinhança insuficiente.", skipped=True)
+            return self._result(0, ctx, "Neighbourhood too small.", skipped=True)
 
         alive_idx, neighbor_idx = neighbors
         local = values[alive_idx]
@@ -634,10 +638,10 @@ class LocalOutlierFilter(CleaningStep):
 
         median = np.nanmedian(neighbor_values, axis=1)
         mad = np.nanmedian(np.abs(neighbor_values - median[:, None]), axis=1)
-        # 1.4826 leva o MAD à escala de um desvio padrão sob normalidade.
+        # 1.4826 puts the MAD on the scale of a standard deviation under normality.
         scale = mad * 1.4826
-        # Onde a vizinhança é praticamente constante, o MAD colapsa e qualquer
-        # diferença viraria outlier; um piso relativo evita esse falso positivo.
+        # Where the neighbourhood is nearly constant the MAD collapses and any
+        # difference would look like an outlier; a relative floor avoids that.
         floor = np.nanmedian(np.abs(local - np.nanmedian(local))) * 1.4826 * 0.1
         scale = np.where(scale > floor, scale, floor)
 
@@ -652,13 +656,13 @@ class LocalOutlierFilter(CleaningStep):
         return self._result(
             ctx.apply(remove, self.label), ctx,
             detail=(
-                f"{self.params.get('k_neighbors', 12)} vizinhos, limite de "
-                f"{threshold:g} desvios."
+                f"{self.params.get('k_neighbors', 12)} neighbours, limit of "
+                f"{threshold:g} deviations."
             ),
         )
 
 
-#: Registro das etapas disponíveis, na ordem recomendada de execução.
+#: Registry of available steps, in the recommended order of execution.
 STEP_CLASSES: tuple[type[CleaningStep], ...] = (
     NullValueFilter,
     PositionFilter,

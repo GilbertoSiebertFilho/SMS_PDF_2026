@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# AgroSuite — inicializador para Linux e macOS.
-# Cria o ambiente virtual na primeira execução e sobe o app nas seguintes.
+# AgroSuite - launcher for Linux and macOS.
+# Creates the virtual environment on the first run, then starts the app.
 set -euo pipefail
 cd "$(dirname "$0")"
 
@@ -9,7 +9,7 @@ PY="$VENV/bin/python"
 
 if [ ! -x "$PY" ]; then
   echo
-  echo "  Primeira execução: preparando o ambiente."
+  echo "  First run: setting up the environment."
   echo
   python3 -m venv "$VENV"
   "$PY" -m pip install --upgrade pip --quiet

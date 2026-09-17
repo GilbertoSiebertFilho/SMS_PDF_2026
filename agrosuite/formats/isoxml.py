@@ -1,25 +1,26 @@
 """ISOXML — ISO 11783-10 (TASKDATA).
 
-É o único formato verdadeiramente aberto e comum a Väderstad, Bourgault
-(X30/X35), Case IH e New Holland ISOBUS, Topcon/Müller e boa parte dos
-terminais Trimble. Uma pasta ISOXML tem esta forma::
+The only genuinely open format common to Väderstad, Bourgault (X30/X35),
+Case IH and New Holland ISOBUS, Topcon/Müller and much of the Trimble
+lineup. An ISOXML folder looks like this::
 
     TASKDATA/
-        TASKDATA.XML      cadastro (cliente, fazenda, talhão, produto, tarefa)
-        TLG00001.XML      cabeçalho do log: quais campos existem no binário
-        TLG00001.BIN      registros do log, em binário little-endian
-        GRD00001.BIN      grade de prescrição, em binário
+        TASKDATA.XML      registry (customer, farm, field, product, task)
+        TLG00001.XML      log header: which fields exist in the binary
+        TLG00001.BIN      log records, little-endian binary
+        GRD00001.BIN      prescription grid, binary
 
-Este módulo faz as duas pontas:
+This module handles both ends:
 
-* **Leitura** do cadastro, dos contornos de talhão e dos logs TLG — o
-  cabeçalho TLG diz quais campos estão presentes, e o binário é
-  desempacotado conforme essa declaração.
-* **Escrita** de prescrição como tarefa com grade do tipo 2, que é o que os
-  terminais consomem para taxa variável.
+* **Reading** the registry, the field boundaries and the TLG logs — the TLG
+  header says which fields are present, and the binary is unpacked according
+  to that declaration.
+* **Writing** a prescription as a task with a type-2 grid, which is what
+  terminals consume for variable rate.
 
-Convenção de sinal do padrão: latitude = *north*, longitude = *east*, ambas
-em graus decimais; no binário vêm como inteiros de 32 bits em 1e-7 grau.
+Sign convention from the standard: latitude = *north*, longitude = *east*,
+both in decimal degrees; in the binary they arrive as 32-bit integers in
+units of 1e-7 degree.
 """
 
 from __future__ import annotations
@@ -37,54 +38,54 @@ import pandas as pd
 from ..core import schema as sch
 from ..core.dataset import Dataset, DatasetMeta
 
-#: Época das datas do padrão: dias contados a partir de 01/01/1980.
+#: The standard's date epoch: days counted from 1980-01-01.
 ISO_EPOCH = date(1980, 1, 1)
 
-#: Escala das coordenadas inteiras do log binário.
+#: Scale of the integer coordinates in the binary log.
 COORD_SCALE = 1e-7
 
 
 @dataclass(frozen=True)
 class DDI:
-    """Entrada do dicionário de dados do ISOBUS."""
+    """Entry in the ISOBUS data dictionary."""
 
     code: int
     label: str
     iso_unit: str
-    #: Fator que leva o inteiro do padrão à unidade interna do AgroSuite.
+    #: Factor taking the standard's integer to AgroSuite's internal unit.
     to_internal: float
     internal_unit: str
     canonical: str | None = None
 
 
-#: Dicionário parcial de DDIs — cobre as grandezas usadas em taxa variável,
-#: colheita e telemetria de deslocamento. DDIs fora desta tabela são
-#: preservados como colunas ``ddi_<código>`` com o valor bruto, para que
-#: nenhum dado do log se perca silenciosamente.
+#: Partial DDI dictionary — covers the quantities used in variable rate,
+#: harvest and travel telemetry. DDIs outside this table are kept as
+#: ``ddi_<code>`` columns holding the raw value, so no log data is lost
+#: silently.
 DDI_TABLE: dict[int, DDI] = {
-    0x0001: DDI(0x0001, "Dose alvo (volume por área)", "mm³/m²", 0.01, "L/ha", sch.TARGET_RATE),
-    0x0002: DDI(0x0002, "Dose aplicada (volume por área)", "mm³/m²", 0.01, "L/ha", sch.APPLIED_RATE),
-    0x0003: DDI(0x0003, "Dose alvo (massa por tempo)", "mg/s", 1e-6, "kg/s", None),
-    0x0004: DDI(0x0004, "Dose aplicada (massa por tempo)", "mg/s", 1e-6, "kg/s", sch.FLOW),
-    0x0005: DDI(0x0005, "Dose alvo (massa por área)", "mg/m²", 0.01, "kg/ha", sch.TARGET_RATE),
-    0x0006: DDI(0x0006, "Dose alvo (massa por área)", "mg/m²", 0.01, "kg/ha", sch.TARGET_RATE),
-    0x0007: DDI(0x0007, "Dose aplicada (massa por área)", "mg/m²", 0.01, "kg/ha", sch.APPLIED_RATE),
-    0x000A: DDI(0x000A, "Dose alvo (contagem por área)", "1/m²", 10.0, "sementes/ha", sch.TARGET_RATE),
-    0x000B: DDI(0x000B, "Dose aplicada (contagem por área)", "1/m²", 10.0, "sementes/ha", sch.APPLIED_RATE),
-    0x0043: DDI(0x0043, "Velocidade real do solo", "mm/s", 0.0036, "km/h", sch.SPEED),
-    0x0046: DDI(0x0046, "Velocidade GNSS", "mm/s", 0.0036, "km/h", sch.SPEED),
-    0x0048: DDI(0x0048, "Estado de trabalho", "-", 1.0, "-", None),
-    0x0049: DDI(0x0049, "Largura de trabalho efetiva", "mm", 0.001, "m", sch.SWATH),
-    0x0074: DDI(0x0074, "Distância percorrida (trabalho)", "mm", 0.001, "m", sch.DISTANCE),
-    0x0075: DDI(0x0075, "Distância percorrida (total)", "mm", 0.001, "m", None),
-    0x0077: DDI(0x0077, "Área trabalhada", "mm²", 1e-10, "ha", None),
-    0x0082: DDI(0x0082, "Rendimento (massa por área)", "mg/m²", 0.01, "kg/ha", sch.VALUE),
-    0x0083: DDI(0x0083, "Umidade do grão", "ppm", 1e-4, "%", sch.MOISTURE),
-    0x0084: DDI(0x0084, "Massa colhida acumulada", "g", 0.001, "kg", None),
-    0x0090: DDI(0x0090, "Largura de seção", "mm", 0.001, "m", None),
+    0x0001: DDI(0x0001, "Setpoint volume per area rate", "mm3/m2", 0.01, "L/ha", sch.TARGET_RATE),
+    0x0002: DDI(0x0002, "Actual volume per area rate", "mm3/m2", 0.01, "L/ha", sch.APPLIED_RATE),
+    0x0003: DDI(0x0003, "Setpoint mass per time rate", "mg/s", 1e-6, "kg/s", None),
+    0x0004: DDI(0x0004, "Actual mass per time rate", "mg/s", 1e-6, "kg/s", sch.FLOW),
+    0x0005: DDI(0x0005, "Setpoint mass per area rate", "mg/m2", 0.01, "kg/ha", sch.TARGET_RATE),
+    0x0006: DDI(0x0006, "Setpoint mass per area rate", "mg/m2", 0.01, "kg/ha", sch.TARGET_RATE),
+    0x0007: DDI(0x0007, "Actual mass per area rate", "mg/m2", 0.01, "kg/ha", sch.APPLIED_RATE),
+    0x000A: DDI(0x000A, "Setpoint count per area rate", "1/m2", 10.0, "seeds/ha", sch.TARGET_RATE),
+    0x000B: DDI(0x000B, "Actual count per area rate", "1/m2", 10.0, "seeds/ha", sch.APPLIED_RATE),
+    0x0043: DDI(0x0043, "Actual ground speed", "mm/s", 0.0036, "km/h", sch.SPEED),
+    0x0046: DDI(0x0046, "GNSS speed", "mm/s", 0.0036, "km/h", sch.SPEED),
+    0x0048: DDI(0x0048, "Actual work state", "-", 1.0, "-", None),
+    0x0049: DDI(0x0049, "Effective working width", "mm", 0.001, "m", sch.SWATH),
+    0x0074: DDI(0x0074, "Distance travelled (working)", "mm", 0.001, "m", sch.DISTANCE),
+    0x0075: DDI(0x0075, "Distance travelled (total)", "mm", 0.001, "m", None),
+    0x0077: DDI(0x0077, "Area worked", "mm2", 1e-10, "ha", None),
+    0x0082: DDI(0x0082, "Yield (mass per area)", "mg/m2", 0.01, "kg/ha", sch.VALUE),
+    0x0083: DDI(0x0083, "Grain moisture", "ppm", 1e-4, "%", sch.MOISTURE),
+    0x0084: DDI(0x0084, "Accumulated harvested mass", "g", 0.001, "kg", None),
+    0x0090: DDI(0x0090, "Section width", "mm", 0.001, "m", None),
 }
 
-#: DDIs preferidos ao escrever prescrição, por tipo de insumo.
+#: Preferred DDIs when writing a prescription, by input type.
 RX_DDI = {
     "mass": 0x0006,    # kg/ha  -> mg/m²
     "volume": 0x0001,  # L/ha   -> mm³/m²
@@ -92,23 +93,23 @@ RX_DDI = {
 }
 
 RX_DDI_LABELS = {
-    "mass": "Massa por área (kg/ha) — fertilizante sólido, calcário",
-    "volume": "Volume por área (L/ha) — calda, fertilizante líquido",
-    "count": "Contagem por área (sementes/ha) — semeadura",
+    "mass": "Mass per area (kg/ha) — dry fertilizer, lime",
+    "volume": "Volume per area (L/ha) — spray solution, liquid fertilizer",
+    "count": "Count per area (seeds/ha) — seeding",
 }
 
 
 def ddi_scale_to_iso(kind: str) -> float:
-    """Fator que leva a unidade interna ao inteiro do padrão."""
+    """Factor taking the internal unit to the standard's integer."""
     return {"mass": 100.0, "volume": 100.0, "count": 0.1}[kind]
 
 
 # ==========================================================================
-# Leitura
+# Reading
 # ==========================================================================
 
 def find_taskdata(root: Path) -> Path | None:
-    """Localiza o TASKDATA.XML dentro de uma pasta (busca insensível a caixa)."""
+    """Locate TASKDATA.XML inside a folder, case-insensitively."""
     root = Path(root)
     if root.is_file() and root.name.upper() == "TASKDATA.XML":
         return root
@@ -127,7 +128,7 @@ def _text(element: ET.Element | None, attr: str) -> str | None:
 
 
 def parse_taskdata(taskdata_path: Path) -> dict[str, Any]:
-    """Lê o cadastro do TASKDATA.XML (clientes, fazendas, talhões, tarefas)."""
+    """Read the TASKDATA.XML registry: customers, farms, fields, tasks."""
     tree = ET.parse(taskdata_path)
     root = tree.getroot()
 
@@ -195,18 +196,18 @@ def parse_taskdata(taskdata_path: Path) -> dict[str, Any]:
 
 
 def _tlg_layout(header_path: Path) -> dict[str, Any]:
-    """Interpreta o cabeçalho TLGxxxxx.XML.
+    """Interpret the TLGxxxxx.XML header.
 
-    No padrão, um atributo **presente e vazio** significa "este campo é
-    gravado a cada registro do binário"; um atributo ausente significa que o
-    campo não é registrado. É essa distinção que define o layout dos bytes.
+    In the standard, an attribute that is **present and empty** means "this
+    field is written on every record of the binary"; a missing attribute means
+    the field is not logged at all. That distinction defines the byte layout.
     """
     root = ET.parse(header_path).getroot()
     tim = root if root.tag == "TIM" else root.find("TIM")
     if tim is None:
-        raise ValueError(f"{header_path.name}: elemento TIM ausente.")
+        raise ValueError(f"{header_path.name}: TIM element missing.")
 
-    fields: list[tuple[str, str, int]] = []  # (nome, formato struct, bytes)
+    fields: list[tuple[str, str, int]] = []  # (name, struct format, bytes)
     if "A" in tim.attrib and tim.get("A") == "":
         fields.append(("time_ms", "<I", 4))
         fields.append(("date_days", "<H", 2))
@@ -240,13 +241,13 @@ def _tlg_layout(header_path: Path) -> dict[str, Any]:
 
 
 def read_tlg(header_path: Path) -> pd.DataFrame:
-    """Lê um par TLGxxxxx.XML + .BIN e devolve os registros como tabela."""
+    """Read a TLGxxxxx.XML + .BIN pair and return the records as a table."""
     header_path = Path(header_path)
     bin_path = header_path.with_suffix(".BIN")
     if not bin_path.exists():
         bin_path = header_path.with_suffix(".bin")
     if not bin_path.exists():
-        raise FileNotFoundError(f"Binário do log ausente para {header_path.name}.")
+        raise FileNotFoundError(f"Log binary missing for {header_path.name}.")
 
     layout = _tlg_layout(header_path)
     fields = layout["fields"]
@@ -266,8 +267,8 @@ def read_tlg(header_path: Path) -> pd.DataFrame:
 
         count = data[offset]
         offset += 1
-        # Um contador absurdo indica dessincronização: melhor parar do que
-        # produzir milhares de linhas de lixo.
+        # An absurd counter means the stream has lost sync: better to stop than
+        # to produce thousands of junk rows.
         if count > 64 or offset + count * 5 > total:
             break
         for _ in range(count):
@@ -297,7 +298,7 @@ def read_tlg(header_path: Path) -> pd.DataFrame:
         df[sch.TIMESTAMP] = base + pd.to_timedelta(df["time_ms"], unit="ms")
         df = df.drop(columns=["date_days", "time_ms"])
 
-    # Converte cada DLV para a unidade interna, ou preserva o valor bruto.
+    # Convert each DLV to the internal unit, or keep the raw value.
     for column in [c for c in df.columns if c.startswith("__dlv_")]:
         code = int(column.removeprefix("__dlv_"))
         entry = DDI_TABLE.get(code)
@@ -315,12 +316,12 @@ def read_tlg(header_path: Path) -> pd.DataFrame:
 
 
 def read_grid(base_dir: Path, grid_info: dict, rate_kind: str = "mass") -> pd.DataFrame:
-    """Lê uma grade de prescrição (tipo 2) como tabela de células.
+    """Read a type-2 prescription grid as a table of cells.
 
-    O binário guarda ``max_col × max_row`` inteiros de 32 bits sem sinal, em
-    varredura por linhas a partir do canto sudoeste. Cada célula vira uma
-    linha com o centro em coordenadas geográficas e a dose já convertida
-    para a unidade interna.
+    The binary holds ``max_col * max_row`` unsigned 32-bit integers, scanned
+    row by row from the south-west corner. Each cell becomes a row with its
+    centre in geographic coordinates and the rate already converted to the
+    internal unit.
     """
     base_dir = Path(base_dir)
     name = grid_info["filename"]
@@ -329,12 +330,12 @@ def read_grid(base_dir: Path, grid_info: dict, rate_kind: str = "mass") -> pd.Da
     ]
     grid_path = next((c for c in candidates if c.exists()), None)
     if grid_path is None:
-        raise FileNotFoundError(f"Binário da grade {name} não encontrado.")
+        raise FileNotFoundError(f"Grid binary {name} not found.")
 
     rows, cols = grid_info["max_row"], grid_info["max_col"]
     if grid_info.get("grid_type", 2) == 1:
         raw = np.frombuffer(grid_path.read_bytes(), dtype="<u1")
-        scale = 1.0  # código de zona de tratamento, não é dose
+        scale = 1.0  # treatment zone code, not a rate
     else:
         raw = np.frombuffer(grid_path.read_bytes(), dtype="<u4")
         scale = 1.0 / ddi_scale_to_iso(rate_kind)
@@ -342,7 +343,7 @@ def read_grid(base_dir: Path, grid_info: dict, rate_kind: str = "mass") -> pd.Da
     expected = rows * cols
     if raw.size < expected:
         raise ValueError(
-            f"Grade {name}: {raw.size} células no binário para {expected} declaradas."
+            f"Grid {name}: {raw.size} cells in the binary against {expected} declared."
         )
     values = raw[:expected].reshape(rows, cols).astype("float64") * scale
 
@@ -361,17 +362,17 @@ def read_grid(base_dir: Path, grid_info: dict, rate_kind: str = "mass") -> pd.Da
 
 
 def read_isoxml(path: Path, brand_hint: str | None = None) -> Dataset:
-    """Importa uma pasta (ou TASKDATA.XML) ISOXML como dataset."""
+    """Import an ISOXML folder (or TASKDATA.XML) as a dataset."""
     path = Path(path)
     taskdata = find_taskdata(path)
     if taskdata is None:
-        raise ValueError("Nenhum TASKDATA.XML encontrado na pasta informada.")
+        raise ValueError("No TASKDATA.XML found in the given folder.")
 
     catalog = parse_taskdata(taskdata)
     base = taskdata.parent
-    notes = [f"ISOXML versão {catalog['version']}."]
+    notes = [f"ISOXML version {catalog['version']}."]
     if catalog.get("software"):
-        notes.append(f"Gerado por: {catalog['software']}.")
+        notes.append(f"Generated by {catalog['software']}.")
 
     frames: list[pd.DataFrame] = []
     for task in catalog["tasks"]:
@@ -386,8 +387,8 @@ def read_isoxml(path: Path, brand_hint: str | None = None) -> Dataset:
                 continue
             try:
                 frame = read_tlg(header)
-            except Exception as exc:  # log corrompido não invalida os demais
-                notes.append(f"Log {log_name} ignorado: {exc}")
+            except Exception as exc:  # a corrupt log must not invalidate the rest
+                notes.append(f"Log {log_name} skipped: {exc}")
                 continue
             if frame.empty:
                 continue
@@ -401,7 +402,7 @@ def read_isoxml(path: Path, brand_hint: str | None = None) -> Dataset:
                 try:
                     grid_frame = read_grid(base, grid_info)
                 except Exception as exc:
-                    notes.append(f"Grade {grid_info['filename']} ignorada: {exc}")
+                    notes.append(f"Grid {grid_info['filename']} skipped: {exc}")
                     continue
                 grid_frame["task"] = task["name"] or task["id"]
                 grid_frames.append(grid_frame)
@@ -414,9 +415,9 @@ def read_isoxml(path: Path, brand_hint: str | None = None) -> Dataset:
         df = pd.concat(grid_frames, ignore_index=True)
         geometry = None
         operation = "prescription"
-        notes.append("Nenhum log TLG; importadas as grades de prescrição da tarefa.")
+        notes.append("No TLG log; the task's prescription grids were imported instead.")
     else:
-        # Sem logs: importa os contornos de talhão do cadastro.
+        # No logs: import the field boundaries from the registry instead.
         from shapely.geometry import Polygon
 
         rows, geoms = [], []
@@ -436,23 +437,23 @@ def read_isoxml(path: Path, brand_hint: str | None = None) -> Dataset:
                 })
                 geoms.append(poly)
         if not rows:
-            raise ValueError("ISOXML sem logs e sem contornos de talhão utilizáveis.")
+            raise ValueError("ISOXML with no logs and no usable field boundaries.")
         df = pd.DataFrame(rows)
         geometry = geoms
         operation = "boundary"
-        notes.append("Nenhum log TLG legível; importados os contornos do cadastro.")
+        notes.append("No readable TLG log; the registry's boundaries were imported.")
 
     if sch.VALUE not in df.columns:
         for candidate in (sch.APPLIED_RATE, sch.TARGET_RATE):
             if candidate in df.columns:
                 df[sch.VALUE] = df[candidate]
-                notes.append(f"Variável principal: {sch.LABELS[candidate]}.")
+                notes.append(f"Main variable: {sch.LABELS[candidate]}.")
                 break
 
     from . import brands as brands_mod
 
-    # O TASKDATA declara quem o gerou; isso identifica a plataforma melhor do
-    # que qualquer heurística de coluna.
+    # TASKDATA declares what generated it, which identifies the platform better
+    # than any column heuristic could.
     detected = brand_hint
     if not detected:
         software = catalog.get("software") or ""
@@ -478,8 +479,9 @@ def read_isoxml(path: Path, brand_hint: str | None = None) -> Dataset:
                 "tasks": [t["name"] for t in catalog["tasks"]],
                 "products": list(catalog["products"].values()),
             },
-            # Contorno e linhas AB viajam junto com os dados: é o que permite
-            # importar de um monitor e reexportar para outro sem redesenhar.
+            # Boundary and AB lines travel with the data: that is what allows
+            # importing from one monitor and re-exporting to another without
+            # redrawing anything.
             "field_setup": read_field_setup(taskdata),
         },
     )
@@ -487,7 +489,7 @@ def read_isoxml(path: Path, brand_hint: str | None = None) -> Dataset:
 
 
 # ==========================================================================
-# Escrita de prescrição
+# Writing a prescription
 # ==========================================================================
 
 def write_prescription(
@@ -505,26 +507,26 @@ def write_prescription(
     farm_name: str = "Fazenda",
     boundary: list[tuple[float, float]] | None = None,
 ) -> Path:
-    """Escreve uma pasta TASKDATA com prescrição em grade do tipo 2.
+    """Write a TASKDATA folder holding a type-2 grid prescription.
 
     Parameters
     ----------
     grid:
-        Matriz ``(linhas, colunas)`` com as doses na unidade interna
-        (kg/ha, L/ha ou sementes/ha conforme ``rate_kind``). Linha 0 é a
-        **mais ao sul**, coluna 0 a mais a oeste — a ordem que o padrão
-        espera no binário. Células sem dose devem ser ``NaN`` ou 0.
+        A ``(rows, cols)`` matrix of rates in the internal unit — kg/ha, L/ha
+        or seeds/ha depending on ``rate_kind``. Row 0 is the **southernmost**
+        and column 0 the westernmost, which is the order the standard expects
+        in the binary. Cells with no rate should be ``NaN`` or 0.
     min_lon, min_lat:
-        Canto sudoeste da grade, em graus decimais.
+        South-west corner of the grid, in decimal degrees.
     cell_lon, cell_lat:
-        Tamanho da célula em graus.
+        Cell size in degrees.
     rate_kind:
-        ``"mass"``, ``"volume"`` ou ``"count"``.
+        ``"mass"``, ``"volume"`` or ``"count"``.
 
     Returns
     -------
     Path
-        A pasta ``TASKDATA`` criada.
+        The ``TASKDATA`` folder that was created.
     """
     out_dir = Path(out_dir)
     taskdata_dir = out_dir / "TASKDATA"
@@ -588,19 +590,19 @@ def write_prescription(
 
 
 # ==========================================================================
-# Cadastro de talhão: contorno, linhas de orientação e prescrição
+# Field setup: boundary, guidance lines and prescription
 # ==========================================================================
-# O ISO 11783-10 classifica cada geometria por um código numérico. Os que
-# interessam aqui:
+# ISO 11783-10 classifies each geometry by a numeric code. The ones that
+# matter here:
 #
-#   PLN@A  tipo de polígono      1 = contorno do talhão, 7 = cabeceira,
-#                                6 = obstáculo, 11 = enclave
-#   LSG@A  tipo de linha         1 = anel externo, 2 = anel interno,
-#                                5 = padrão de orientação, 3 = rodado
-#   PNT@A  tipo de ponto         2 = genérico, 6 = referência A,
-#                                7 = referência B, 10 = ponto do talhão
-#   GPN@C  tipo de orientação    1 = linha AB, 2 = A+, 3 = curva,
-#                                4 = pivô, 5 = espiral
+#   PLN@A  polygon type      1 = field boundary, 7 = headland,
+#                            6 = obstacle, 11 = enclave
+#   LSG@A  line type         1 = polygon exterior, 2 = polygon interior,
+#                            5 = guidance pattern, 3 = tramline
+#   PNT@A  point type        2 = generic, 6 = guidance reference A,
+#                            7 = guidance reference B, 10 = field reference
+#   GPN@C  guidance type     1 = AB line, 2 = A plus, 3 = curve,
+#                            4 = pivot, 5 = spiral
 
 PLN_BOUNDARY = 1
 PLN_OBSTACLE = 6
@@ -621,15 +623,15 @@ GPN_CURVE = 3
 GPN_PIVOT = 4
 
 GUIDANCE_TYPE_LABELS = {
-    GPN_AB_LINE: "Linha AB (dois pontos)",
-    GPN_A_PLUS: "A+ (ponto e rumo)",
-    GPN_CURVE: "Curva gravada",
-    GPN_PIVOT: "Pivô central",
+    GPN_AB_LINE: "AB line (two points)",
+    GPN_A_PLUS: "A plus (point and heading)",
+    GPN_CURVE: "Recorded curve",
+    GPN_PIVOT: "Centre pivot",
 }
 
 
 def _ring_element(parent: ET.Element, ring, line_type: int, point_type: int) -> None:
-    """Escreve um LSG com seus pontos, em graus decimais."""
+    """Write an LSG with its points, in decimal degrees."""
     lsg = ET.SubElement(parent, "LSG", {"A": str(line_type)})
     for order, (lon, lat) in enumerate(ring, start=1):
         ET.SubElement(lsg, "PNT", {
@@ -654,32 +656,32 @@ def write_field_setup(
     task_name: str | None = None,
     product_name: str = "Produto",
 ) -> Path:
-    """Escreve um TASKDATA com contorno, linhas de orientação e, se houver, Rx.
+    """Write a TASKDATA with boundary, guidance lines and, if given, an Rx.
 
-    É o arquivo de setup que se leva no pen drive: o terminal ISOBUS carrega
-    o talhão, as linhas AB e a prescrição de uma vez, sem precisar redesenhar
-    nada na cabine.
+    This is the setup file you carry on the stick: the ISOBUS terminal loads
+    the field, the AB lines and the prescription in one go, with nothing to
+    redraw in the cab.
 
     Parameters
     ----------
     boundary:
-        Anel externo do talhão, em ``(lon, lat)``. É fechado automaticamente.
+        The field's outer ring, in ``(lon, lat)``. It is closed automatically.
     inner_rings:
-        Enclaves — áreas de dentro que não fazem parte do talhão.
+        Enclaves — inner areas that are not part of the field.
     headland:
-        Polígono de cabeceira, se houver um distinto do contorno.
+        Headland polygon, when there is one distinct from the boundary.
     guidance_lines:
-        Lista de linhas, cada uma ``{"name": str, "type": int, "a": (lon, lat),
-        "b": (lon, lat)}`` para linha AB, ou ``{"name", "type": 3, "points":
-        [(lon, lat), ...]}`` para curva gravada.
+        List of lines, each ``{"name": str, "type": int, "a": (lon, lat),
+        "b": (lon, lat)}`` for an AB line, or ``{"name", "type": 3, "points":
+        [(lon, lat), ...]}`` for a recorded curve.
     prescription:
         ``{"grid": ndarray, "min_lon", "min_lat", "cell_lon", "cell_lat",
-        "rate_kind"}`` — a mesma estrutura devolvida pela rasterização.
+        "rate_kind"}`` — the same structure rasterization returns.
 
     Returns
     -------
     Path
-        A pasta ``TASKDATA`` criada.
+        The ``TASKDATA`` folder that was created.
     """
     out_dir = Path(out_dir)
     taskdata_dir = out_dir / "TASKDATA"
@@ -704,9 +706,9 @@ def write_field_setup(
         closed = list(boundary)
         if closed[0] != closed[-1]:
             closed.append(closed[0])
-        pln = ET.SubElement(pfd, "PLN", {"A": str(PLN_BOUNDARY), "B": f"{field_name} — contorno"})
+        pln = ET.SubElement(pfd, "PLN", {"A": str(PLN_BOUNDARY), "B": f"{field_name} boundary"})
         _ring_element(pln, closed, LSG_EXTERIOR, PNT_GENERIC)
-        # Enclaves entram como anéis internos do mesmo polígono.
+        # Enclaves go in as interior rings of the same polygon.
         for ring in (inner_rings or []):
             if len(ring) >= 3:
                 inner = list(ring)
@@ -718,16 +720,16 @@ def write_field_setup(
         closed = list(headland)
         if closed[0] != closed[-1]:
             closed.append(closed[0])
-        pln = ET.SubElement(pfd, "PLN", {"A": str(PLN_HEADLAND), "B": "Cabeceira"})
+        pln = ET.SubElement(pfd, "PLN", {"A": str(PLN_HEADLAND), "B": "Headland"})
         _ring_element(pln, closed, LSG_EXTERIOR, PNT_GENERIC)
 
     if guidance_lines:
-        ggp = ET.SubElement(pfd, "GGP", {"A": "GGP1", "B": f"{field_name} — orientação"})
+        ggp = ET.SubElement(pfd, "GGP", {"A": "GGP1", "B": f"{field_name} guidance"})
         for index, line in enumerate(guidance_lines, start=1):
             pattern_type = int(line.get("type", GPN_AB_LINE))
             attrs = {
                 "A": f"GPN{index}",
-                "B": line.get("name") or f"Linha {index}",
+                "B": line.get("name") or f"Line {index}",
                 "C": str(pattern_type),
             }
             if line.get("heading") is not None:
@@ -779,8 +781,8 @@ def write_field_setup(
             "G": grid_name, "H": str(grid_path.stat().st_size), "I": "2",
         })
     else:
-        # Uma tarefa vazia amarrada ao talhão faz o terminal listar o campo
-        # mesmo quando o pen drive leva só contorno e linhas AB.
+        # An empty task tied to the field makes the terminal list it even when
+        # the stick carries only a boundary and AB lines.
         ET.SubElement(root, "TSK", {
             "A": "TSK1", "B": task_name or f"Setup {field_name}",
             "C": "CTR1", "D": "FRM1", "E": "PFD1", "G": "1",
@@ -794,7 +796,7 @@ def write_field_setup(
 
 
 def read_field_setup(taskdata_path: Path) -> dict:
-    """Lê contorno, cabeceira e linhas de orientação de um TASKDATA."""
+    """Read boundary, headland and guidance lines from a TASKDATA."""
     root = ET.parse(Path(taskdata_path)).getroot()
     fields: list[dict] = []
 
@@ -837,7 +839,7 @@ def read_field_setup(taskdata_path: Path) -> dict:
                 lines.append({
                     "name": gpn.get("B") or gpn.get("A"),
                     "type": pattern_type,
-                    "type_label": GUIDANCE_TYPE_LABELS.get(pattern_type, "Outro"),
+                    "type_label": GUIDANCE_TYPE_LABELS.get(pattern_type, "Other"),
                     "heading": float(gpn.get("G")) if gpn.get("G") else None,
                     "a": (a["lon"], a["lat"]) if a else None,
                     "b": (b["lon"], b["lat"]) if b else None,

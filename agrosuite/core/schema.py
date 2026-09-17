@@ -1,14 +1,14 @@
-"""Esquema canônico de colunas.
+"""Canonical column schema.
 
-Todo dataset carregado no AgroSuite é convertido para um conjunto único de
-nomes de coluna, independentemente do monitor de origem. Os dicionários de
-*alias* abaixo concentram o conhecimento sobre como cada fabricante nomeia
-as mesmas grandezas nos seus arquivos exportados (SHP/DBF, CSV, ISOXML).
+Every dataset loaded into AgroSuite is converted to a single set of column
+names, regardless of which monitor produced it. The *alias* tables below
+hold the knowledge of how each manufacturer names the same quantities in
+its exported files (SHP/DBF, CSV, ISOXML).
 
-Regras de normalização de um nome bruto antes da busca por alias:
-  - caixa baixa, sem acentos
-  - qualquer caractere não alfanumérico vira "_"
-  - "_" repetidos são colapsados e removidos das pontas
+A raw name is normalized before the alias lookup:
+  - lowercased, accents stripped
+  - any non-alphanumeric character becomes "_"
+  - repeated "_" are collapsed and trimmed from both ends
 """
 
 from __future__ import annotations
@@ -42,40 +42,40 @@ APPLIED_RATE = "applied_rate"
 CROP = "crop"
 TRIAL_ID = "trial_id"
 
-#: Colunas numéricas conhecidas — usadas para coerção de tipo na importação.
+#: Known numeric columns, used for type coercion on import.
 NUMERIC_COLUMNS = (
     LON, LAT, X, Y, ELAPSED, VALUE, SPEED, SWATH, DISTANCE, HEADING,
     ELEVATION, MOISTURE, FLOW, TARGET_RATE, APPLIED_RATE,
 )
 
-#: Rótulos em português para exibição na interface.
+#: Display labels for the interface.
 LABELS = {
     LON: "Longitude",
     LAT: "Latitude",
-    X: "X projetado (m)",
-    Y: "Y projetado (m)",
-    TIMESTAMP: "Data/hora",
-    ELAPSED: "Tempo decorrido (s)",
-    VALUE: "Variável principal",
-    SPEED: "Velocidade (km/h)",
-    SWATH: "Largura de faixa (m)",
-    DISTANCE: "Distância percorrida (m)",
-    HEADING: "Rumo (graus)",
-    ELEVATION: "Elevação (m)",
-    MOISTURE: "Umidade (%)",
-    FLOW: "Fluxo (kg/s)",
-    PASS: "Passada",
-    SECTION: "Seção",
-    PRODUCT: "Produto",
-    TARGET_RATE: "Dose alvo",
-    APPLIED_RATE: "Dose aplicada",
-    CROP: "Cultura",
-    TRIAL_ID: "Faixa do ensaio",
+    X: "Projected X",
+    Y: "Projected Y",
+    TIMESTAMP: "Date / time",
+    ELAPSED: "Elapsed time",
+    VALUE: "Main variable",
+    SPEED: "Speed",
+    SWATH: "Swath width",
+    DISTANCE: "Distance travelled",
+    HEADING: "Heading",
+    ELEVATION: "Elevation",
+    MOISTURE: "Moisture",
+    FLOW: "Flow",
+    PASS: "Pass",
+    SECTION: "Section",
+    PRODUCT: "Product",
+    TARGET_RATE: "Target rate",
+    APPLIED_RATE: "Applied rate",
+    CROP: "Crop",
+    TRIAL_ID: "Trial strip",
 }
 
 
 def normalize_name(raw: str) -> str:
-    """Reduz um nome de coluna bruto à forma usada nas tabelas de alias."""
+    """Reduce a raw column name to the form used in the alias tables."""
     if raw is None:
         return ""
     text = unicodedata.normalize("NFKD", str(raw))
@@ -86,13 +86,13 @@ def normalize_name(raw: str) -> str:
 
 
 # --------------------------------------------------------------------------
-# Aliases por grandeza
+# Aliases by quantity
 # --------------------------------------------------------------------------
-# Cada lista reúne os nomes efetivamente encontrados em exportações de
-# John Deere (Operations Center / GreenStar / SMS), Raven Viper 4, Trimble
-# (FmX/GFX/TMX), Case IH AFS e New Holland Precision Land Management,
-# Bourgault (X35/X30), Väderstad E-Control/ISOBUS, Augmenta, Ag Leader SMS,
-# Climate FieldView e do padrão ISO 11783-10 (ISOXML).
+# Each list gathers names actually found in exports from John Deere
+# (Operations Center / GreenStar / SMS), Raven Viper 4, Trimble (FmX/GFX/TMX),
+# Case IH AFS and New Holland Precision Land Management, Bourgault (X30/X35),
+# Väderstad E-Control/ISOBUS, Augmenta, Ag Leader SMS, Climate FieldView and
+# the ISO 11783-10 (ISOXML) standard.
 
 ALIASES: dict[str, tuple[str, ...]] = {
     LON: (
@@ -112,13 +112,13 @@ ALIASES: dict[str, tuple[str, ...]] = {
         "time", "date", "logtime", "sample_time", "acquisition_time",
     ),
     VALUE: (
-        # rendimento (colheita)
+        # harvest yield
         "yield", "yld", "yield_vol", "yld_vol_dr", "yld_mass_d", "yld_mass_w",
         "vryieldvol", "vryieldmass", "dry_yield", "wet_yield", "yield_dry",
         "yield_wet", "yldvoldry", "yldmassdry", "yield_bu_ac", "yield_kg_ha",
         "yield_t_ha", "rendimento", "produtividade", "crop_flow",
         "harvest_yield", "yield_rate", "massflow", "mass_flow",
-        # aplicação / plantio
+        # application / seeding
         "applied_rate", "rate_applied", "appliedrate", "actual_rate",
         "as_applied_rate", "app_rate", "rate", "dose", "taxa",
         "seed_rate", "seeding_rate", "population", "pop", "plant_pop",
@@ -130,7 +130,7 @@ ALIASES: dict[str, tuple[str, ...]] = {
         "speed", "velocity", "gps_speed", "ground_speed", "speed_kmh",
         "speed_km_h", "speed_mph", "speed_mi_h", "velocidade", "spd",
         "machine_speed", "travel_speed", "speed_ms", "speed_m_s",
-        # Terminais europeus exportam nos idiomas locais.
+        # European terminals export in the local language.
         "geschwindigkeit", "fahrgeschwindigkeit", "vitesse", "velocidad",
         "snelheid", "hastighet",
     ),
@@ -192,23 +192,23 @@ ALIASES: dict[str, tuple[str, ...]] = {
     ),
 }
 
-#: Índice invertido alias -> coluna canônica (construído uma vez).
+#: Reverse index alias -> canonical column (built once).
 _ALIAS_INDEX: dict[str, str] = {}
 for _canonical, _names in ALIASES.items():
     for _name in _names:
-        # O primeiro a registrar vence: a ordem de ALIASES define a prioridade
-        # (ex.: "applied_rate" resolve para VALUE, não para APPLIED_RATE).
+        # First registration wins: the order of ALIASES sets the priority
+        # (e.g. "applied_rate" resolves to VALUE, not to APPLIED_RATE).
         _ALIAS_INDEX.setdefault(normalize_name(_name), _canonical)
 
 
 def resolve_column(raw: str) -> str | None:
-    """Devolve a coluna canônica de um nome bruto, ou ``None`` se desconhecido."""
+    """Return the canonical column for a raw name, or ``None`` if unknown."""
     key = normalize_name(raw)
     if not key:
         return None
     if key in _ALIAS_INDEX:
         return _ALIAS_INDEX[key]
-    # Segunda tentativa: alias contido no nome (ex.: "yld_vol_dry_2023").
+    # Second attempt: alias contained in the name (e.g. "yld_vol_dry_2023").
     for alias, canonical in _ALIAS_INDEX.items():
         if len(alias) >= 4 and alias in key:
             return canonical
@@ -216,10 +216,10 @@ def resolve_column(raw: str) -> str | None:
 
 
 def map_columns(raw_columns) -> dict[str, str]:
-    """Mapeia ``{nome_bruto: nome_canônico}`` para as colunas reconhecidas.
+    """Map ``{raw_name: canonical_name}`` for the recognized columns.
 
-    Se duas colunas brutas apontarem para a mesma canônica, a primeira vence e
-    a segunda é deixada de fora (permanece no dataset com o nome original).
+    If two raw columns point at the same canonical name, the first one wins
+    and the second is left out (it stays in the dataset under its own name).
     """
     mapping: dict[str, str] = {}
     taken: set[str] = set()

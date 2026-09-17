@@ -1,8 +1,8 @@
-"""Ponto de entrada do AgroSuite.
+"""AgroSuite entry point.
 
-Sobe o servidor local e abre o navegador. Por padrão escuta apenas em
-``127.0.0.1``: nenhuma outra máquina da rede alcança o app, e nenhum dado sai
-do computador.
+Starts the local server and opens the browser. By default it listens only on
+``127.0.0.1``: no other machine on the network can reach the app, and no data
+leaves the computer.
 """
 
 from __future__ import annotations
@@ -15,10 +15,11 @@ import webbrowser
 
 
 def find_free_port(preferred: int, host: str = "127.0.0.1") -> int:
-    """Devolve ``preferred`` se estiver livre, ou a primeira porta livre acima.
+    """Return ``preferred`` if it is free, or the first free port above it.
 
-    Uma sessão anterior que não encerrou direito deixa a porta ocupada; em vez
-    de falhar com "endereço em uso", o app simplesmente sobe na porta seguinte.
+    A previous session that did not shut down cleanly leaves the port taken;
+    rather than failing with "address in use", the app simply starts on the
+    next one.
     """
     for port in range(preferred, preferred + 50):
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
@@ -29,30 +30,30 @@ def find_free_port(preferred: int, host: str = "127.0.0.1") -> int:
             except OSError:
                 continue
     raise RuntimeError(
-        f"Nenhuma porta livre entre {preferred} e {preferred + 49}. "
-        "Feche outras instâncias do AgroSuite e tente de novo."
+        f"No free port between {preferred} and {preferred + 49}. "
+        "Close other AgroSuite instances and try again."
     )
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="agrosuite",
-        description="Abre o AgroSuite no navegador.",
+        description="Open AgroSuite in the browser.",
     )
-    parser.add_argument("--port", type=int, default=8765, help="Porta preferida (padrão: 8765).")
+    parser.add_argument("--port", type=int, default=8765, help="Preferred port (default: 8765).")
     parser.add_argument("--host", default="127.0.0.1",
-                        help="Endereço de escuta. Mantenha 127.0.0.1 para uso local.")
+                        help="Listen address. Keep 127.0.0.1 for local use.")
     parser.add_argument("--no-browser", action="store_true",
-                        help="Não abrir o navegador automaticamente.")
+                        help="Do not open the browser automatically.")
     parser.add_argument("--reload", action="store_true",
-                        help="Recarregar ao alterar o código (desenvolvimento).")
+                        help="Reload on code changes (development).")
     args = parser.parse_args(argv)
 
     try:
         import uvicorn
     except ImportError:
         print(
-            "Dependências não instaladas. Rode:\n"
+            "Dependencies are not installed. Run:\n"
             "    pip install -r requirements.txt",
             file=sys.stderr,
         )
@@ -61,8 +62,8 @@ def main(argv: list[str] | None = None) -> int:
     port = find_free_port(args.port, args.host)
     url = f"http://{args.host}:{port}"
 
-    print(f"\n  AgroSuite em {url}")
-    print("  Feche esta janela para encerrar o app.\n")
+    print(f"\n  AgroSuite is running at {url}")
+    print("  Close this window to stop the app.\n")
 
     if not args.no_browser:
         threading.Timer(1.2, lambda: webbrowser.open(url)).start()

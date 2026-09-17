@@ -1,13 +1,12 @@
-"""Gerador de arquivos de exemplo no formato de cada monitor.
+"""Generator of sample files in each monitor's format.
 
-Cada função escreve um arquivo com os **mesmos nomes de coluna, unidades e
-estrutura de pasta** que a plataforma correspondente produz de verdade. É
-contra esses arquivos que os leitores do AgroSuite são testados: se um
-fabricante mudar um nome de coluna, o teste correspondente quebra e o alias
-é atualizado num lugar só.
+Every function writes a file with the **same column names, units and folder
+structure** the corresponding platform really produces. AgroSuite's readers
+are tested against these files: if a manufacturer changes a column name, the
+matching test breaks and the alias is updated in one place.
 
-As trajetórias são as mesmas em todos os arquivos, para que diferenças na
-leitura venham do formato e não dos dados.
+The tracks are identical across all the files, so differences in reading come
+from the format and not from the data.
 """
 
 from __future__ import annotations
@@ -21,7 +20,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-ORIGIN_LON, ORIGIN_LAT = -105.8340, 50.4520  # sul de Saskatchewan
+ORIGIN_LON, ORIGIN_LAT = -105.8340, 50.4520  # southern Saskatchewan
 M_PER_DEG_LAT = 111_320.0
 M_PER_DEG_LON = M_PER_DEG_LAT * np.cos(np.radians(ORIGIN_LAT))
 
@@ -32,13 +31,13 @@ def _track(
     swath_m: float = 18.29,
     step_m: float = 4.0,
 ):
-    """Trajetória em vaivém sobre um quarto de seção.
+    """Back-and-forth track over a quarter section.
 
-    As dimensões não são arbitrárias: 44 passadas de 60 pés cobrem os ~805 m
-    de um quarto de seção das Pradarias, que é o talhão para o qual o ensaio
-    em faixas e a prescrição são de fato dimensionados. Um talhão de exemplo
-    pequeno demais faria o desenho de ensaio falhar por falta de espaço — e o
-    teste não teria mostrado nada sobre o app.
+    The dimensions are not arbitrary: 44 passes at 60 feet cover the roughly
+    805 m of a Prairie quarter section, which is the field size strip trials
+    and prescriptions are actually dimensioned for. A sample field that was too
+    small would make the trial layout fail for lack of room — and the test
+    would have shown nothing about the app.
     """
     rng = np.random.default_rng(11)
     rows = []
@@ -65,7 +64,7 @@ def _track(
     df = pd.DataFrame(rows)
     df["lon"] = ORIGIN_LON + df["x"] / M_PER_DEG_LON
     df["lat"] = ORIGIN_LAT + df["y"] / M_PER_DEG_LAT
-    # Rendimento em kg/ha com padrão espacial suave, convertido por arquivo.
+    # Yield in kg/ha with a smooth spatial pattern, converted per file.
     df["yield_kg_ha"] = (
         3200
         + 600 * np.sin(2 * np.pi * df["x"] / 280)
@@ -73,7 +72,7 @@ def _track(
         + rng.normal(0, 140, len(df))
     ).clip(800, 6000)
     df["moisture"] = np.clip(rng.normal(11.5, 0.8, len(df)), 6, 22)
-    # Duas zonas de manejo, como num talhão já mapeado.
+    # Two management zones, as in a field that has already been mapped.
     df["rate_kg_ha"] = np.where(df["x"] < df["x"].median(), 90.0, 130.0)
     return df
 
@@ -85,7 +84,7 @@ M_TO_FT = 1 / 0.3048
 
 
 def _to_shapefile(frame: pd.DataFrame, path: Path, columns: dict[str, str]) -> Path:
-    """Escreve um shapefile de pontos com os nomes de campo informados."""
+    """Write a point shapefile with the given field names."""
     import geopandas as gpd
 
     data = {alias: frame[source] for alias, source in columns.items()}
@@ -104,10 +103,10 @@ def _to_shapefile(frame: pd.DataFrame, path: Path, columns: dict[str, str]) -> P
 # ==========================================================================
 
 def john_deere_shapefile(out: Path) -> Path:
-    """Exportação de colheita do Operations Center, em shapefile.
+    """A harvest export from Operations Center, as a shapefile.
 
-    O Operations Center entrega bu/ac, mph e pés, e o DBF trunca os nomes em
-    dez caracteres — daí ``Yld_Vol_Dr`` e ``Swth_Wdth_``.
+    Operations Center delivers bu/ac, mph and feet, and DBF truncates names at
+    ten characters — hence names like ``Yld_Vol_Dr`` and ``Swth_Wdth_``.
     """
     df = _track()
     df = df.assign(
@@ -125,9 +124,9 @@ def john_deere_shapefile(out: Path) -> Path:
         op="Harvest",
         field="NW-14-32-W2",
     )
-    # O Operations Center nomeia o rendimento como VRYIELDVOL/VRYIELDMASS —
-    # é essa a assinatura que distingue um export do John Deere de um do SMS,
-    # que usa Yld_Vol_Dr e Swth_Wdth_.
+    # Operations Center names the yield VRYIELDVOL/VRYIELDMASS — that is the
+    # signature distinguishing a John Deere export from an SMS one, which uses
+    # Yld_Vol_Dr and Swth_Wdth_.
     return _to_shapefile(df, out / "JD_Colheita_Canola.shp", {
         "VRYIELDVOL": "yld", "Moisture": "moist", "Speed": "spd",
         "SwathWidth": "swth", "Elevation": "elev", "Distance": "dist",
@@ -138,7 +137,7 @@ def john_deere_shapefile(out: Path) -> Path:
 
 
 def john_deere_zip(out: Path) -> Path:
-    """O mesmo shapefile compactado, como sai do pen drive do monitor."""
+    """The same shapefile zipped, as it comes off the monitor's USB stick."""
     folder = out / "jd_raw"
     shp = john_deere_shapefile(folder)
     archive = out / "JD_OperationsCenter_Export.zip"
@@ -155,7 +154,7 @@ def john_deere_zip(out: Path) -> Path:
 # ==========================================================================
 
 def ag_leader_shapefile(out: Path) -> Path:
-    """Exportação do SMS Advanced — o formato-ponte entre plataformas."""
+    """An SMS Advanced export — the bridge format between platforms."""
     df = _track()
     df = df.assign(
         obj=np.arange(len(df)),
@@ -180,7 +179,7 @@ def ag_leader_shapefile(out: Path) -> Path:
 # ==========================================================================
 
 def raven_viper_csv(out: Path) -> Path:
-    """Log de trabalho do Viper 4, com seções de barra e produto."""
+    """A Viper 4 job log, with boom sections and product."""
     df = _track()
     out.mkdir(parents=True, exist_ok=True)
     path = out / "Viper4_JobLog.csv"
@@ -205,7 +204,7 @@ def raven_viper_csv(out: Path) -> Path:
 # ==========================================================================
 
 def trimble_csv(out: Path) -> Path:
-    """Exportação de cobertura do FmX/GFX."""
+    """A coverage export from FmX/GFX."""
     df = _track()
     out.mkdir(parents=True, exist_ok=True)
     path = out / "Trimble_GFX_Coverage.csv"
@@ -230,7 +229,7 @@ def trimble_csv(out: Path) -> Path:
 # ==========================================================================
 
 def bourgault_csv(out: Path) -> Path:
-    """Log do X35, com um tanque por produto."""
+    """An X35 log, with one tank per product."""
     df = _track()
     out.mkdir(parents=True, exist_ok=True)
     path = out / "Bourgault_X35_Seeding.csv"
@@ -253,7 +252,7 @@ def bourgault_csv(out: Path) -> Path:
 # ==========================================================================
 
 def semicolon_csv(out: Path) -> Path:
-    """Exportação com separador ';' e vírgula decimal, comum fora dos EUA."""
+    """An export with ';' separator and decimal comma, common outside North America."""
     df = _track()
     out.mkdir(parents=True, exist_ok=True)
     path = out / "Vaderstad_EControl_Semeadura.csv"
@@ -278,17 +277,17 @@ ISO_EPOCH = date(1980, 1, 1)
 
 
 def isoxml_with_log(out: Path, field_name: str = "NW-14-32-W2") -> Path:
-    """Pasta TASKDATA completa, com cadastro, contorno e log TLG binário.
+    """A complete TASKDATA folder, with registry, boundary and a binary TLG log.
 
-    O binário segue o layout do ISO 11783-10: cabeçalho declarando quais
-    campos são gravados, e um registro por leitura com tempo, posição e os
-    valores dos DLV declarados.
+    The binary follows the ISO 11783-10 layout: a header declaring which fields
+    are written, and one record per reading carrying time, position and the
+    values of the declared DLVs.
     """
     df = _track()
     taskdata = out / "TASKDATA"
     taskdata.mkdir(parents=True, exist_ok=True)
 
-    # --- contorno do talhão (retângulo envolvente com folga)
+    # --- field boundary (bounding rectangle with some slack)
     pad = 0.0003
     ring = [
         (df["lon"].min() - pad, df["lat"].min() - pad),
@@ -318,19 +317,19 @@ def isoxml_with_log(out: Path, field_name: str = "NW-14-32-W2") -> Path:
 """
     (taskdata / "TASKDATA.XML").write_text(taskdata_xml, encoding="utf-8")
 
-    # --- cabeçalho do log: atributo vazio = campo presente no binário
+    # --- log header: an empty attribute means the field is in the binary
     (taskdata / "TLG00001.XML").write_text(
         '<?xml version="1.0" encoding="UTF-8"?>\n'
         '<TIM A="" D="4">'
         '<PTN A="" B="" C="" D="" G=""/>'
-        '<DLV A="0007" B="" C="DET-1"/>'   # dose aplicada, mg/m²
-        '<DLV A="0043" B="" C="DET-1"/>'   # velocidade real, mm/s
-        '<DLV A="0049" B="" C="DET-1"/>'   # largura de trabalho, mm
+        '<DLV A="0007" B="" C="DET-1"/>'   # actual rate, mg/m2
+        '<DLV A="0043" B="" C="DET-1"/>'   # actual ground speed, mm/s
+        '<DLV A="0049" B="" C="DET-1"/>'   # working width, mm
         "</TIM>\n",
         encoding="utf-8",
     )
 
-    # --- binário
+    # --- binary
     payload = bytearray()
     for _, row in df.iterrows():
         stamp = row["t"]
@@ -343,8 +342,8 @@ def isoxml_with_log(out: Path, field_name: str = "NW-14-32-W2") -> Path:
         payload += struct.pack("<i", int(round(row["lat"] * 1e7)))
         payload += struct.pack("<i", int(round(row["lon"] * 1e7)))
         payload += struct.pack("<i", int(round(row["elev_m"] * 1000)))
-        payload += struct.pack("<B", 4)   # posição RTK fixa
-        payload += struct.pack("<B", 18)  # satélites
+        payload += struct.pack("<B", 4)   # RTK fixed position
+        payload += struct.pack("<B", 18)  # satellites
 
         values = [
             (0, int(round(row["rate_kg_ha"] * 100))),      # kg/ha -> mg/m²
@@ -364,7 +363,7 @@ def isoxml_with_log(out: Path, field_name: str = "NW-14-32-W2") -> Path:
 # ==========================================================================
 
 def augmenta_geojson(out: Path) -> Path:
-    """Sessão do Augmenta: vigor por ponto e a dose que o sistema aplicou."""
+    """An Augmenta session: vigour per point and the rate the system applied."""
     df = _track()
     out.mkdir(parents=True, exist_ok=True)
     path = out / "augmenta_session_4471.geojson"
@@ -372,7 +371,7 @@ def augmenta_geojson(out: Path) -> Path:
     rng = np.random.default_rng(5)
     vigor = np.clip(0.30 + 0.45 * np.sin(2 * np.pi * df["x"] / 60) / 2
                     + rng.normal(0, 0.04, len(df)) + 0.2, 0.05, 0.95)
-    # O Augmenta aplica mais onde há mais biomassa (fungicida, dessecação).
+    # Augmenta applies more where there is more biomass (fungicide, desiccation).
     applied = (60 + 90 * vigor).round(1)
 
     features = [
@@ -413,7 +412,7 @@ def augmenta_geojson(out: Path) -> Path:
 # ==========================================================================
 
 def proprietary_binaries(out: Path) -> list[Path]:
-    """Arquivos proprietários que o app deve recusar com orientação clara."""
+    """Proprietary files the app should refuse with clear guidance."""
     out.mkdir(parents=True, exist_ok=True)
     created = []
     for name, header in [
@@ -430,7 +429,7 @@ def proprietary_binaries(out: Path) -> list[Path]:
 
 
 def build_all(out: Path) -> dict[str, Path]:
-    """Gera todos os exemplos e devolve o mapa nome -> caminho."""
+    """Generate every sample and return the name -> path map."""
     out = Path(out)
     out.mkdir(parents=True, exist_ok=True)
     return {

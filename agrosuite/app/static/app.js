@@ -1,8 +1,8 @@
-/* AgroSuite — interface.
+/* AgroSuite — user interface.
  *
- * Fluxo de cinco passos, um por aba: carregar os dados, limpar, analisar,
- * desenhar ensaio, exportar. O estado vive num objeto só; cada aba redesenha
- * o painel da direita a partir dele. */
+ * A five-step flow, one per tab: load the data, clean it, analyse it, lay out
+ * a trial, export. State lives in a single object; each tab redraws the right
+ * panel from it. */
 
 const App = {
   state: {
@@ -51,7 +51,7 @@ const App = {
   async busy(node, fn) {
     node?.classList.add("busy");
     try { return await fn(); }
-    catch (err) { this.toast("Não deu certo", err.message, "error"); return null; }
+    catch (err) { this.toast("That did not work", err.message, "error"); return null; }
     finally { node?.classList.remove("busy"); }
   },
 
@@ -65,7 +65,7 @@ const App = {
       this.state.units = this.state.catalog.units;
       Units.init(this.state.units, this.state.units.default_preset);
     } catch (err) {
-      this.toast("Servidor indisponível", err.message, "error");
+      this.toast("Server unavailable", err.message, "error");
       return;
     }
 
@@ -126,7 +126,7 @@ const App = {
     select.value = Units.get().preset;
     select.addEventListener("change", (event) => {
       Units.applyPreset(event.target.value);
-      this.toast("Unidades", this.state.units.presets[event.target.value].description);
+      this.toast("Units", this.state.units.presets[event.target.value].description);
       this.loadMap();
       this.renderTab();
     });
@@ -152,13 +152,13 @@ const App = {
       const card = document.createElement("div");
       card.className = "card";
       card.setAttribute("aria-selected", String(item.id === this.state.selectedId));
-      const origin = { clean: "limpo", clean_removed: "removidos", units: "convertido",
-                       demo: "demo", upload: "enviado", path: "disco" }[item.origin] || item.origin;
+      const origin = { clean: "clean", clean_removed: "removed", units: "converted",
+                       demo: "demo", upload: "uploaded", path: "disk" }[item.origin] || item.origin;
       card.innerHTML = `
         <div class="title">${this.escape(item.label)}</div>
         <div class="meta">
           <span class="tag ${item.origin === "clean" ? "accent" : ""}">${origin}</span>
-          <span>${Units.num(item.rows, 0)} reg.</span>
+          <span>${Units.num(item.rows, 0)} rec.</span>
           <span>${this.escape(item.meta.brand_label)}</span>
         </div>`;
       card.addEventListener("click", () => this.selectDataset(item.id));
@@ -169,7 +169,7 @@ const App = {
   async selectDataset(id) {
     this.state.selectedId = id;
     const detail = await this.api(`/api/datasets/${id}`).catch((err) => {
-      this.toast("Não deu certo", err.message, "error");
+      this.toast("That did not work", err.message, "error");
       return null;
     });
     if (!detail) return;
@@ -213,8 +213,8 @@ const App = {
 
     const status = document.getElementById("map-status");
     status.textContent = payload.sampled
-      ? `${Units.num(payload.count, 0)} de ${Units.num(payload.total, 0)} pontos (amostrados)`
-      : `${Units.num(payload.count, 0)} pontos`;
+      ? `${Units.num(payload.count, 0)} of ${Units.num(payload.total, 0)} points (sampled)`
+      : `${Units.num(payload.count, 0)} points`;
 
     const legend = document.getElementById("legend");
     if (scale) {
@@ -255,8 +255,8 @@ const App = {
     return `<select id="${id}">${items}</select>`;
   },
 
-  /* Arredonda para o "número redondo" mais próximo na ordem de grandeza:
-   * 44,8 vira 50; 4,48 vira 5; 448 vira 450. */
+  /* Round to the nearest "round number" in the same order of magnitude:
+   * 44.8 becomes 50; 4.48 becomes 5; 448 becomes 450. */
   roundStep(value) {
     if (!isFinite(value) || value <= 0) return 1;
     const magnitude = Math.pow(10, Math.floor(Math.log10(value)));
@@ -280,7 +280,7 @@ const App = {
     return [...extra, ...columns.map((c) => [c, labels[c] || c])];
   },
 
-  /* ----------------------------------------------- render do painel direito */
+  /* ------------------------------------------------ right panel rendering */
 
   renderTab() {
     const panel = document.getElementById("right-panel");
@@ -303,9 +303,9 @@ Object.assign(App, {
   tabDados(panel) {
     const d = this.state.selected;
     if (!d) {
-      panel.innerHTML = `<div class="panel"><h3>Dados</h3>
-        <div class="empty">Carregue um arquivo à esquerda, ou comece por um dos
-        conjuntos de demonstração.</div></div>`;
+      panel.innerHTML = `<div class="panel"><h3>Data</h3>
+        <div class="empty">Load a file on the left, or start from one of the demo
+        datasets.</div></div>`;
       return;
     }
 
@@ -316,46 +316,46 @@ Object.assign(App, {
 
     panel.innerHTML = `
       <div class="panel">
-        <h3>Origem</h3>
+        <h3>Source</h3>
         <div class="stat-grid">
-          <div class="stat"><div class="k">Monitor identificado</div>
+          <div class="stat"><div class="k">Monitor identified</div>
             <div class="v" style="font-size:13px">${this.escape(meta.brand_label)}</div>
             <div class="d">${confidence != null
-              ? `confiança ${Math.round(confidence * 100)}%` : "informado"}</div></div>
-          <div class="stat"><div class="k">Operação</div>
+              ? `${Math.round(confidence * 100)}% confidence` : "declared"}</div></div>
+          <div class="stat"><div class="k">Operation</div>
             <div class="v" style="font-size:13px">${this.escape(meta.operation_label)}</div>
             <div class="d">${this.escape(meta.source_format)}</div></div>
-          <div class="stat"><div class="k">Registros</div>
+          <div class="stat"><div class="k">Records</div>
             <div class="v">${Units.num(d.rows, 0)}</div>
             <div class="d">${d.metric_crs || ""}</div></div>
-          <div class="stat"><div class="k">Área trabalhada</div>
+          <div class="stat"><div class="k">Area worked</div>
             <div class="v">${Units.num(Units.convert.area(d.area_ha))}</div>
             <div class="d">${areaUnit}</div></div>
         </div>
         <div class="row tight" style="margin-top:10px">
-          <button class="small" id="btn-declare-units">Unidades do arquivo</button>
+          <button class="small" id="btn-declare-units">File units</button>
           ${meta.brand === "augmenta"
-            ? '<button class="small" id="btn-augmenta">Vigor × dose</button>' : ""}
+            ? '<button class="small" id="btn-augmenta">Vigour vs rate</button>' : ""}
         </div>
       </div>
 
       <div class="panel">
-        <h3>Variável principal · ${this.escape(
+        <h3>Main variable · ${this.escape(
           this.state.catalog.columns[this.state.colorColumn] || this.state.colorColumn)}</h3>
         ${this.statsBlock(stats, this.state.colorColumn)}
       </div>
 
       ${meta.extra?.jd_card ? this.cardPanel(meta.extra.jd_card, meta.extra.jd_card_layers) : ""}
 
-      ${meta.notes?.length ? `<div class="panel"><h3>Observações da leitura</h3>
+      ${meta.notes?.length ? `<div class="panel"><h3>Notes from reading the file</h3>
         ${meta.notes.map((n) => `<div class="note">${this.escape(n)}</div>`).join("")}</div>` : ""}
 
       ${Object.keys(meta.extra?.column_mapping || {}).length ? `
-      <div class="panel"><h3>Colunas reconhecidas</h3>
+      <div class="panel"><h3>Columns recognized</h3>
         <details class="fold"><summary>${
-          Object.keys(meta.extra.column_mapping).length} colunas mapeadas</summary>
+          Object.keys(meta.extra.column_mapping).length} columns mapped</summary>
           <div class="inner scroll-x"><table class="data">
-            <tr><th>No arquivo</th><th>Interpretada como</th></tr>
+            <tr><th>In the file</th><th>Read as</th></tr>
             ${Object.entries(meta.extra.column_mapping).map(([raw, canonical]) =>
               `<tr><td>${this.escape(raw)}</td><td>${this.escape(
                 this.state.catalog.columns[canonical] || canonical)}</td></tr>`).join("")}
@@ -363,12 +363,12 @@ Object.assign(App, {
         </details>
       </div>` : ""}
 
-      <div class="panel"><h3>Primeiras linhas</h3>
+      <div class="panel"><h3>First rows</h3>
         <div class="scroll-x" id="preview"></div>
       </div>
 
       <div class="panel">
-        <button class="wide" id="btn-remove-dataset">Remover da sessão</button>
+        <button class="wide" id="btn-remove-dataset">Remove from session</button>
       </div>`;
 
     this.renderPreview(document.getElementById("preview"), d.preview);
@@ -389,61 +389,61 @@ Object.assign(App, {
     });
   },
 
-  /* Inventário do cartão John Deere: o que dá para ler e o que é
-   * proprietário. Saber que o arquivo existe mas é fechado é diferente de
-   * achar que o cartão veio vazio. */
+  /* John Deere card inventory: what can be read and what is proprietary.
+   * Knowing a file exists but is closed is different from thinking the card
+   * came up empty. */
   cardPanel(card, layers) {
     const roleLabels = {
-      boundary: "Contorno", guidance: "Linhas AB",
-      prescription: "Prescrição", data: "Dados de operação",
+      boundary: "Boundary", guidance: "AB lines",
+      prescription: "Prescription", data: "Operation data",
     };
     return `
       <div class="panel">
-        <h3>Cartão John Deere</h3>
+        <h3>John Deere card</h3>
         <div class="note">${this.escape(card.summary)}</div>
-        ${layers?.length ? `<h4>Camadas que o app consegue abrir</h4>
+        ${layers?.length ? `<h4>Layers the app can open</h4>
           <div class="scroll-x"><table class="data">
-            <tr><th>Arquivo</th><th>Papel</th></tr>
+            <tr><th>File</th><th>Role</th></tr>
             ${layers.map((l) => `<tr>
               <td style="font-family:var(--mono);font-size:11px">${this.escape(l.relative)}</td>
               <td>${this.escape(roleLabels[l.role] || l.role)}</td></tr>`).join("")}
           </table></div>` : ""}
         ${card.proprietary?.length ? `<details class="fold" style="margin-top:8px">
-          <summary>${card.proprietary.length} arquivo(s) em formato proprietário</summary>
+          <summary>${card.proprietary.length} file(s) in a proprietary format</summary>
           <div class="inner">
             ${card.proprietary.map((f) => `<p class="hint tight">
               <span style="font-family:var(--mono)">${this.escape(f.relative)}</span> — ${
                 this.escape(f.kind)}</p>`).join("")}
-            <p class="hint tight" style="margin-top:6px">Esses arquivos só abrem no
-            software da John Deere ou no próprio display. Para trazê-los ao AgroSuite,
-            reexporte no SMS escolhendo shapefile em vez de GreenStar.</p>
+            <p class="hint tight" style="margin-top:6px">These files only open in John
+            Deere's own software or on the display itself. To bring them into AgroSuite,
+            export again from SMS choosing shapefile instead of GreenStar.</p>
           </div></details>` : ""}
       </div>`;
   },
 
   statsBlock(stats, column) {
-    if (!stats || !stats.n) return '<div class="empty">Sem estatísticas.</div>';
+    if (!stats || !stats.n) return '<div class="empty">No statistics.</div>';
     const { conv, unit } = Units.forColumn(column, this.state.selected?.meta?.operation);
     const cell = (label, value, decimals) =>
       `<div class="stat"><div class="k">${label}</div>
         <div class="v">${Units.num(conv(value), decimals)}</div>
         <div class="d">${unit}</div></div>`;
     return `<div class="stat-grid">
-      ${cell("Média", stats.mean)}
-      ${cell("Mediana", stats.median)}
-      ${cell("Desvio padrão", stats.std)}
-      <div class="stat"><div class="k">Coef. de variação</div>
+      ${cell("Mean", stats.mean)}
+      ${cell("Median", stats.median)}
+      ${cell("Std deviation", stats.std)}
+      <div class="stat"><div class="k">Coeff. of variation</div>
         <div class="v">${Units.num(stats.cv, 1)}</div><div class="d">%</div></div>
-      ${cell("Mínimo", stats.min)}
-      ${cell("Máximo", stats.max)}
-      ${cell("Percentil 5", stats.p05)}
-      ${cell("Percentil 95", stats.p95)}
+      ${cell("Minimum", stats.min)}
+      ${cell("Maximum", stats.max)}
+      ${cell("5th percentile", stats.p05)}
+      ${cell("95th percentile", stats.p95)}
     </div>`;
   },
 
   renderPreview(node, preview) {
     if (!node || !preview?.rows?.length) {
-      if (node) node.innerHTML = '<div class="empty">Sem linhas.</div>';
+      if (node) node.innerHTML = '<div class="empty">No rows.</div>';
       return;
     }
     const columns = preview.columns.slice(0, 10);
@@ -457,7 +457,7 @@ Object.assign(App, {
       }).join("")}</tr>`).join("");
     node.innerHTML = `<table class="data"><tr>${head}</tr>${body}</table>` +
       (preview.columns.length > 10
-        ? `<p class="hint">Mostrando 10 de ${preview.columns.length} colunas.</p>` : "");
+        ? `<p class="hint">Showing 10 of ${preview.columns.length} columns.</p>` : "");
   },
 
   async runAugmenta() {
@@ -467,23 +467,24 @@ Object.assign(App, {
     if (!report.available) { this.toast("Augmenta", report.reason, "warn"); return; }
 
     const rows = report.classes.map((c) =>
-      `<tr><td>${this.escape(c.classe)}</td><td class="num">${Units.num(c.n, 0)}</td>
-       <td class="num">${Units.num(c.dose_media)}</td>
-       <td class="num">${Units.num(c.desvio)}</td></tr>`).join("");
+      `<tr><td>${this.escape(c["class"])}</td><td class="num">${Units.num(c.n, 0)}</td>
+       <td class="num">${Units.num(c.mean_rate)}</td>
+       <td class="num">${Units.num(c.sd)}</td></tr>`).join("");
     const panel = document.getElementById("right-panel");
     const block = document.createElement("div");
     block.className = "panel";
-    block.innerHTML = `<h3>Augmenta · vigor × dose</h3>
-      <div class="note ${report.amplitude_relativa_pct < 5 ? "atencao" : "ok"}">${
-        this.escape(report.leitura)}</div>
+    block.innerHTML = `<h3>Augmenta · vigour vs rate</h3>
+      <div class="note ${report.relative_spread_pct < 5 ? "warning" : "ok"}">${
+        this.escape(report.reading)}</div>
       <div class="stat-grid" style="margin:8px 0">
-        <div class="stat"><div class="k">Correlação</div>
-          <div class="v">${Units.num(report.correlacao, 2)}</div><div class="d">vigor × dose</div></div>
-        <div class="stat"><div class="k">Amplitude da dose</div>
-          <div class="v">${Units.num(report.amplitude_relativa_pct, 1)}</div><div class="d">%</div></div>
+        <div class="stat"><div class="k">Correlation</div>
+          <div class="v">${Units.num(report.correlation, 2)}</div>
+          <div class="d">vigour vs rate</div></div>
+        <div class="stat"><div class="k">Rate spread</div>
+          <div class="v">${Units.num(report.relative_spread_pct, 1)}</div><div class="d">%</div></div>
       </div>
       <div class="scroll-x"><table class="data">
-        <tr><th>Classe de vigor</th><th>n</th><th>Dose média</th><th>Desvio</th></tr>${rows}
+        <tr><th>Vigour class</th><th>n</th><th>Mean rate</th><th>SD</th></tr>${rows}
       </table></div>`;
     panel.insertBefore(block, panel.children[1]);
   },
@@ -497,8 +498,8 @@ Object.assign(App, {
   tabLimpeza(panel) {
     const d = this.state.selected;
     if (!d) {
-      panel.innerHTML = `<div class="panel"><h3>Limpeza</h3>
-        <div class="empty">Escolha um conjunto de dados primeiro.</div></div>`;
+      panel.innerHTML = `<div class="panel"><h3>Cleaning</h3>
+        <div class="empty">Pick a dataset first.</div></div>`;
       return;
     }
 
@@ -509,26 +510,26 @@ Object.assign(App, {
 
     panel.innerHTML = `
       <div class="panel">
-        <h3>Limpeza de dados</h3>
-        ${this.field("Perfil", this.selectInput("clean-preset",
+        <h3>Data cleaning</h3>
+        ${this.field("Profile", this.selectInput("clean-preset",
           Object.entries(presets).map(([k, v]) => [k, v.label]), current))}
         <div class="note">${this.escape(config.description)}</div>
-        ${this.field("Variável a limpar", this.selectInput("clean-column",
+        ${this.field("Variable to clean", this.selectInput("clean-column",
           this.columnOptions(), this.state.colorColumn))}
-        ${this.field(`Atraso de fluxo do sensor (s)`,
+        ${this.field("Sensor flow delay (s)",
           this.numberInput("clean-delay", config.corrections.flow_delay_s ?? 0, "0.5", "0"),
-          "Segundos entre o corte e a leitura do sensor. Zero desativa a correção.")}
+          "Seconds between the cut and the sensor reading. Zero turns the correction off.")}
       </div>
 
       <div class="panel">
-        <h3>Filtros</h3>
+        <h3>Filters</h3>
         <div id="clean-steps"></div>
       </div>
 
       <div class="panel">
-        <button class="primary wide" id="btn-run-clean">Executar limpeza</button>
-        <p class="hint tight">Os dados originais são preservados: a limpeza cria
-        conjuntos novos, “limpo” e “removidos”.</p>
+        <button class="primary wide" id="btn-run-clean">Run cleaning</button>
+        <p class="hint tight">The original data is kept: cleaning creates new
+        datasets, "clean" and "removed".</p>
       </div>
 
       <div id="clean-report"></div>`;
@@ -553,26 +554,26 @@ Object.assign(App, {
     const { unit: rateUnit, kind: rateKind } =
       Units.forColumn("value", this.state.selected?.meta?.operation);
 
-    /* Parâmetros que são grandezas físicas aparecem na unidade escolhida
-     * pelo usuário e voltam ao métrico na hora de enviar. */
+    /* Parameters that are physical quantities show up in the user's chosen unit
+     * and go back to metric on the way out. */
     const PARAM_META = {
-      min_fraction: { label: "Fração mínima da largura", step: "0.05", suffix: "0–1" },
-      max_overlap_pct: { label: "Sobreposição tolerada", step: "5", suffix: "%" },
-      buffer_m: { label: "Bordadura", step: "1", suffix: lengthUnit, kind: "length" },
-      start_m: { label: "Descartar no início", step: "1", suffix: lengthUnit, kind: "length" },
-      end_m: { label: "Descartar no fim", step: "1", suffix: lengthUnit, kind: "length" },
-      min_points: { label: "Mínimo de registros", step: "1", suffix: "reg." },
-      max_change_pct: { label: "Variação máxima", step: "5", suffix: "%" },
-      max_jump_m: { label: "Salto máximo", step: "1", suffix: lengthUnit, kind: "length" },
-      k: { label: "Desvios padrão (k)", step: "0.25", suffix: "σ" },
-      lower_pct: { label: "Percentil inferior", step: "0.5", suffix: "%" },
-      upper_pct: { label: "Percentil superior", step: "0.5", suffix: "%" },
-      k_neighbors: { label: "Vizinhos", step: "1", suffix: "pontos" },
-      threshold: { label: "Limite de desvio", step: "0.5", suffix: "MAD" },
-      method: { label: "Método", choices: [["std", "Desvio padrão"], ["percentile", "Percentil"]] },
-      drop_zero: { label: "Descartar zeros", bool: true },
-      drop_negative: { label: "Descartar negativos", bool: true },
-      drop_duplicates: { label: "Descartar duplicatas", bool: true },
+      min_fraction: { label: "Minimum fraction of full width", step: "0.05", suffix: "0-1" },
+      max_overlap_pct: { label: "Overlap tolerated", step: "5", suffix: "%" },
+      buffer_m: { label: "Field edge", step: "1", suffix: lengthUnit, kind: "length" },
+      start_m: { label: "Drop at pass start", step: "1", suffix: lengthUnit, kind: "length" },
+      end_m: { label: "Drop at pass end", step: "1", suffix: lengthUnit, kind: "length" },
+      min_points: { label: "Minimum records", step: "1", suffix: "rec." },
+      max_change_pct: { label: "Maximum change", step: "5", suffix: "%" },
+      max_jump_m: { label: "Maximum jump", step: "1", suffix: lengthUnit, kind: "length" },
+      k: { label: "Standard deviations (k)", step: "0.25", suffix: "sd" },
+      lower_pct: { label: "Lower percentile", step: "0.5", suffix: "%" },
+      upper_pct: { label: "Upper percentile", step: "0.5", suffix: "%" },
+      k_neighbors: { label: "Neighbours", step: "1", suffix: "points" },
+      threshold: { label: "Deviation limit", step: "0.5", suffix: "MAD" },
+      method: { label: "Method", choices: [["std", "Standard deviation"], ["percentile", "Percentile"]] },
+      drop_zero: { label: "Drop zeros", bool: true },
+      drop_negative: { label: "Drop negatives", bool: true },
+      drop_duplicates: { label: "Drop duplicates", bool: true },
     };
 
     for (const step of this.state.catalog.steps) {
@@ -591,7 +592,7 @@ Object.assign(App, {
       const params = Object.keys(step.defaults).map((key) => {
         const raw = settings[key] !== undefined ? settings[key] : step.defaults[key];
         const meta = { ...(PARAM_META[key] || {}), ...unitFor(key) };
-        const label = meta.label || (key === "min" ? "Mínimo" : key === "max" ? "Máximo" : key);
+        const label = meta.label || (key === "min" ? "Minimum" : key === "max" ? "Maximum" : key);
         const id = `p-${step.key}-${key}`;
 
         if (meta.bool) {
@@ -621,7 +622,7 @@ Object.assign(App, {
         </summary>
         <div class="inner">
           <p class="hint tight">${this.escape(step.description)}</p>
-          ${params || '<p class="hint tight">Sem parâmetros.</p>'}
+          ${params || '<p class="hint tight">No parameters.</p>'}
         </div>`;
       box.appendChild(node);
     }
@@ -660,28 +661,28 @@ Object.assign(App, {
     this.state.reports[`${this.state.selectedId}:clean`] = result;
     await this.refreshDatasets();
     this.renderCleanReport(result);
-    this.toast("Limpeza concluída",
-      `${Units.num(result.report.totais.removidos, 0)} registros removidos ` +
-      `(${Units.num(result.report.totais.pct_removido, 1)}%).`);
+    this.toast("Cleaning done",
+      `${Units.num(result.report.totals.removed, 0)} records removed ` +
+      `(${Units.num(result.report.totals.removed_pct, 1)}%).`);
   },
 
   renderCleanReport(result) {
     const box = document.getElementById("clean-report");
     if (!box) return;
     const report = result.report;
-    const totals = report.totais;
-    const column = report.coluna_analisada;
+    const totals = report.totals;
+    const column = report.value_column;
     const { conv, unit } = Units.forColumn(column, this.state.selected?.meta?.operation);
-    const before = report.estatisticas.antes;
-    const after = report.estatisticas.depois;
+    const before = report.statistics.before;
+    const after = report.statistics.after;
 
-    const stepRows = report.etapas.filter((s) => !s.skipped).map((s) =>
+    const stepRows = report.steps.filter((s) => !s.skipped).map((s) =>
       `<tr><td title="${this.escape(s.detail)}">${this.escape(s.label)}</td>
        <td class="num">${Units.num(s.removed, 0)}</td>
-       <td class="num">${Units.num(s.removed / totals.entrada * 100, 1)}%</td>
+       <td class="num">${Units.num(s.removed / totals.input * 100, 1)}%</td>
        <td class="num">${Units.num(s.remaining, 0)}</td></tr>`).join("");
 
-    const skipped = report.etapas.filter((s) => s.skipped);
+    const skipped = report.steps.filter((s) => s.skipped);
 
     const compare = (label, b, a, decimals, convert) => {
       const cb = convert ? convert(b) : b;
@@ -700,70 +701,70 @@ Object.assign(App, {
 
     box.innerHTML = `
       <div class="panel">
-        <h3>Laudo da limpeza</h3>
-        ${report.leitura.map((f) =>
-          `<div class="note ${f.nivel}">${this.escape(f.texto)}</div>`).join("")}
+        <h3>Cleaning report</h3>
+        ${report.findings.map((f) =>
+          `<div class="note ${f.level}">${this.escape(f.text)}</div>`).join("")}
         <div class="stat-grid" style="margin-top:10px">
-          <div class="stat"><div class="k">Entraram</div>
-            <div class="v">${Units.num(totals.entrada, 0)}</div><div class="d">registros</div></div>
-          <div class="stat"><div class="k">Ficaram</div>
-            <div class="v">${Units.num(totals.mantidos, 0)}</div><div class="d">registros</div></div>
-          <div class="stat"><div class="k">Removidos</div>
-            <div class="v">${Units.num(totals.pct_removido, 1)}</div><div class="d">%</div></div>
-          <div class="stat"><div class="k">Área trabalhada</div>
-            <div class="v">${Units.num(Units.convert.area(totals.area_ha_depois))}</div>
+          <div class="stat"><div class="k">Came in</div>
+            <div class="v">${Units.num(totals.input, 0)}</div><div class="d">records</div></div>
+          <div class="stat"><div class="k">Kept</div>
+            <div class="v">${Units.num(totals.kept, 0)}</div><div class="d">records</div></div>
+          <div class="stat"><div class="k">Removed</div>
+            <div class="v">${Units.num(totals.removed_pct, 1)}</div><div class="d">%</div></div>
+          <div class="stat"><div class="k">Area worked</div>
+            <div class="v">${Units.num(Units.convert.area(totals.area_ha_after))}</div>
             <div class="d">${Units.label.area()}</div></div>
         </div>
-        ${report.correcoes.length ? report.correcoes.map((c) =>
+        ${report.corrections.length ? report.corrections.map((c) =>
           `<div class="note" style="margin-top:8px">${this.escape(c)}</div>`).join("") : ""}
       </div>
 
       <div class="panel">
-        <h3>Antes e depois</h3>
+        <h3>Before and after</h3>
         <div class="scroll-x"><table class="data">
-          <tr><th>Estatística</th><th>Antes</th><th>Depois</th><th>Δ</th></tr>
-          ${compare(`Média (${unit})`, before.mean, after.mean, null, conv)}
-          ${compare(`Mediana (${unit})`, before.median, after.median, null, conv)}
-          ${compare(`Desvio (${unit})`, before.std, after.std, null, conv)}
-          ${compare("Coef. variação (%)", before.cv, after.cv, 1)}
-          ${compare(`Mínimo (${unit})`, before.min, after.min, null, conv)}
-          ${compare(`Máximo (${unit})`, before.max, after.max, null, conv)}
+          <tr><th>Statistic</th><th>Before</th><th>After</th><th>Δ</th></tr>
+          ${compare(`Mean (${unit})`, before.mean, after.mean, null, conv)}
+          ${compare(`Median (${unit})`, before.median, after.median, null, conv)}
+          ${compare(`SD (${unit})`, before.std, after.std, null, conv)}
+          ${compare("Coeff. of variation (%)", before.cv, after.cv, 1)}
+          ${compare(`Minimum (${unit})`, before.min, after.min, null, conv)}
+          ${compare(`Maximum (${unit})`, before.max, after.max, null, conv)}
         </table></div>
-        <h4>Distribuição</h4>
+        <h4>Distribution</h4>
         <div id="clean-hist"></div>
-        <p class="hint tight">Cinza: antes. Verde: depois.</p>
+        <p class="hint tight">Grey: before. Green: after.</p>
       </div>
 
       <div class="panel">
-        <h3>O que cada filtro removeu</h3>
+        <h3>What each filter removed</h3>
         <div class="scroll-x"><table class="data">
-          <tr><th>Filtro</th><th>Removidos</th><th>% total</th><th>Restaram</th></tr>
-          ${stepRows || '<tr><td colspan="4">Nenhum filtro ativo.</td></tr>'}
+          <tr><th>Filter</th><th>Removed</th><th>% of total</th><th>Left</th></tr>
+          ${stepRows || '<tr><td colspan="4">No filter was enabled.</td></tr>'}
         </table></div>
         ${skipped.length ? `<details class="fold" style="margin-top:8px">
-          <summary>${skipped.length} filtro(s) não puderam rodar</summary>
+          <summary>${skipped.length} filter(s) could not run</summary>
           <div class="inner">${skipped.map((s) =>
             `<p class="hint tight"><b>${this.escape(s.label)}</b>: ${this.escape(s.detail)}</p>`
           ).join("")}</div></details>` : ""}
-        <h4>Distribuição das remoções</h4>
+        <h4>Removals by reason</h4>
         <div id="clean-bars"></div>
       </div>
 
       <div class="panel">
-        <h3>Conjuntos gerados</h3>
+        <h3>Datasets produced</h3>
         <div class="row tight">
-          <button id="btn-goto-clean">Ver dados limpos</button>
-          ${result.removed ? '<button id="btn-goto-removed">Ver removidos</button>' : ""}
+          <button id="btn-goto-clean">View clean data</button>
+          ${result.removed ? '<button id="btn-goto-removed">View removed</button>' : ""}
         </div>
       </div>`;
 
     Charts.histogram(
       document.getElementById("clean-hist"),
-      this.scaleHistogram(report.histograma.antes, conv),
-      this.scaleHistogram(report.histograma.depois, conv),
+      this.scaleHistogram(report.histogram.before, conv),
+      this.scaleHistogram(report.histogram.after, conv),
     );
     Charts.bars(document.getElementById("clean-bars"),
-      report.por_motivo.map((r) => ({ label: r.motivo, value: r.registros })));
+      report.by_reason.map((r) => ({ label: r.reason, value: r.records })));
 
     document.getElementById("btn-goto-clean")?.addEventListener("click",
       () => this.selectDataset(result.clean.id));
@@ -771,8 +772,8 @@ Object.assign(App, {
       () => this.selectDataset(result.removed.id));
   },
 
-  /* O histograma vem em unidade interna; as bordas precisam acompanhar a
-   * unidade escolhida, senão o eixo mostraria kg/ha num gráfico rotulado bu/ac. */
+  /* The histogram arrives in internal units; the bin edges have to follow the
+   * chosen unit, or the axis would read kg/ha on a chart labelled bu/ac. */
   scaleHistogram(hist, convert) {
     if (!hist?.edges?.length) return hist;
     return { counts: hist.counts, edges: hist.edges.map((e) => convert(e)) };
@@ -787,8 +788,8 @@ Object.assign(App, {
   tabDifm(panel) {
     const d = this.state.selected;
     if (!d) {
-      panel.innerHTML = `<div class="panel"><h3>Análise DIFM</h3>
-        <div class="empty">Escolha um conjunto com dose aplicada e rendimento.</div></div>`;
+      panel.innerHTML = `<div class="panel"><h3>DIFM analysis</h3>
+        <div class="empty">Pick a dataset carrying an applied rate and a yield.</div></div>`;
       return;
     }
 
@@ -796,7 +797,7 @@ Object.assign(App, {
     const guessRate = ["applied_rate", "target_rate", "rate"].find((c) => columns.includes(c))
       || columns[0];
     const guessValue = columns.includes("value") ? "value" : columns[0];
-    const zoneOptions = [["", "— sem zonas —"],
+    const zoneOptions = [["", "— no zones —"],
       ...(d.columns || []).filter((c) => !["lon", "lat", "x", "y"].includes(c))
         .map((c) => [c, this.state.catalog.columns[c] || c])];
 
@@ -809,44 +810,43 @@ Object.assign(App, {
 
     panel.innerHTML = `
       <div class="panel">
-        <h3>Ensaio</h3>
-        ${this.field("Coluna de dose aplicada",
+        <h3>Trial</h3>
+        ${this.field("Applied rate column",
           this.selectInput("difm-rate", this.columnOptions(), guessRate))}
-        ${this.field("Coluna de rendimento",
+        ${this.field("Yield column",
           this.selectInput("difm-value", this.columnOptions(), guessValue))}
-        ${this.field("Coluna de zona (opcional)",
+        ${this.field("Zone column (optional)",
           this.selectInput("difm-zone", zoneOptions, ""),
-          "Com zonas, o app compara taxa única contra taxa variável.")}
+          "With zones, the app compares a single rate against variable rate.")}
       </div>
 
       <div class="panel">
-        <h3>Preços</h3>
-        ${this.field(`Preço do produto (${symbol}/${yieldNum})`,
+        <h3>Prices</h3>
+        ${this.field(`Crop price (${symbol}/${yieldNum})`,
           this.numberInput("difm-price", 0, "0.01", "0"))}
-        ${this.field(`Custo do insumo (${symbol}/${inputNum})`,
+        ${this.field(`Input cost (${symbol}/${inputNum})`,
           this.numberInput("difm-cost", 0, "0.01", "0"),
-          "A dose ótima é onde o quilo a mais de insumo deixa de se pagar.")}
+          "The optimum rate is where the next unit of input stops paying for itself.")}
       </div>
 
       <div class="panel">
-        <h3>Agregação</h3>
+        <h3>Aggregation</h3>
         <div class="row tight">
-          ${this.field(`Célula (${lengthUnit})`,
+          ${this.field(`Cell (${lengthUnit})`,
             this.numberInput("difm-cell", Math.round(Units.convert.length(20)), "1", "1"))}
-          ${this.field(`Margem de borda (${lengthUnit})`,
+          ${this.field(`Edge margin (${lengthUnit})`,
             this.numberInput("difm-edge", Math.round(Units.convert.length(6)), "1", "0"))}
         </div>
-        <p class="hint tight">A margem descarta a transição entre faixas, onde as
-        doses se misturam. Precisa ser maior que metade do espaçamento entre passadas
-        para ter efeito.</p>
-        ${this.field("Modelos a testar", `<select id="difm-models" multiple size="4">${
+        <p class="hint tight">The margin drops the transition between strips, where the
+        rates mix. It has to exceed half the pass spacing to have any effect.</p>
+        ${this.field("Models to try", `<select id="difm-models" multiple size="4">${
           Object.entries(this.state.catalog.response_models).map(([k, v]) =>
             `<option value="${k}" selected>${this.escape(v)}</option>`).join("")}</select>`,
-          "O de maior R² é escolhido automaticamente.")}
+          "The one with the highest R-squared is chosen automatically.")}
       </div>
 
       <div class="panel">
-        <button class="primary wide" id="btn-run-difm">Analisar resposta</button>
+        <button class="primary wide" id="btn-run-difm">Analyse the response</button>
       </div>
 
       <div id="difm-report"></div>`;
@@ -860,8 +860,8 @@ Object.assign(App, {
     const yieldUnit = Units.label.yield();
     const inputUnit = Units.label.inputRate();
 
-    /* Os preços entram por unidade de venda (dólar por bushel, por libra) e
-     * precisam virar preço por unidade interna antes de ir ao servidor. */
+    /* Prices come in per selling unit — dollars per bushel, per pound — and have
+     * to become price per internal unit before going to the server. */
     const body = {
       rate_column: this.value("difm-rate"),
       value_column: this.value("difm-value"),
@@ -874,7 +874,7 @@ Object.assign(App, {
         .map((o) => o.value),
     };
     if (!body.crop_price) {
-      this.toast("Informe o preço", "Sem preço do produto não há dose econômica ótima.", "warn");
+      this.toast("Enter a price", "Without a crop price there is no economic optimum.", "warn");
       return;
     }
 
@@ -889,83 +889,83 @@ Object.assign(App, {
     const box = document.getElementById("difm-report");
     if (!box) return;
 
-    const model = report.modelo_escolhido;
-    const economy = report.economia || {};
+    const model = report.chosen_model;
+    const economy = report.economics || {};
     const yieldUnit = Units.label.yield();
     const inputUnit = Units.label.inputRate();
     const symbol = Units.currencySymbol();
     const areaUnit = Units.label.area();
 
-    /* A dose vem em unidade interna de massa por área; na tela ela aparece
-     * na unidade de insumo (lb/ac no padrão canadense). */
+    /* The rate arrives in the internal mass-per-area unit; on screen it shows in
+     * the input rate unit — lb/ac under the Canadian default. */
     const rate = (v) => Units.num(Units.convert.inputRate(v));
     const yld = (v) => Units.num(Units.convert.yield(v));
-    /* Lucro interno é por hectare; converter para a área escolhida. */
+    /* Internal profit is per hectare; convert it to the chosen area unit. */
     const perArea = (v) => Units.money(v * Units.factor("area", Units.get().area_unit));
 
-    const rateRows = (report.por_dose || []).map((r) =>
-      `<tr><td class="num">${rate(r.dose)}</td>
+    const rateRows = (report.by_rate || []).map((r) =>
+      `<tr><td class="num">${rate(r.rate)}</td>
        <td class="num">${Units.num(r.n, 0)}</td>
-       <td class="num">${yld(r.rendimento_medio)}</td>
-       <td class="num">${r.lucro_medio != null ? perArea(r.lucro_medio) : "—"}</td></tr>`).join("");
+       <td class="num">${yld(r.mean_yield)}</td>
+       <td class="num">${r.mean_profit != null ? perArea(r.mean_profit) : "—"}</td></tr>`).join("");
 
-    const zones = report.zonas;
-    const zoneRows = (zones?.por_zona || []).map((z) => z.erro
-      ? `<tr><td>${this.escape(z.zona)}</td><td colspan="4">${this.escape(z.erro)}</td></tr>`
-      : `<tr><td>${this.escape(z.zona)}</td>
-         <td class="num">${Units.num(z.celulas, 0)}</td>
+    const zones = report.zones;
+    const zoneRows = (zones?.by_zone || []).map((z) => z.error
+      ? `<tr><td>${this.escape(z.zone)}</td><td colspan="4">${this.escape(z.error)}</td></tr>`
+      : `<tr><td>${this.escape(z.zone)}</td>
+         <td class="num">${Units.num(z.cells, 0)}</td>
          <td class="num">${Units.num(z.r2, 3)}</td>
-         <td class="num">${rate(z.dose_otima)}</td>
-         <td class="num">${perArea(z.lucro_na_otima)}</td></tr>`).join("");
+         <td class="num">${rate(z.optimum_rate)}</td>
+         <td class="num">${perArea(z.profit_at_optimum)}</td></tr>`).join("");
 
     box.innerHTML = `
       <div class="panel">
-        <h3>Recomendação</h3>
+        <h3>Recommendation</h3>
         <div class="stat-grid">
-          <div class="stat"><div class="k">Dose econômica ótima</div>
-            <div class="v">${rate(economy.dose_otima)}</div>
+          <div class="stat"><div class="k">Economic optimum rate</div>
+            <div class="v">${rate(economy.optimum_rate)}</div>
             <div class="d">${inputUnit}</div></div>
-          <div class="stat"><div class="k">Rendimento esperado</div>
-            <div class="v">${yld(economy.rendimento_na_otima)}</div>
+          <div class="stat"><div class="k">Expected yield</div>
+            <div class="v">${yld(economy.yield_at_optimum)}</div>
             <div class="d">${yieldUnit}</div></div>
-          <div class="stat"><div class="k">Margem na dose ótima</div>
-            <div class="v" style="font-size:13px">${perArea(economy.lucro_na_otima)}</div>
-            <div class="d">por ${areaUnit}</div></div>
-          <div class="stat"><div class="k">Máximo agronômico</div>
-            <div class="v">${economy.dose_maximo_agronomico != null
-              ? rate(economy.dose_maximo_agronomico) : "—"}</div>
+          <div class="stat"><div class="k">Margin at the optimum</div>
+            <div class="v" style="font-size:13px">${perArea(economy.profit_at_optimum)}</div>
+            <div class="d">per ${areaUnit}</div></div>
+          <div class="stat"><div class="k">Agronomic maximum</div>
+            <div class="v">${economy.agronomic_maximum != null
+              ? rate(economy.agronomic_maximum) : "—"}</div>
             <div class="d">${inputUnit}</div></div>
         </div>
-        ${economy.no_limite_da_faixa ? `<div class="note alerta" style="margin-top:8px">
-          A dose ótima caiu no extremo da faixa testada — o ensaio não mostrou o
-          ponto de retorno decrescente. Trate como “pelo menos isso”.</div>` : ""}
-        ${(report.observacoes || []).map((o) =>
+        ${economy.at_range_limit ? `<div class="note alert" style="margin-top:8px">
+          The optimum landed at the edge of the tested range — the trial never showed
+          the point of diminishing returns. Read it as "at least this much".</div>` : ""}
+        ${(report.notes || []).map((o) =>
           `<div class="note" style="margin-top:8px">${this.escape(o)}</div>`).join("")}
-        ${report.parametros ? `<p class="hint tight" style="margin-top:8px">
-          Célula de ${Units.num(Units.convert.length(report.parametros.cell_m), 0)}
-          ${Units.label.length()} · margem de borda de
-          ${Units.num(Units.convert.length(report.parametros.edge_margin_m), 0)}
-          ${Units.label.length()}.</p>` : ""}
+        ${report.parameters ? `<p class="hint tight" style="margin-top:8px">
+          ${Units.num(Units.convert.length(report.parameters.cell_m), 0)}
+          ${Units.label.length()} cells · ${Units.num(
+            Units.convert.length(report.parameters.edge_margin_m), 0)}
+          ${Units.label.length()} edge margin.</p>` : ""}
       </div>
 
       <div class="panel">
-        <h3>Curva de resposta</h3>
+        <h3>Response curve</h3>
         <div id="difm-curve"></div>
         <div class="stat-grid" style="margin-top:10px">
-          <div class="stat"><div class="k">Modelo</div>
+          <div class="stat"><div class="k">Model</div>
             <div class="v" style="font-size:13px">${this.escape(model.label)}</div>
-            <div class="d">${model.n} células</div></div>
+            <div class="d">${model.n} cells</div></div>
           <div class="stat"><div class="k">R²</div>
             <div class="v">${Units.num(model.r2, 3)}</div>
             <div class="d">RMSE ${yld(model.rmse)} ${yieldUnit}</div></div>
         </div>
-        ${model.message ? `<div class="note atencao" style="margin-top:8px">${
+        ${model.message ? `<div class="note warning" style="margin-top:8px">${
           this.escape(model.message)}</div>` : ""}
         <details class="fold" style="margin-top:8px">
-          <summary>Todos os modelos testados</summary>
+          <summary>All models tried</summary>
           <div class="inner scroll-x"><table class="data">
-            <tr><th>Modelo</th><th>R²</th><th>RMSE</th></tr>
-            ${(report.modelos_avaliados || []).map((m) =>
+            <tr><th>Model</th><th>R²</th><th>RMSE</th></tr>
+            ${(report.models_evaluated || []).map((m) =>
               `<tr><td>${this.escape(m.label)}</td>
                <td class="num">${Units.num(m.r2, 3)}</td>
                <td class="num">${yld(m.rmse)}</td></tr>`).join("")}
@@ -974,39 +974,39 @@ Object.assign(App, {
       </div>
 
       <div class="panel">
-        <h3>Resposta por dose</h3>
+        <h3>Response by rate</h3>
         <div class="scroll-x"><table class="data">
-          <tr><th>Dose (${inputUnit})</th><th>Células</th>
-              <th>Rend. (${yieldUnit})</th><th>Margem/${areaUnit}</th></tr>
+          <tr><th>Rate (${inputUnit})</th><th>Cells</th>
+              <th>Yield (${yieldUnit})</th><th>Margin/${areaUnit}</th></tr>
           ${rateRows}
         </table></div>
       </div>
 
       ${zones ? `<div class="panel">
-        <h3>Por zona · ${this.escape(zones.coluna_zona)}</h3>
+        <h3>By zone · ${this.escape(zones.zone_column)}</h3>
         <div class="scroll-x"><table class="data">
-          <tr><th>Zona</th><th>Células</th><th>R²</th>
-              <th>Ótima (${inputUnit})</th><th>Margem/${areaUnit}</th></tr>
+          <tr><th>Zone</th><th>Cells</th><th>R²</th>
+              <th>Optimum (${inputUnit})</th><th>Margin/${areaUnit}</th></tr>
           ${zoneRows}
         </table></div>
-        ${zones.comparacao?.leitura ? `
-          <div class="note ${zones.comparacao.ganho_por_ha > 0 ? "ok" : "atencao"}"
-               style="margin-top:10px">${this.escape(zones.comparacao.leitura)}</div>
+        ${zones.comparison?.reading ? `
+          <div class="note ${zones.comparison.gain_per_ha > 0 ? "ok" : "warning"}"
+               style="margin-top:10px">${this.escape(zones.comparison.reading)}</div>
           <div class="stat-grid" style="margin-top:8px">
-            <div class="stat"><div class="k">Melhor dose única</div>
-              <div class="v">${rate(zones.comparacao.dose_unica_otima)}</div>
+            <div class="stat"><div class="k">Best single rate</div>
+              <div class="v">${rate(zones.comparison.best_uniform_rate)}</div>
               <div class="d">${inputUnit}</div></div>
-            <div class="stat"><div class="k">Ganho da taxa variável</div>
-              <div class="v" style="font-size:13px">${perArea(zones.comparacao.ganho_por_ha)}</div>
-              <div class="d">por ${areaUnit}</div></div>
+            <div class="stat"><div class="k">Variable rate gain</div>
+              <div class="v" style="font-size:13px">${perArea(zones.comparison.gain_per_ha)}</div>
+              <div class="d">per ${areaUnit}</div></div>
           </div>` : ""}
       </div>` : ""}
 
       <div class="panel">
-        <button class="wide" id="btn-difm-to-rx">Gerar prescrição a partir desta análise</button>
+        <button class="wide" id="btn-difm-to-rx">Build a prescription from this analysis</button>
       </div>`;
 
-    Charts.responseCurve(document.getElementById("difm-curve"), report.curva, economy, {
+    Charts.responseCurve(document.getElementById("difm-curve"), report.curve, economy, {
       yieldConv: (v) => Units.convert.yield(v),
       rateConv: (v) => Units.convert.inputRate(v),
       yieldUnit,
@@ -1017,24 +1017,24 @@ Object.assign(App, {
       this.prescriptionFromDifm(report));
   },
 
-  /* Transforma o resultado da análise numa prescrição: dose ótima por zona
-   * quando há zonas, ou dose única quando não há. */
+  /* Turn the analysis result into a prescription: the optimum per zone when
+   * zones exist, or a single rate when they do not. */
   prescriptionFromDifm(report) {
-    const zones = report.zonas?.por_zona?.filter((z) => !z.erro && z.dose_otima != null);
+    const zones = report.zones?.by_zone?.filter((z) => !z.error && z.optimum_rate != null);
     if (!zones?.length) {
-      const dose = report.economia?.dose_otima;
-      if (dose == null) { this.toast("Sem dose", "A análise não produziu dose ótima.", "warn"); return; }
-      this.state.pendingRx = { uniform: dose };
-      this.toast("Dose levada para exportação",
-        `Taxa única de ${Units.num(Units.convert.inputRate(dose))} ${Units.label.inputRate()}. ` +
-        "Vá até a aba Exportar.");
+      const rate = report.economics?.optimum_rate;
+      if (rate == null) { this.toast("No rate", "The analysis produced no optimum rate.", "warn"); return; }
+      this.state.pendingRx = { uniform: rate };
+      this.toast("Rate carried to export",
+        `Single rate of ${Units.num(Units.convert.inputRate(rate))} ${Units.label.inputRate()}. ` +
+        "Go to the Export tab.");
     } else {
       this.state.pendingRx = {
-        byZone: Object.fromEntries(zones.map((z) => [z.zona, z.dose_otima])),
-        zoneColumn: report.zonas.coluna_zona,
+        byZone: Object.fromEntries(zones.map((z) => [z.zone, z.optimum_rate])),
+        zoneColumn: report.zones.zone_column,
       };
-      this.toast("Doses por zona levadas para exportação",
-        zones.map((z) => `${z.zona}: ${Units.num(Units.convert.inputRate(z.dose_otima))}`).join(" · "));
+      this.toast("Zone rates carried to export",
+        zones.map((z) => `${z.zone}: ${Units.num(Units.convert.inputRate(z.optimum_rate))}`).join(" · "));
     }
     this.state.tab = "exportar";
     for (const b of document.querySelectorAll("#steps button")) {
@@ -1059,52 +1059,52 @@ Object.assign(App, {
     const defaultWidth = Units.label.length() === "ft" ? 60
       : Math.round(Units.convert.length(12));
 
-    /* Doses sugeridas em torno de uma dose usual, na unidade do usuário —
-     * um ensaio útil precisa cobrir bem abaixo e bem acima da prática atual.
-     * O passo é arredondado para um número redondo na unidade escolhida:
-     * ninguém programa o monitor em 44,8 lb/ac. */
+    /* Suggested rates around a typical one, in the user's unit — a useful trial
+     * has to reach well below and well above current practice. The step is
+     * rounded to a round number in the chosen unit: nobody programs a monitor
+     * at 44.8 lb/ac. */
     const typical = Units.convert.inputRate(100);
     const step = this.roundStep(typical / 2);
     const suggested = [0, 1, 2, 3, 4].map((i) => i * step).join(", ");
 
     panel.innerHTML = `
       <div class="panel">
-        <h3>Contorno do talhão</h3>
-        ${this.field("A partir de um conjunto carregado", this.selectInput("design-source",
-          [["", "— escolher —"], ...datasets], this.state.selectedId || ""),
-          "Use um shapefile de contorno, ou um mapa de colheita (o app usa o casco dos pontos).")}
+        <h3>Field boundary</h3>
+        ${this.field("From a loaded dataset", this.selectInput("design-source",
+          [["", "— choose —"], ...datasets], this.state.selectedId || ""),
+          "Use a boundary shapefile, or a yield map (the app falls back to the hull of the points).")}
         <div class="row tight">
-          <button class="small" id="btn-draw-boundary">Desenhar no mapa</button>
-          <button class="small" id="btn-clear-boundary">Limpar desenho</button>
+          <button class="small" id="btn-draw-boundary">Draw on the map</button>
+          <button class="small" id="btn-clear-boundary">Clear drawing</button>
         </div>
         <p class="hint tight" id="draw-status"></p>
       </div>
 
       <div class="panel">
-        <h3>Tratamentos</h3>
-        ${this.field(`Doses a testar (${inputUnit}, separadas por vírgula)`,
+        <h3>Treatments</h3>
+        ${this.field(`Rates to test (${inputUnit}, comma separated)`,
           `<input type="text" id="design-rates" value="${suggested}">`,
-          "Pelo menos três, e vale incluir uma faixa sem aplicação como testemunha.")}
+          "At least three, and it is worth including an unapplied strip as a check.")}
         <div class="row tight">
-          ${this.field(`Largura do implemento (${lengthUnit})`,
+          ${this.field(`Implement width (${lengthUnit})`,
             this.numberInput("design-width", defaultWidth, "1", "1"))}
-          ${this.field("Passadas por faixa",
+          ${this.field("Passes per strip",
             this.numberInput("design-passes", 2, "1", "1"))}
         </div>
         <div class="row tight">
-          ${this.field("Blocos (repetições)", this.numberInput("design-blocks", 4, "1", "1"))}
-          ${this.field(`Bordadura (${lengthUnit})`,
+          ${this.field("Blocks (replicates)", this.numberInput("design-blocks", 4, "1", "1"))}
+          ${this.field(`Headland setback (${lengthUnit})`,
             this.numberInput("design-buffer", Math.round(Units.convert.length(15)), "1", "0"))}
         </div>
-        ${this.field("Direção das faixas (graus, vazio = lado mais longo)",
-          `<input type="number" id="design-angle" step="1" placeholder="automático">`)}
+        ${this.field("Strip direction (degrees, empty = longest side)",
+          `<input type="number" id="design-angle" step="1" placeholder="automatic">`)}
       </div>
 
       <div class="panel">
-        <button class="primary wide" id="btn-run-design">Gerar desenho</button>
-        <p class="hint tight">Duas passadas por faixa deixam a passada central
-        livre do efeito das doses vizinhas — é o que permite descartar a borda
-        na análise sem perder o tratamento inteiro.</p>
+        <button class="primary wide" id="btn-run-design">Generate layout</button>
+        <p class="hint tight">Two passes per strip leave the centre pass free of the
+        neighbouring rates — that is what lets the analysis drop the edges without
+        losing the whole treatment.</p>
       </div>
 
       <div id="design-report"></div>`;
@@ -1123,14 +1123,14 @@ Object.assign(App, {
   startDrawing() {
     this.state.drawing = [];
     const status = document.getElementById("draw-status");
-    status.textContent = "Clique nos vértices do talhão. Clique em “Gerar desenho” ao fechar.";
+    status.textContent = "Click the field's corners, then press Generate layout.";
 
     const handler = (event) => {
       if (!this.state.drawing) { MapView.offClick(handler); return; }
       this.state.drawing.push([event.latlng.lng, event.latlng.lat]);
       MapView.setPolygons([this.state.drawing.concat([this.state.drawing[0]])], { fill: true });
       status.textContent =
-        `${this.state.drawing.length} vértice(s). Mínimo de 3 para fechar o talhão.`;
+        `${this.state.drawing.length} corner(s). At least 3 are needed to close the field.`;
     };
     MapView.onClick(handler);
   },
@@ -1143,8 +1143,8 @@ Object.assign(App, {
       .map((n) => Units.toInternal.inputRate(n));
 
     if (rates.length < 3) {
-      this.toast("Doses insuficientes",
-        `Informe ao menos três doses em ${inputUnit}.`, "warn");
+      this.toast("Not enough rates",
+        `Enter at least three rates in ${inputUnit}.`, "warn");
       return;
     }
 
@@ -1158,18 +1158,18 @@ Object.assign(App, {
     };
     if (this.state.drawing?.length >= 3) body.boundary = this.state.drawing;
     else if (this.value("design-source")) body.boundary_dataset_id = this.value("design-source");
-    else { this.toast("Sem contorno", "Escolha um conjunto ou desenhe o talhão.", "warn"); return; }
+    else { this.toast("No boundary", "Pick a dataset or draw the field.", "warn"); return; }
 
     const result = await this.busy(document.getElementById("right-panel"), () =>
       this.api("/api/design", { method: "POST", body }));
     if (!result) return;
 
     this.state.design = result;
-    MapView.setFeatures(result.features, "dose");
+    MapView.setFeatures(result.features, "rate");
     MapView.fitOverlays();
     this.renderDesignReport(result);
-    this.toast("Ensaio desenhado",
-      `${result.summary.faixas} faixas em ${result.summary.blocos} bloco(s).`);
+    this.toast("Trial laid out",
+      `${result.summary.strips} strips in ${result.summary.blocks} block(s).`);
   },
 
   renderDesignReport(result) {
@@ -1180,45 +1180,45 @@ Object.assign(App, {
     const lengthUnit = Units.label.length();
     const areaUnit = Units.label.area();
 
-    const reps = Object.entries(s.repeticoes_por_dose).map(([dose, count]) =>
-      `<tr><td class="num">${Units.num(Units.convert.inputRate(Number(dose)))}</td>
+    const reps = Object.entries(s.reps_per_rate).map(([rateValue, count]) =>
+      `<tr><td class="num">${Units.num(Units.convert.inputRate(Number(rateValue)))}</td>
        <td class="num">${count}</td></tr>`).join("");
 
     box.innerHTML = `
       <div class="panel">
-        <h3>Desenho gerado</h3>
+        <h3>Layout generated</h3>
         ${(result.warnings || []).map((w) =>
-          `<div class="note atencao">${this.escape(w)}</div>`).join("")}
+          `<div class="note warning">${this.escape(w)}</div>`).join("")}
         <div class="stat-grid" style="margin-top:8px">
-          <div class="stat"><div class="k">Faixas</div>
-            <div class="v">${s.faixas}</div><div class="d">${s.blocos} bloco(s)</div></div>
-          <div class="stat"><div class="k">Largura da faixa</div>
-            <div class="v">${Units.num(Units.convert.length(s.largura_faixa_m), 0)}</div>
-            <div class="d">${lengthUnit} · ${s.passadas_por_faixa} passada(s)</div></div>
-          <div class="stat"><div class="k">Área do ensaio</div>
-            <div class="v">${Units.num(Units.convert.area(s.area_total_ha))}</div>
+          <div class="stat"><div class="k">Strips</div>
+            <div class="v">${s.strips}</div><div class="d">${s.blocks} block(s)</div></div>
+          <div class="stat"><div class="k">Strip width</div>
+            <div class="v">${Units.num(Units.convert.length(s.strip_width_m), 0)}</div>
+            <div class="d">${lengthUnit} · ${s.passes_per_strip} pass(es)</div></div>
+          <div class="stat"><div class="k">Trial area</div>
+            <div class="v">${Units.num(Units.convert.area(s.total_area_ha))}</div>
             <div class="d">${areaUnit}</div></div>
-          <div class="stat"><div class="k">Direção</div>
-            <div class="v">${Units.num(s.direcao_graus, 0)}°</div>
-            <div class="d">azimute</div></div>
+          <div class="stat"><div class="k">Direction</div>
+            <div class="v">${Units.num(s.direction_deg, 0)}°</div>
+            <div class="d">azimuth</div></div>
         </div>
-        <h4>Repetições por dose</h4>
+        <h4>Replicates per rate</h4>
         <table class="data">
-          <tr><th>Dose (${inputUnit})</th><th>Faixas</th></tr>${reps}
+          <tr><th>Rate (${inputUnit})</th><th>Strips</th></tr>${reps}
         </table>
       </div>
       <div class="panel">
-        <h3>Linha de orientação</h3>
-        <p class="hint tight">A linha AB precisa seguir a mesma direção das faixas;
-        se o operador entrar noutro ângulo, as passadas cruzam os tratamentos e o
-        ensaio se perde.</p>
+        <h3>Guidance line</h3>
+        <p class="hint tight">The AB line has to follow the same direction as the
+        strips; if the operator enters at another angle, the passes cut across the
+        treatments and the trial is lost.</p>
         <button class="wide" id="btn-make-ab" style="margin-bottom:6px">
-          Gerar linha AB na direção do ensaio
+          Build an AB line along the trial direction
         </button>
         <div id="ab-status"></div>
       </div>
       <div class="panel">
-        <button class="primary wide" id="btn-design-export">Exportar este ensaio</button>
+        <button class="primary wide" id="btn-design-export">Export this trial</button>
       </div>`;
 
     document.getElementById("btn-make-ab").addEventListener("click", () => this.makeGuidance());
@@ -1237,12 +1237,12 @@ Object.assign(App, {
 Object.assign(App, {
   async makeGuidance() {
     if (!this.state.design) {
-      this.toast("Sem ensaio", "Gere o desenho antes de criar a linha AB.", "warn");
+      this.toast("No trial yet", "Generate the layout before building the AB line.", "warn");
       return;
     }
     const body = {
-      angle_deg: this.state.design.summary.direcao_graus,
-      name: "AB do ensaio",
+      angle_deg: this.state.design.summary.direction_deg,
+      name: "Trial AB line",
     };
     if (this.state.drawing?.length >= 3) body.boundary = this.state.drawing;
     else body.boundary_dataset_id = this.value("design-source") || this.state.selectedId;
@@ -1254,7 +1254,7 @@ Object.assign(App, {
     this.state.guidance = [result.line];
     this.renderGuidanceStatus();
     this.drawDesignWithGuidance();
-    this.toast("Linha AB criada", `Rumo de bússola ${Units.num(result.line.heading, 1)}°.`);
+    this.toast("AB line created", `Compass bearing ${Units.num(result.line.heading, 1)}°.`);
   },
 
   renderGuidanceStatus() {
@@ -1262,7 +1262,7 @@ Object.assign(App, {
     if (!box) return;
     box.innerHTML = (this.state.guidance || []).map((line) => `
       <div class="note ok">
-        <b>${this.escape(line.name)}</b> — rumo ${Units.num(line.heading, 1)}°<br>
+        <b>${this.escape(line.name)}</b> — bearing ${Units.num(line.heading, 1)}°<br>
         <span style="font:11px var(--mono)">
           A ${line.a[1].toFixed(6)}, ${line.a[0].toFixed(6)}<br>
           B ${line.b[1].toFixed(6)}, ${line.b[0].toFixed(6)}
@@ -1270,11 +1270,11 @@ Object.assign(App, {
       </div>`).join("");
   },
 
-  /* Desenha as faixas e, por cima, a linha AB — é a conferência visual de
-   * que as duas coisas estão na mesma direção. */
+  /* Draw the strips and the AB line on top — the visual check that the two are
+   * pointing the same way. */
   drawDesignWithGuidance() {
     if (!this.state.design) return;
-    MapView.setFeatures(this.state.design.features, "dose");
+    MapView.setFeatures(this.state.design.features, "rate");
     for (const line of this.state.guidance || []) {
       MapView.addLine([line.a, line.b], line.name);
     }
@@ -1294,14 +1294,14 @@ Object.assign(App, {
 
     panel.innerHTML = `
       <div class="panel">
-        <h3>Como exportar</h3>
-        ${this.field("Modo", this.selectInput("exp-mode", [
-          ["package", "Pacote pronto para o monitor"],
-          ["files", "Arquivos avulsos"],
+        <h3>How to export</h3>
+        ${this.field("Mode", this.selectInput("exp-mode", [
+          ["package", "Ready-to-load package for the monitor"],
+          ["files", "Individual files"],
         ], mode), mode === "package"
-          ? "Monta a pasta do pen drive no arranjo que o monitor procura, com contorno, linhas AB e prescrição."
-          : "Gera só os arquivos escolhidos, sem estrutura de pasta.")}
-        ${!hasDesign && !hasDataset ? '<div class="empty">Nada para exportar ainda.</div>' : ""}
+          ? "Builds the USB folder in the layout the monitor looks for, with boundary, AB lines and prescription."
+          : "Generates only the chosen files, with no folder structure.")}
+        ${!hasDesign && !hasDataset ? '<div class="empty">Nothing to export yet.</div>' : ""}
       </div>
       <div id="export-form"></div>
       <div id="export-report"></div>`;
@@ -1315,7 +1315,7 @@ Object.assign(App, {
     else this.renderFilesForm();
   },
 
-  /* ---------------------------------------------------- modo pacote ---- */
+  /* ---------------------------------------------------- package mode --- */
 
   renderPackageForm() {
     const box = document.getElementById("export-form");
@@ -1328,64 +1328,64 @@ Object.assign(App, {
 
     box.innerHTML = `
       <div class="panel">
-        <h3>Monitor de destino</h3>
-        ${this.field("Plataforma", this.selectInput("pkg-monitor",
+        <h3>Target monitor</h3>
+        ${this.field("Platform", this.selectInput("pkg-monitor",
           monitors.map((m) => [m.key, m.label]), chosen))}
         <div id="pkg-accepts"></div>
       </div>
 
       <div class="panel">
-        <h3>O que vai no pacote</h3>
+        <h3>What goes in the package</h3>
         <label class="inline" style="margin-bottom:7px">
           <input type="checkbox" id="pkg-rx"${hasDesign ? " checked" : ""}
             ${hasDesign ? "" : "disabled"}>
-          <span>Prescrição${hasDesign
-            ? ` — ${this.state.design.summary.faixas} faixas do ensaio`
-            : " (desenhe o ensaio antes)"}</span></label>
+          <span>Prescription${hasDesign
+            ? ` — ${this.state.design.summary.strips} trial strips`
+            : " (lay the trial out first)"}</span></label>
         <label class="inline" style="margin-bottom:7px">
           <input type="checkbox" id="pkg-boundary" checked>
-          <span>Contorno do talhão</span></label>
+          <span>Field boundary</span></label>
         <label class="inline" style="margin-bottom:7px">
           <input type="checkbox" id="pkg-guidance"${hasGuidance ? " checked" : ""}
             ${hasGuidance ? "" : "disabled"}>
-          <span>Linhas AB${hasGuidance
-            ? ` — ${this.state.guidance.length} linha(s)`
-            : " (gere na aba Desenhar ensaio)"}</span></label>
-        ${this.field("Contorno vindo de", this.selectInput("pkg-boundary-src",
-          [["", "— desenho / ensaio atual —"], ...datasets],
+          <span>AB lines${hasGuidance
+            ? ` — ${this.state.guidance.length} line(s)`
+            : " (build them on the Trial tab)"}</span></label>
+        ${this.field("Boundary from", this.selectInput("pkg-boundary-src",
+          [["", "— current drawing / trial —"], ...datasets],
           this.state.selectedId || ""),
-          "Um contorno importado do monitor é mais fiel que o casco dos pontos.")}
+          "A boundary imported from the monitor is truer than the hull of the points.")}
       </div>
 
       <div class="panel">
-        <h3>Dose</h3>
-        ${this.field("Tipo", this.selectInput("pkg-kind",
+        <h3>Rate</h3>
+        ${this.field("Kind", this.selectInput("pkg-kind",
           Object.entries(this.state.catalog.rate_kinds), "mass"))}
-        ${this.field("Unidade gravada", this.selectInput("pkg-unit",
+        ${this.field("Unit written to the file", this.selectInput("pkg-unit",
           this.state.units.groups.rate_mass.units.map((u) => [u.key, u.label]),
           Units.label.inputRate()))}
-        ${this.field("Cultura (unidades em bushel)", this.selectInput("pkg-crop",
+        ${this.field("Crop (for bushel units)", this.selectInput("pkg-crop",
           this.state.units.crops.map((c) => [c.key, c.label]), Units.get().crop))}
-        ${this.field(`Célula da grade ISOXML (${lengthUnit})`,
+        ${this.field(`ISOXML grid cell (${lengthUnit})`,
           this.numberInput("pkg-cell", Math.round(Units.convert.length(10)), "1", "1"),
-          "Célula menor gera arquivo maior; 10 m atende quase todo terminal.")}
+          "A smaller cell makes a bigger file; 10 m suits nearly every terminal.")}
       </div>
 
       <div class="panel">
-        <h3>Identificação</h3>
+        <h3>Naming</h3>
         <div class="row tight">
-          ${this.field("Talhão", `<input type="text" id="pkg-field" value="Talhao">`)}
-          ${this.field("Tarefa", `<input type="text" id="pkg-task" value="Prescricao">`)}
+          ${this.field("Field", `<input type="text" id="pkg-field" value="Field">`)}
+          ${this.field("Task", `<input type="text" id="pkg-task" value="Prescription">`)}
         </div>
         <div class="row tight">
-          ${this.field("Cliente", `<input type="text" id="pkg-customer" value="AgroSuite">`)}
-          ${this.field("Fazenda", `<input type="text" id="pkg-farm" value="Fazenda">`)}
+          ${this.field("Client", `<input type="text" id="pkg-customer" value="AgroSuite">`)}
+          ${this.field("Farm", `<input type="text" id="pkg-farm" value="Farm">`)}
         </div>
-        ${this.field("Produto", `<input type="text" id="pkg-product" value="Produto">`)}
+        ${this.field("Product", `<input type="text" id="pkg-product" value="Product">`)}
       </div>
 
       <div class="panel">
-        <button class="primary wide" id="btn-run-package">Montar pacote</button>
+        <button class="primary wide" id="btn-run-package">Build the package</button>
       </div>`;
 
     const showAccepts = () => {
@@ -1394,15 +1394,15 @@ Object.assign(App, {
       if (!monitor) { node.innerHTML = ""; return; }
       const labels = this.state.catalog.artifact_labels;
       node.innerHTML = `
-        <p class="hint tight">Aceita: ${monitor.accepts.map((a) => labels[a] || a).join(" · ")}</p>
-        <p class="hint tight">Campo de dose no shapefile: <b>${monitor.rate_field}</b></p>
+        <p class="hint tight">Accepts: ${monitor.accepts.map((a) => labels[a] || a).join(" · ")}</p>
+        <p class="hint tight">Rate field in the shapefile: <b>${monitor.rate_field}</b></p>
         <details class="fold" style="margin-top:6px">
-          <summary>Como carregar no ${this.escape(monitor.label)}</summary>
+          <summary>How to load it on the ${this.escape(monitor.label)}</summary>
           <div class="inner">${monitor.instructions.map((i) =>
             `<p class="hint tight">• ${this.escape(i)}</p>`).join("")}</div>
         </details>`;
-      /* Desabilita o que a plataforma não recebe, em vez de deixar o usuário
-       * marcar e só descobrir depois que aquilo não foi gerado. */
+      /* Disable what the platform cannot take, rather than letting the user tick
+       * it and only find out afterwards that nothing was generated. */
       for (const [id, artifact] of [["pkg-rx", "prescription"],
                                     ["pkg-boundary", "boundary"],
                                     ["pkg-guidance", "guidance"]]) {
@@ -1431,7 +1431,7 @@ Object.assign(App, {
   async runPackage() {
     const body = {
       monitor: this.value("pkg-monitor"),
-      rate_property: "dose",
+      rate_property: "rate",
       rate_kind: this.value("pkg-kind"),
       rate_unit: this.value("pkg-unit"),
       crop: this.value("pkg-crop"),
@@ -1457,7 +1457,7 @@ Object.assign(App, {
     }
     if (!body.features && !body.boundary && !body.boundary_dataset_id &&
         !body.guidance_lines?.length) {
-      this.toast("Pacote vazio", "Marque ao menos um item para incluir.", "warn");
+      this.toast("Empty package", "Tick at least one item to include.", "warn");
       return;
     }
 
@@ -1465,7 +1465,7 @@ Object.assign(App, {
       this.api("/api/export/package", { method: "POST", body }));
     if (!result) return;
     this.renderPackageReport(result);
-    this.toast("Pacote montado", `${result.contents.length} item(ns) para ${result.monitor_label}.`);
+    this.toast("Package built", `${result.contents.length} item(s) for the ${result.monitor_label}.`);
   },
 
   renderPackageReport(result) {
@@ -1474,42 +1474,42 @@ Object.assign(App, {
 
     box.innerHTML = `
       <div class="panel">
-        <h3>Pacote para ${this.escape(result.monitor_label)}</h3>
+        <h3>Package for the ${this.escape(result.monitor_label)}</h3>
         <a class="btn primary wide" style="display:block;text-decoration:none"
            href="${result.bundle.download_url}" download>
-          Baixar ${this.escape(result.bundle.filename)}
+          Download ${this.escape(result.bundle.filename)}
         </a>
-        <p class="hint tight">Gravado em:<br>
+        <p class="hint tight">Written to:<br>
           <code style="font-size:11px">${this.escape(result.folder)}</code></p>
         <div class="scroll-x" style="margin-top:10px"><table class="data">
-          <tr><th>Arquivo</th><th>Conteúdo</th></tr>
+          <tr><th>File</th><th>Contents</th></tr>
           ${result.contents.map((c) => `<tr>
             <td style="font-family:var(--mono);font-size:11px">${this.escape(c.path)}</td>
             <td style="text-align:left">${this.escape(
               c.artifact === "isoxml" ? "ISOXML" : (labels[c.artifact] || c.artifact))}
               — ${this.escape(c.detail)}</td></tr>`).join("")}
         </table></div>
-        ${(result.observacoes || []).map((o) =>
+        ${(result.notes || []).map((o) =>
           `<div class="note" style="margin-top:8px">${this.escape(o)}</div>`).join("")}
         ${(result.skipped || []).map((s) =>
-          `<div class="note atencao" style="margin-top:6px">${this.escape(s)}</div>`).join("")}
+          `<div class="note warning" style="margin-top:6px">${this.escape(s)}</div>`).join("")}
       </div>
-      ${this.verificationPanel(result.verificacao)}
+      ${this.verificationPanel(result.verification)}
       <div class="panel">
-        <h3>Como carregar</h3>
+        <h3>How to load it</h3>
         ${result.instructions.map((step, i) =>
           `<p class="hint tight">${i + 1}. ${this.escape(step)}</p>`).join("")}
-        <p class="hint tight" style="margin-top:8px">O arquivo <b>LEIA-ME.txt</b>
-        dentro do pacote repete estas instruções, para consultar na cabine.</p>
+        <p class="hint tight" style="margin-top:8px">The <b>README.txt</b> inside the
+        package repeats these instructions, to read in the cab.</p>
       </div>`;
   },
 
-  /* A verificação roda sobre os arquivos já gravados. Falha em vermelho é
-   * impedimento real; atenção em amarelo depende do firmware do display. */
+  /* Verification runs over the files already written. Red is a real blocker;
+   * amber depends on the display's firmware. */
   verificationPanel(check) {
     if (!check) return "";
-    const noteClass = { ok: "ok", atencao: "atencao", falha: "alerta" }[check.verdict] || "";
-    const icon = { ok: "✓", atencao: "!", falha: "✕" };
+    const noteClass = { ok: "ok", warning: "warning", fail: "alert" }[check.verdict] || "";
+    const icon = { ok: "✓", warning: "!", fail: "✕" };
 
     const groups = (check.groups || []).map((group) => {
       const failed = group.checks.filter((c) => c.status !== "ok");
@@ -1517,7 +1517,7 @@ Object.assign(App, {
         <div style="display:flex;gap:8px;padding:4px 0;border-bottom:1px solid var(--border)">
           <span style="flex:none;width:14px;text-align:center;font-weight:700;color:${
             c.status === "ok" ? "var(--ok)"
-            : c.status === "atencao" ? "var(--warn)" : "var(--danger)"
+            : c.status === "warning" ? "var(--warn)" : "var(--danger)"
           }">${icon[c.status]}</span>
           <span style="min-width:0">
             <b style="font-size:12px">${this.escape(c.item)}</b>
@@ -1526,36 +1526,36 @@ Object.assign(App, {
           </span>
         </div>`).join("");
       return `<details class="fold"${failed.length ? " open" : ""}>
-        <summary>${this.escape(group.arquivo)} · ${this.escape(group.tipo)}${
-          failed.length ? ` — ${failed.length} ponto(s) a ver` : " — tudo conferido"}</summary>
+        <summary>${this.escape(group.file)} · ${this.escape(group.kind)}${
+          failed.length ? ` — ${failed.length} point(s) to look at` : " — all checked"}</summary>
         <div class="inner">${rows}</div>
       </details>`;
     }).join("");
 
     return `
       <div class="panel">
-        <h3>Verificação antes de levar</h3>
+        <h3>Check before you take it out</h3>
         <div class="note ${noteClass}">${this.escape(check.summary)}</div>
         <div class="stat-grid" style="margin:10px 0">
-          <div class="stat"><div class="k">Conferidos</div>
+          <div class="stat"><div class="k">Checked</div>
             <div class="v" style="color:var(--ok)">${check.totals.ok}</div>
-            <div class="d">sem ressalva</div></div>
-          <div class="stat"><div class="k">A confirmar</div>
-            <div class="v" style="color:var(--warn)">${check.totals.atencao}</div>
-            <div class="d">na tela do monitor</div></div>
-          <div class="stat"><div class="k">Impedimentos</div>
-            <div class="v" style="color:var(--danger)">${check.totals.falha}</div>
-            <div class="d">o monitor recusaria</div></div>
-          <div class="stat"><div class="k">Destino</div>
+            <div class="d">no reservations</div></div>
+          <div class="stat"><div class="k">To confirm</div>
+            <div class="v" style="color:var(--warn)">${check.totals.warning}</div>
+            <div class="d">on the monitor screen</div></div>
+          <div class="stat"><div class="k">Blockers</div>
+            <div class="v" style="color:var(--danger)">${check.totals.fail}</div>
+            <div class="d">the monitor would refuse</div></div>
+          <div class="stat"><div class="k">Target</div>
             <div class="v" style="font-size:12px">${this.escape(check.monitor_label)}</div>
-            <div class="d">perfil aplicado</div></div>
+            <div class="d">profile applied</div></div>
         </div>
         ${groups}
-        <p class="hint tight" style="margin-top:10px">${this.escape(check.ressalva)}</p>
+        <p class="hint tight" style="margin-top:10px">${this.escape(check.caveat)}</p>
       </div>`;
   },
 
-  /* -------------------------------------------- modo arquivos avulsos -- */
+  /* -------------------------------------------- individual files mode -- */
 
   renderFilesForm() {
     const box = document.getElementById("export-form");
@@ -1567,14 +1567,14 @@ Object.assign(App, {
 
     box.innerHTML = `
       <div class="panel">
-        <h3>Origem</h3>
-        ${this.field("O que exportar", this.selectInput("exp-source", [
-          ...(hasDesign ? [["design", "Ensaio desenhado (prescrição)"]] : []),
-          ...(hasDataset ? [["dataset", `Dados: ${this.state.selected?.label ?? ""}`]] : []),
+        <h3>Source</h3>
+        ${this.field("What to export", this.selectInput("exp-source", [
+          ...(hasDesign ? [["design", "Trial layout (prescription)"]] : []),
+          ...(hasDataset ? [["dataset", `Data: ${this.state.selected?.label ?? ""}`]] : []),
         ], source))}
       </div>
       <div class="panel">
-        <h3>Formatos</h3>
+        <h3>Formats</h3>
         <label class="inline" style="margin-bottom:6px">
           <input type="checkbox" id="fmt-shapefile" checked><span>Shapefile (.shp)</span></label>
         <label class="inline" style="margin-bottom:6px">
@@ -1585,26 +1585,26 @@ Object.assign(App, {
           <input type="checkbox" id="fmt-geojson"><span>GeoJSON</span></label>
       </div>
       <div class="panel">
-        <h3>Ajustes</h3>
-        ${this.field("Nome do campo de dose conforme", this.selectInput("exp-brand",
+        <h3>Settings</h3>
+        ${this.field("Name the rate field for", this.selectInput("exp-brand",
           brands.map((b) => [b.key, b.label]), "john_deere"))}
-        ${this.field("Tipo de dose", this.selectInput("exp-kind",
+        ${this.field("Rate kind", this.selectInput("exp-kind",
           Object.entries(this.state.catalog.rate_kinds), "mass"))}
-        ${this.field("Unidade gravada", this.selectInput("exp-unit",
+        ${this.field("Unit written to the file", this.selectInput("exp-unit",
           this.state.units.groups.rate_mass.units.map((u) => [u.key, u.label]),
           Units.label.inputRate()))}
-        ${this.field("Cultura", this.selectInput("exp-crop",
+        ${this.field("Crop", this.selectInput("exp-crop",
           this.state.units.crops.map((c) => [c.key, c.label]), Units.get().crop))}
         <div class="row tight">
-          ${this.field(`Célula ISOXML (${lengthUnit})`,
+          ${this.field(`ISOXML cell (${lengthUnit})`,
             this.numberInput("exp-cell", Math.round(Units.convert.length(10)), "1", "1"))}
-          ${this.field("Nome", `<input type="text" id="exp-task" value="Prescricao">`)}
+          ${this.field("Name", `<input type="text" id="exp-task" value="Prescription">`)}
         </div>
-        <input type="hidden" id="exp-field" value="Talhao">
-        <input type="hidden" id="exp-product" value="Produto">
+        <input type="hidden" id="exp-field" value="Field">
+        <input type="hidden" id="exp-product" value="Product">
       </div>
       <div class="panel">
-        <button class="primary wide" id="btn-run-export">Gerar arquivos</button>
+        <button class="primary wide" id="btn-run-export">Generate files</button>
       </div>`;
 
     document.getElementById("exp-source").addEventListener("change", (e) => {
@@ -1628,12 +1628,12 @@ Object.assign(App, {
       ["geojson", this.checked("fmt-geojson")],
     ].filter(([, on]) => on).map(([f]) => f);
 
-    if (!formats.length) { this.toast("Escolha um formato", "", "warn"); return; }
+    if (!formats.length) { this.toast("Choose a format", "", "warn"); return; }
 
     const body = {
       formats,
       brand: this.value("exp-brand"),
-      rate_property: "dose",
+      rate_property: "rate",
       rate_kind: this.value("exp-kind"),
       rate_unit: this.value("exp-unit"),
       crop: this.value("exp-crop"),
@@ -1644,14 +1644,14 @@ Object.assign(App, {
     };
 
     if (this.value("exp-source") === "design") {
-      if (!this.state.design) { this.toast("Sem ensaio", "Desenhe o ensaio primeiro.", "warn"); return; }
+      if (!this.state.design) { this.toast("No trial", "Lay the trial out first.", "warn"); return; }
       body.features = this.state.design.features;
     } else {
-      if (!this.state.selectedId) { this.toast("Sem dados", "Escolha um conjunto.", "warn"); return; }
+      if (!this.state.selectedId) { this.toast("No data", "Pick a dataset.", "warn"); return; }
       body.dataset_id = this.state.selectedId;
       if (formats.includes("isoxml")) {
-        this.toast("ISOXML precisa de polígonos",
-          "Use o pacote a partir do ensaio desenhado para gerar ISOXML.", "warn");
+        this.toast("ISOXML needs polygons",
+          "Use the package built from the trial layout to generate ISOXML.", "warn");
         return;
       }
     }
@@ -1660,43 +1660,43 @@ Object.assign(App, {
       this.api("/api/export", { method: "POST", body }));
     if (!result) return;
     this.renderExportReport(result);
-    this.toast("Arquivos gerados", `${result.bundle.entries.length} arquivo(s) no pacote.`);
+    this.toast("Files generated", `${result.bundle.entries.length} file(s) in the bundle.`);
   },
 
   renderExportReport(result) {
     const box = document.getElementById("export-report");
     if (!box) return;
     const rows = result.outputs.map((o) => {
-      const detail = o.rate_field ? `campo de dose: ${o.rate_field}`
-        : o.cols ? `grade ${o.rows} × ${o.cols}, ${Units.num(o.cells_with_rate, 0)} células com dose`
-        : o.features != null ? `${Units.num(o.features, 0)} feições`
-        : o.rows != null ? `${Units.num(o.rows, 0)} linhas` : "";
+      const detail = o.rate_field ? `rate field: ${o.rate_field}`
+        : o.cols ? `${o.rows} x ${o.cols} grid, ${Units.num(o.cells_with_rate, 0)} cells with a rate`
+        : o.features != null ? `${Units.num(o.features, 0)} features`
+        : o.rows != null ? `${Units.num(o.rows, 0)} rows` : "";
       return `<tr><td>${this.escape(o.format)}</td><td>${this.escape(detail)}</td></tr>`;
     }).join("");
     const warnings = result.outputs.flatMap((o) => o.warnings || []);
 
     box.innerHTML = `
       <div class="panel">
-        <h3>Arquivos gerados</h3>
+        <h3>Files generated</h3>
         <a class="btn primary wide" style="display:block;text-decoration:none"
            href="${result.bundle.download_url}" download>
-          Baixar ${this.escape(result.bundle.filename)}
+          Download ${this.escape(result.bundle.filename)}
         </a>
-        <p class="hint tight">Gravado em:<br>
+        <p class="hint tight">Written to:<br>
           <code style="font-size:11px">${this.escape(result.folder)}</code></p>
         <div class="scroll-x" style="margin-top:10px"><table class="data">
-          <tr><th>Formato</th><th>Detalhe</th></tr>${rows}
+          <tr><th>Format</th><th>Detail</th></tr>${rows}
         </table></div>
-        ${(result.observacoes || []).map((o) =>
+        ${(result.notes || []).map((o) =>
           `<div class="note" style="margin-top:8px">${this.escape(o)}</div>`).join("")}
         ${warnings.map((w) =>
-          `<div class="note atencao" style="margin-top:6px">${this.escape(w)}</div>`).join("")}
+          `<div class="note warning" style="margin-top:6px">${this.escape(w)}</div>`).join("")}
       </div>`;
   },
 });
 
 /* ======================================================================
- * Importação e diálogos
+ * Import and dialogs
  * ==================================================================== */
 
 Object.assign(App, {
@@ -1714,8 +1714,8 @@ Object.assign(App, {
       if (!result) return;
       await this.refreshDatasets();
       await this.selectDataset(result.id);
-      this.toast("Arquivo carregado",
-        `${result.meta.brand_label} · ${Units.num(result.rows, 0)} registros.`);
+      this.toast("File loaded",
+        `${result.meta.brand_label} · ${Units.num(result.rows, 0)} records.`);
     });
 
     document.getElementById("btn-open-path").addEventListener("click", () => {
@@ -1733,7 +1733,7 @@ Object.assign(App, {
       });
     }
 
-    /* Arrastar e soltar sobre o mapa. */
+    /* Drag and drop anywhere on the window. */
     const dropZone = document.getElementById("app");
     dropZone.addEventListener("dragover", (e) => { e.preventDefault(); });
     dropZone.addEventListener("drop", async (e) => {
@@ -1767,8 +1767,8 @@ Object.assign(App, {
       document.getElementById("dlg-path").close();
       await this.refreshDatasets();
       await this.selectDataset(result.id);
-      this.toast("Carregado",
-        `${result.meta.brand_label} · ${Units.num(result.rows, 0)} registros.`);
+      this.toast("Loaded",
+        `${result.meta.brand_label} · ${Units.num(result.rows, 0)} records.`);
     });
     document.getElementById("btn-import-units-apply")
       .addEventListener("click", () => this.applyImportUnits());
@@ -1776,7 +1776,7 @@ Object.assign(App, {
 
   async browse(path) {
     const payload = await this.api(`/api/browse?path=${encodeURIComponent(path || "")}`)
-      .catch((err) => { this.toast("Não deu certo", err.message, "error"); return null; });
+      .catch((err) => { this.toast("That did not work", err.message, "error"); return null; });
     if (!payload) return;
 
     this.state.browseParent = payload.parent;
@@ -1785,7 +1785,7 @@ Object.assign(App, {
     box.innerHTML = "";
 
     if (!payload.entries.length) {
-      box.innerHTML = '<div class="empty">Nada que o app consiga abrir nesta pasta.</div>';
+      box.innerHTML = '<div class="empty">Nothing the app can open in this folder.</div>';
       return;
     }
     for (const entry of payload.entries) {
@@ -1819,18 +1819,18 @@ Object.assign(App, {
     const options = (group) => groups[group].units.map((u) => [u.key, u.label]);
 
     document.getElementById("units-body").innerHTML = `
-      <p class="hint">Os dados ficam guardados sempre em métrico; estas escolhas
-      mudam apenas como os números aparecem e em que unidade os arquivos são gravados.</p>
-      ${this.field("Rendimento", this.selectInput("u-yield", options("rate_mass"), prefs.yield_unit))}
-      ${this.field("Dose de insumo", this.selectInput("u-input", options("rate_mass"), prefs.input_rate_unit))}
-      ${this.field("Área", this.selectInput("u-area", options("area"), prefs.area_unit))}
-      ${this.field("Comprimento e largura", this.selectInput("u-length", options("length"), prefs.length_unit))}
-      ${this.field("Velocidade", this.selectInput("u-speed", options("speed"), prefs.speed_unit))}
-      ${this.field("Massa", this.selectInput("u-mass", options("mass"), prefs.mass_unit))}
-      ${this.field("Cultura (peso do bushel)", this.selectInput("u-crop",
+      <p class="hint">Data is always stored in metric; these choices only change how
+      the numbers appear and which unit files are written in.</p>
+      ${this.field("Yield", this.selectInput("u-yield", options("rate_mass"), prefs.yield_unit))}
+      ${this.field("Input rate", this.selectInput("u-input", options("rate_mass"), prefs.input_rate_unit))}
+      ${this.field("Area", this.selectInput("u-area", options("area"), prefs.area_unit))}
+      ${this.field("Length and width", this.selectInput("u-length", options("length"), prefs.length_unit))}
+      ${this.field("Speed", this.selectInput("u-speed", options("speed"), prefs.speed_unit))}
+      ${this.field("Mass", this.selectInput("u-mass", options("mass"), prefs.mass_unit))}
+      ${this.field("Crop (bushel weight)", this.selectInput("u-crop",
         this.state.units.crops.map((c) => [c.key, `${c.label} — ${c.bushel_kg.toFixed(2)} kg/bu`]),
         prefs.crop))}
-      ${this.field("Moeda", this.selectInput("u-currency",
+      ${this.field("Currency", this.selectInput("u-currency",
         this.state.units.currencies.map((c) => [c.key, c.label]), prefs.currency))}`;
 
     const apply = () => {
@@ -1854,16 +1854,16 @@ Object.assign(App, {
 
   openImportUnitsDialog() {
     const groups = this.state.units.groups;
-    const options = (group) => [["", "— manter como está —"],
+    const options = (group) => [["", "— leave as it is —"],
       ...groups[group].units.map((u) => [u.key, u.label])];
 
     document.getElementById("import-units-body").innerHTML = `
-      ${this.field("Rendimento / dose no arquivo",
+      ${this.field("Yield / rate in the file",
         this.selectInput("iu-rate", options("rate_mass"), ""))}
-      ${this.field("Velocidade no arquivo", this.selectInput("iu-speed", options("speed"), ""))}
-      ${this.field("Largura e distância no arquivo",
+      ${this.field("Speed in the file", this.selectInput("iu-speed", options("speed"), ""))}
+      ${this.field("Width and distance in the file",
         this.selectInput("iu-length", options("length"), ""))}
-      ${this.field("Cultura (para bushel)", this.selectInput("iu-crop",
+      ${this.field("Crop (for bushels)", this.selectInput("iu-crop",
         this.state.units.crops.map((c) => [c.key, c.label]), Units.get().crop))}`;
     document.getElementById("dlg-import-units").showModal();
   },
@@ -1882,7 +1882,7 @@ Object.assign(App, {
       source_units.distance_m = this.value("iu-length");
     }
     if (!Object.keys(source_units).length) {
-      this.toast("Nada a converter", "Escolha ao menos uma unidade.", "warn");
+      this.toast("Nothing to convert", "Choose at least one unit.", "warn");
       return;
     }
 
@@ -1895,7 +1895,7 @@ Object.assign(App, {
     document.getElementById("dlg-import-units").close();
     await this.refreshDatasets();
     await this.selectDataset(result.dataset.id);
-    this.toast("Unidades convertidas", result.conversoes.join("\n"));
+    this.toast("Units converted", result.conversions.join("\n"));
   },
 });
 

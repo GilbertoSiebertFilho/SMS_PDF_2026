@@ -1,32 +1,32 @@
-"""Estruturas de cartão John Deere.
+"""John Deere card structures.
 
-Quando o SMS exporta pela opção **GreenStar**, ele não escreve um arquivo
-solto: escreve a árvore de pastas que o display espera encontrar no cartão
-ou no pen drive. Reconhecer essa árvore é o que permite ao AgroSuite abrir
-o que o usuário já tem em mãos, em vez de exigir que ele reexporte tudo em
+When SMS exports through the **GreenStar** option it does not write a loose
+file: it writes the folder tree the display expects to find on the card or
+stick. Recognizing that tree is what lets AgroSuite open what the user
+already has in hand, instead of demanding they export everything again as
 shapefile.
 
-As três gerações têm raízes diferentes::
+The three generations have different roots::
 
-    GS2_2600/   GreenStar 2 (display 2600)
-    GS3_2630/   GreenStar 3 (display 2630)
-    JD-Data/    Gen 4 (displays 4200, 4600, 4640) e Gen 5
+    GS2_2600/   GreenStar 2 (2600 display)
+    GS3_2630/   GreenStar 3 (2630 display)
+    JD-Data/    Gen 4 (4200, 4600, 4640 displays) and Gen 5
 
-e, dentro delas, a mesma divisão de papéis::
+and inside them, the same division of roles::
 
-    SETUP/      dados que vão PARA o display: clientes, fazendas, talhões,
-                contornos, linhas de orientação, prescrições
-    RCD/        dados que VÊM do display: registros de operação
+    SETUP/      data going TO the display: clients, farms, fields,
+                boundaries, guidance lines, prescriptions
+    RCD/        data coming FROM the display: operation records
 
-Sobre o que este módulo faz e o que não faz
--------------------------------------------
-Os arquivos de setup que o SMS grava dentro de ``SETUP/`` são de formato
-proprietário da John Deere, e o AgroSuite **não** tenta reconstruí-los. O
-que ele faz é inventariar o cartão, ler tudo que estiver em formato aberto
-(shapefile de contorno, de linha de orientação ou de prescrição, que é como
-boa parte das exportações do SMS grava a geometria) e dizer com clareza o
-que encontrou e o que não consegue interpretar — em vez de falhar em
-silêncio ou, pior, produzir um arquivo que o display recusa na lavoura.
+What this module does and does not do
+-------------------------------------
+The setup files SMS writes inside ``SETUP/`` are in John Deere's proprietary
+format, and AgroSuite does **not** try to reconstruct them. What it does is
+inventory the card, read everything in an open format — boundary, guidance
+or prescription shapefiles, which is how a good share of SMS exports store
+the geometry — and state plainly what it found and what it cannot interpret,
+rather than failing silently or, worse, producing a file the display refuses
+out in the field.
 """
 
 from __future__ import annotations
@@ -35,46 +35,46 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-#: Raízes de cartão reconhecidas, da mais nova para a mais antiga.
+#: Recognized card roots, newest to oldest.
 CARD_ROOTS = {
     "JD-Data": "Gen 4 / Gen 5 (4200, 4600, 4640)",
-    "GS3_2630": "GreenStar 3 (display 2630)",
-    "GS3_2600": "GreenStar 3 (display 2600)",
-    "GS2_2600": "GreenStar 2 (display 2600)",
-    "GS2_1800": "GreenStar 2 (display 1800)",
+    "GS3_2630": "GreenStar 3 (2630 display)",
+    "GS3_2600": "GreenStar 3 (2600 display)",
+    "GS2_2600": "GreenStar 2 (2600 display)",
+    "GS2_1800": "GreenStar 2 (1800 display)",
 }
 
-#: Subpastas com significado definido dentro da raiz do cartão.
+#: Subfolders with a defined meaning inside the card root.
 CARD_SUBFOLDERS = {
-    "SETUP": "Dados que vão para o display (talhões, contornos, linhas, prescrições)",
-    "RCD": "Dados gravados pelo display durante a operação",
-    "DOCUMENTATION": "Documentação de operação exportada",
-    "BOUNDARIES": "Contornos de talhão",
-    "GUIDANCE": "Linhas de orientação",
-    "RX": "Prescrições de taxa variável",
-    "SHAPEFILES": "Camadas em shapefile",
+    "SETUP": "Data going to the display (fields, boundaries, lines, prescriptions)",
+    "RCD": "Data recorded by the display during operation",
+    "DOCUMENTATION": "Exported operation documentation",
+    "BOUNDARIES": "Field boundaries",
+    "GUIDANCE": "Guidance lines",
+    "RX": "Variable rate prescriptions",
+    "SHAPEFILES": "Shapefile layers",
 }
 
-#: Extensões de formato aberto que conseguimos interpretar de dentro do cartão.
+#: Open-format extensions we can interpret from inside the card.
 READABLE_EXT = {".shp", ".geojson", ".json", ".kml", ".kmz", ".csv", ".txt", ".xml"}
 
-#: Extensões proprietárias da John Deere. Listadas para que o inventário
-#: diga o que são, em vez de chamá-las de "arquivo desconhecido".
+#: John Deere proprietary extensions. Listed so the inventory can say what
+#: they are, instead of calling them "unknown file".
 PROPRIETARY_EXT = {
-    ".gsd": "Documentação GreenStar (binário proprietário)",
-    ".fdd": "Field Doc Data (binário proprietário)",
-    ".fdl": "Field Doc Log (binário proprietário)",
-    ".jdp": "Pacote de dados John Deere",
-    ".jdf": "Arquivo de setup John Deere",
-    ".ver": "Controle de versão do cartão",
-    ".dat": "Dado binário do display",
-    ".bin": "Dado binário do display",
+    ".gsd": "GreenStar documentation (proprietary binary)",
+    ".fdd": "Field Doc Data (proprietary binary)",
+    ".fdl": "Field Doc Log (proprietary binary)",
+    ".jdp": "John Deere data package",
+    ".jdf": "John Deere setup file",
+    ".ver": "Card version control",
+    ".dat": "Display binary data",
+    ".bin": "Display binary data",
 }
 
 
 @dataclass
 class CardInventory:
-    """O que foi encontrado num cartão John Deere."""
+    """What was found on a John Deere card."""
 
     root: Path
     card_root: Path | None = None
@@ -96,25 +96,25 @@ class CardInventory:
 
     def summary(self) -> str:
         if not self.card_root:
-            return "Nenhuma estrutura de cartão John Deere encontrada."
-        parts = [f"Cartão {self.generation}."]
+            return "No John Deere card structure found."
+        parts = [f"{self.generation} card."]
         if self.readable:
-            parts.append(f"{len(self.readable)} arquivo(s) em formato aberto, legíveis aqui.")
+            parts.append(f"{len(self.readable)} file(s) in an open format, readable here.")
         if self.proprietary:
             parts.append(
-                f"{len(self.proprietary)} arquivo(s) em formato proprietário da John Deere, "
-                "que só o software dela ou o próprio display convertem."
+                f"{len(self.proprietary)} file(s) in John Deere's proprietary format, "
+                "which only their software or the display itself can convert."
             )
         if not self.readable and self.proprietary:
             parts.append(
-                "Para trazer esse conteúdo ao AgroSuite, reexporte no SMS escolhendo "
-                "shapefile em vez de GreenStar."
+                "To bring that content into AgroSuite, export again from SMS choosing "
+                "shapefile instead of GreenStar."
             )
         return " ".join(parts)
 
 
 def find_card_root(path: Path) -> tuple[Path | None, str]:
-    """Localiza a raiz do cartão e diz a que geração ela pertence."""
+    """Locate the card root and say which generation it belongs to."""
     path = Path(path)
     candidates = [path, *[p for p in path.iterdir() if p.is_dir()]] if path.is_dir() else [path]
 
@@ -122,24 +122,24 @@ def find_card_root(path: Path) -> tuple[Path | None, str]:
         if candidate.name in CARD_ROOTS:
             return candidate, CARD_ROOTS[candidate.name]
 
-    # O cartão pode estar mais fundo, dentro de uma pasta de backup.
+    # The card may sit deeper, inside a backup folder.
     if path.is_dir():
         for name, label in CARD_ROOTS.items():
             for found in path.rglob(name):
                 if found.is_dir():
                     return found, label
 
-    # Estrutura sem a pasta-raiz nomeada, mas com SETUP/RCD lado a lado.
+    # Structure without the named root folder, but with SETUP/RCD side by side.
     if path.is_dir():
         children = {p.name.upper() for p in path.iterdir() if p.is_dir()}
         if {"SETUP", "RCD"} & children:
-            return path, "GreenStar (raiz não nomeada)"
+            return path, "GreenStar (unnamed root)"
 
-    return None, "desconhecida"
+    return None, "unknown"
 
 
 def inventory(path: Path) -> CardInventory:
-    """Inventaria um cartão: o que dá para ler e o que é proprietário."""
+    """Inventory a card: what can be read and what is proprietary."""
     path = Path(path)
     card_root, generation = find_card_root(path)
     result = CardInventory(root=path, card_root=card_root, generation=generation)
@@ -171,23 +171,22 @@ def inventory(path: Path) -> CardInventory:
 
 
 def readable_layers(inv: CardInventory) -> list[dict[str, Any]]:
-    """Camadas do cartão que o AgroSuite consegue importar, já classificadas.
+    """Card layers AgroSuite can import, already classified.
 
-    A classificação por palavra-chave no caminho é o que permite dizer
-    "este é o contorno" sem abrir todos os arquivos: as exportações do SMS
-    e do Operations Center nomeiam as pastas e os arquivos de forma
-    consistente.
+    Classifying by keyword in the path is what lets us say "this is the
+    boundary" without opening every file: SMS and Operations Center exports
+    name their folders and files consistently.
     """
     layers = []
     for entry in inv.readable:
         if entry["kind"] not in ("shp", "geojson", "json", "kml", "kmz"):
             continue
         text = entry["relative"].lower()
-        if any(k in text for k in ("boundary", "bound", "contorno", "limite", "field_border")):
+        if any(k in text for k in ("boundary", "bound", "field_border", "contorno")):
             role = "boundary"
-        elif any(k in text for k in ("guidance", "abline", "ab_line", "track", "swath", "linha")):
+        elif any(k in text for k in ("guidance", "abline", "ab_line", "track", "swath")):
             role = "guidance"
-        elif any(k in text for k in ("rx", "prescription", "prescricao", "target")):
+        elif any(k in text for k in ("rx", "prescription", "target")):
             role = "prescription"
         else:
             role = "data"
@@ -196,36 +195,35 @@ def readable_layers(inv: CardInventory) -> list[dict[str, Any]]:
 
 
 def describe_export_paths(generation_key: str = "gen4") -> dict[str, Any]:
-    """Onde cada geração de display procura os arquivos no pen drive.
+    """Where each display generation looks for files on the stick.
 
-    Estes caminhos descrevem a estrutura de cartão da plataforma; o menu de
-    importação muda entre versões de firmware, então o pacote gerado sempre
-    vem com instruções pedindo que o operador confirme na tela.
+    These paths describe the platform's card structure; the import menu
+    changes between firmware versions, so the generated package always ships
+    with instructions asking the operator to confirm on screen.
     """
     paths = {
         "gen4": {
             "label": "Gen 4 / Gen 5 (4200, 4600, 4640)",
             "card_root": "JD-Data",
             "notes": (
-                "Prescrição em shapefile é importada pelo próprio display, no "
-                "gerenciador de arquivos do pen drive. Contorno e linhas de "
-                "orientação chegam de forma mais confiável pelo Operations Center, "
-                "sincronizados para a máquina."
+                "A shapefile prescription is imported by the display itself, through "
+                "the USB file manager. Boundaries and guidance lines arrive more "
+                "reliably through Operations Center, synced to the machine."
             ),
         },
         "gs3": {
             "label": "GreenStar 3 (2630)",
             "card_root": "GS3_2630",
             "notes": (
-                "O cartão separa SETUP (o que vai para o display) de RCD (o que o "
-                "display gravou). Os arquivos de setup são proprietários e saem do "
-                "SMS ou do Apex, não do AgroSuite."
+                "The card separates SETUP (what goes to the display) from RCD (what "
+                "the display recorded). The setup files are proprietary and come out "
+                "of SMS or Apex, not out of AgroSuite."
             ),
         },
         "gs2": {
             "label": "GreenStar 2 (2600)",
             "card_root": "GS2_2600",
-            "notes": "Mesma divisão SETUP/RCD do GreenStar 3.",
+            "notes": "Same SETUP/RCD split as GreenStar 3.",
         },
     }
     return paths.get(generation_key, paths["gen4"])

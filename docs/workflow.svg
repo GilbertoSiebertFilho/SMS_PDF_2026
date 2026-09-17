@@ -1,4 +1,4 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 190" width="900" height="190" role="img" aria-label="Fluxo do AgroSuite: dados do monitor, limpeza, análise DIFM, desenho de ensaio, exportação verificada de volta ao monitor">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 190" width="900" height="190" role="img" aria-label="AgroSuite workflow: monitor data, cleaning, DIFM analysis, trial layout, verified export back to the monitor">
   <style>
     .box { fill: #ffffff; stroke: #bcc5bc; stroke-width: 1.5; }
     .accent { fill: #e3f0e8; stroke: #2f7d4f; }
@@ -21,38 +21,38 @@
 
   <rect class="box accent" x="8" y="45" width="150" height="72" rx="8"/>
   <text class="n" x="20" y="66">1</text>
-  <text class="t" x="20" y="84">Dados do monitor</text>
+  <text class="t" x="20" y="84">Monitor data</text>
   <text class="s" x="20" y="101">SHP · CSV · ISOXML</text>
-  <text class="s" x="20" y="114">cartão JD · Augmenta</text>
+  <text class="s" x="20" y="114">JD card · Augmenta</text>
 
   <rect class="box" x="186" y="45" width="140" height="72" rx="8"/>
   <text class="n" x="198" y="66">2</text>
-  <text class="t" x="198" y="84">Limpeza</text>
-  <text class="s" x="198" y="101">13 filtros</text>
-  <text class="s" x="198" y="114">laudo antes/depois</text>
+  <text class="t" x="198" y="84">Cleaning</text>
+  <text class="s" x="198" y="101">13 filters</text>
+  <text class="s" x="198" y="114">before/after report</text>
 
   <rect class="box" x="354" y="45" width="140" height="72" rx="8"/>
   <text class="n" x="366" y="66">3</text>
-  <text class="t" x="366" y="84">Análise DIFM</text>
-  <text class="s" x="366" y="101">curva de resposta</text>
-  <text class="s" x="366" y="114">dose ótima · zonas</text>
+  <text class="t" x="366" y="84">DIFM analysis</text>
+  <text class="s" x="366" y="101">response curve</text>
+  <text class="s" x="366" y="114">optimum rate · zones</text>
 
   <rect class="box" x="522" y="45" width="140" height="72" rx="8"/>
   <text class="n" x="534" y="66">4</text>
-  <text class="t" x="534" y="84">Ensaio</text>
-  <text class="s" x="534" y="101">faixas casualizadas</text>
-  <text class="s" x="534" y="114">linha AB</text>
+  <text class="t" x="534" y="84">Trial</text>
+  <text class="s" x="534" y="101">randomized strips</text>
+  <text class="s" x="534" y="114">AB line</text>
 
   <rect class="box accent" x="690" y="45" width="200" height="72" rx="8"/>
   <text class="n" x="702" y="66">5</text>
-  <text class="t" x="702" y="84">Volta ao monitor</text>
-  <text class="s" x="702" y="101">pacote por plataforma</text>
-  <text class="s" x="702" y="114">verificado antes de sair</text>
+  <text class="t" x="702" y="84">Back to the monitor</text>
+  <text class="s" x="702" y="101">package per platform</text>
+  <text class="s" x="702" y="114">checked before it leaves</text>
 
   <path class="arrow" d="M162,81 L182,81"/>
   <path class="arrow" d="M330,81 L350,81"/>
   <path class="arrow" d="M498,81 L518,81"/>
   <path class="arrow" d="M666,81 L686,81"/>
 
-  <text class="s" x="8" y="160">Tudo roda na sua máquina. Unidades no padrão canadense por definição — bu/ac, lb/ac, acres, pés — trocáveis a qualquer momento.</text>
+  <text class="s" x="8" y="160">Everything runs on your machine. Units default to the Canadian set — bu/ac, lb/ac, acres, feet — switchable at any time.</text>
 </svg>

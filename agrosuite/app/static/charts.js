@@ -1,8 +1,9 @@
-/* Gráficos em SVG inline.
+/* Inline SVG charts.
  *
- * São poucos e específicos — histograma comparativo e curva de resposta —
- * então desenhar o SVG à mão sai menor e mais controlável do que carregar
- * uma biblioteca de gráficos inteira num app que precisa abrir offline. */
+ * There are only a few, and they are specific — a comparative histogram and a
+ * response curve — so drawing the SVG by hand comes out smaller and more
+ * controllable than loading a whole charting library into an app that has to
+ * open offline. */
 
 const Charts = (() => {
   const NS = "http://www.w3.org/2000/svg";
@@ -18,8 +19,8 @@ const Charts = (() => {
     return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
   }
 
-  /* Histograma antes/depois sobreposto: mostra de onde a limpeza tirou massa
-   * da distribuição — é a leitura que diz se ela cortou uma cauda ou o meio. */
+  /* Overlaid before/after histogram: it shows where the cleaning took mass out
+   * of the distribution, which is what says whether it cut a tail or the middle. */
   function histogram(container, before, after, options = {}) {
     container.innerHTML = "";
     const width = container.clientWidth || 360;
@@ -27,7 +28,7 @@ const Charts = (() => {
     const pad = { t: 8, r: 8, b: 20, l: 34 };
 
     if (!before?.counts?.length && !after?.counts?.length) {
-      container.innerHTML = '<div class="empty">Sem dados para o histograma.</div>';
+      container.innerHTML = '<div class="empty">No data for the histogram.</div>';
       return;
     }
 
@@ -37,7 +38,7 @@ const Charts = (() => {
     const xMax = Math.max(...series.map((s) => s.edges[s.edges.length - 1]));
     const yMax = Math.max(...series.map((s) => Math.max(...s.counts)));
     if (!isFinite(xMin) || !isFinite(xMax) || xMax === xMin) {
-      container.innerHTML = '<div class="empty">Distribuição sem amplitude.</div>';
+      container.innerHTML = '<div class="empty">The distribution has no spread.</div>';
       return;
     }
 
@@ -79,12 +80,12 @@ const Charts = (() => {
     yLabel.textContent = Units.num(yMax, 0);
   }
 
-  /* Curva de rendimento e curva de lucro no mesmo eixo de dose, com a dose
-   * ótima marcada — as três coisas que decidem a recomendação. */
+  /* Yield curve and profit curve on the same rate axis, with the optimum
+   * marked — the three things that decide the recommendation. */
   function responseCurve(container, curve, optimum, options = {}) {
     container.innerHTML = "";
     if (!curve?.length) {
-      container.innerHTML = '<div class="empty">Sem curva ajustada.</div>';
+      container.innerHTML = '<div class="empty">No fitted curve.</div>';
       return;
     }
     const width = container.clientWidth || 360;
@@ -93,12 +94,12 @@ const Charts = (() => {
 
     const svg = el("svg", { class: "chart", viewBox: `0 0 ${width} ${height}`, height }, container);
 
-    // A curva vem em unidade interna; o eixo da dose acompanha a unidade de
-    // insumo escolhida, senão o gráfico contradiz os números ao lado dele.
+    // The curve arrives in internal units; the rate axis follows the chosen
+    // input unit, or the chart contradicts the numbers beside it.
     const rateConv = options.rateConv || ((v) => v);
-    const rates = curve.map((p) => rateConv(p.dose));
-    const yields = curve.map((p) => options.yieldConv(p.rendimento));
-    const profits = curve.map((p) => p.lucro);
+    const rates = curve.map((p) => rateConv(p.rate));
+    const yields = curve.map((p) => options.yieldConv(p["yield"]));
+    const profits = curve.map((p) => p.profit);
 
     const xMin = Math.min(...rates), xMax = Math.max(...rates);
     const yMin = Math.min(...yields), yMax = Math.max(...yields);
@@ -124,8 +125,8 @@ const Charts = (() => {
     path(yields, syY, css("--accent"));
     path(profits, syP, css("--warn"), "4 3");
 
-    if (optimum?.dose_otima != null) {
-      const x = sx(rateConv(optimum.dose_otima));
+    if (optimum?.optimum_rate != null) {
+      const x = sx(rateConv(optimum.optimum_rate));
       el("line", {
         x1: x, y1: pad.t, x2: x, y2: height - pad.b,
         stroke: css("--text-muted"), "stroke-width": 1, "stroke-dasharray": "2 3",
@@ -134,7 +135,7 @@ const Charts = (() => {
         x: Math.min(x + 4, width - pad.r - 4), y: pad.t + 9,
         "font-size": 10, fill: css("--text-muted"),
       }, svg);
-      t.textContent = `ótima ${Units.num(optimum.dose_otima, 0)}`;
+      t.textContent = `optimum ${Units.num(rateConv(optimum.optimum_rate), 0)}`;
     }
 
     const tick = (x, y, text, anchor, color) => {
@@ -152,14 +153,14 @@ const Charts = (() => {
       x: pad.l, y: pad.t + 9, "font-size": 10, fill: css("--text-muted"),
     }, svg);
     legend.textContent =
-      `— rendimento (${options.yieldUnit})   ╌ lucro   ·   dose em ${options.rateUnit || ""}`;
+      `— yield (${options.yieldUnit})   ╌ profit   ·   rate in ${options.rateUnit || ""}`;
   }
 
-  /* Barras horizontais para a contagem de remoções por motivo. */
+  /* Horizontal bars for the removal counts by reason. */
   function bars(container, rows, options = {}) {
     container.innerHTML = "";
     if (!rows?.length) {
-      container.innerHTML = '<div class="empty">Nenhum registro removido.</div>';
+      container.innerHTML = '<div class="empty">No record was removed.</div>';
       return;
     }
     const max = Math.max(...rows.map((r) => r.value));

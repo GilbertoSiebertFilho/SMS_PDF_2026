@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="pt-BR" data-theme="">
+<html lang="en" data-theme="">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -15,26 +15,26 @@
     <div class="brand">
       <span class="mark">🌾</span>
       <span>AgroSuite</span>
-      <span class="sub">dados de monitores · limpeza · DIFM</span>
+      <span class="sub">monitor data · cleaning · DIFM</span>
     </div>
 
     <nav class="steps" id="steps" role="tablist">
-      <button data-tab="dados"    role="tab" aria-selected="true">1 · Dados</button>
-      <button data-tab="limpeza"  role="tab" aria-selected="false">2 · Limpeza</button>
-      <button data-tab="difm"     role="tab" aria-selected="false">3 · Análise DIFM</button>
-      <button data-tab="ensaio"   role="tab" aria-selected="false">4 · Desenhar ensaio</button>
-      <button data-tab="exportar" role="tab" aria-selected="false">5 · Exportar</button>
+      <button data-tab="dados"    role="tab" aria-selected="true">1 · Data</button>
+      <button data-tab="limpeza"  role="tab" aria-selected="false">2 · Cleaning</button>
+      <button data-tab="difm"     role="tab" aria-selected="false">3 · DIFM analysis</button>
+      <button data-tab="ensaio"   role="tab" aria-selected="false">4 · Trial layout</button>
+      <button data-tab="exportar" role="tab" aria-selected="false">5 · Export</button>
     </nav>
 
     <div class="spacer"></div>
 
     <div class="inline">
       <label class="inline" style="font-size:12px;color:var(--text-muted)">
-        Unidades
+        Units
         <select id="unit-preset" style="width:auto;min-width:150px"></select>
       </label>
-      <button class="ghost small" id="unit-details" title="Ajustar cada unidade">⚙</button>
-      <button class="ghost small" id="theme-toggle" title="Alternar tema">◐</button>
+      <button class="ghost small" id="unit-details" title="Adjust each unit">⚙</button>
+      <button class="ghost small" id="theme-toggle" title="Toggle theme">◐</button>
     </div>
   </header>
 
@@ -43,26 +43,26 @@
     <!-- ------------------------------------------------ coluna esquerda -->
     <aside class="left">
       <div class="panel">
-        <h3>Carregar dados</h3>
+        <h3>Load data</h3>
         <button class="primary wide" id="btn-open-file" style="margin-bottom:6px">
-          Abrir arquivo do computador
+          Open a file from this computer
         </button>
         <button class="wide" id="btn-open-path" style="margin-bottom:6px">
-          Abrir por caminho / pasta
+          Open by path / folder
         </button>
         <div class="row tight">
-          <button class="small" id="btn-demo-harvest">Demo colheita</button>
-          <button class="small" id="btn-demo-trial">Demo ensaio</button>
+          <button class="small" id="btn-demo-harvest">Harvest demo</button>
+          <button class="small" id="btn-demo-trial">Trial demo</button>
         </div>
         <p class="hint tight">
-          Shapefile e pasta ISOXML precisam de todos os arquivos juntos: use
-          “caminho / pasta”, ou envie um .zip.
+          A shapefile or an ISOXML folder needs all of its files together: use
+          "path / folder", or upload a .zip.
         </p>
       </div>
 
       <div class="panel" style="flex:1">
-        <h3>Dados carregados</h3>
-        <div id="dataset-list"><div class="empty">Nada carregado ainda.</div></div>
+        <h3>Loaded data</h3>
+        <div id="dataset-list"><div class="empty">Nothing loaded yet.</div></div>
       </div>
     </aside>
 
@@ -70,20 +70,20 @@
     <main class="center">
       <div class="map-toolbar">
         <label class="inline">
-          Colorir por
+          Colour by
           <select id="color-column" style="width:auto;min-width:160px"></select>
         </label>
         <label class="inline">
-          <input type="checkbox" id="show-basemap" checked> Satélite
+          <input type="checkbox" id="show-basemap" checked> Satellite
         </label>
         <span class="spacer" style="flex:1"></span>
         <span id="map-status" class="hint tight" style="margin:0"></span>
-        <button class="ghost small" id="btn-fit">Enquadrar</button>
+        <button class="ghost small" id="btn-fit">Zoom to fit</button>
       </div>
       <div id="map"></div>
       <canvas id="point-canvas"></canvas>
       <div class="map-overlay legend" id="legend" hidden>
-        <h4 id="legend-title">Valor</h4>
+        <h4 id="legend-title">Value</h4>
         <div class="ramp" id="legend-ramp"></div>
         <div class="ends"><span id="legend-min">—</span><span id="legend-max">—</span></div>
       </div>
@@ -98,54 +98,54 @@
 
 <dialog id="dlg-path">
   <div class="head">
-    <h3>Abrir por caminho</h3>
+    <h3>Open by path</h3>
     <button class="ghost" data-close>✕</button>
   </div>
   <div class="body">
     <label class="field">
-      <span>Caminho do arquivo ou da pasta</span>
-      <input type="text" id="path-input" placeholder="C:\Dados\Colheita\talhao7.shp">
+      <span>Path to the file or folder</span>
+      <input type="text" id="path-input" placeholder="C:\Data\Harvest\NW-14-32-W2.shp">
     </label>
     <div class="row tight" style="margin-bottom:10px">
-      <button id="btn-path-up">↑ Pasta acima</button>
-      <button id="btn-path-list">Listar pasta</button>
+      <button id="btn-path-up">↑ Parent folder</button>
+      <button id="btn-path-list">List folder</button>
     </div>
     <div id="path-current" class="hint tight"></div>
     <div class="file-list" id="path-browser"></div>
   </div>
   <div class="foot">
-    <button data-close>Cancelar</button>
-    <button class="primary" id="btn-path-open">Abrir</button>
+    <button data-close>Cancel</button>
+    <button class="primary" id="btn-path-open">Open</button>
   </div>
 </dialog>
 
 <dialog id="dlg-units">
   <div class="head">
-    <h3>Unidades de exibição</h3>
+    <h3>Display units</h3>
     <button class="ghost" data-close>✕</button>
   </div>
   <div class="body" id="units-body"></div>
   <div class="foot">
-    <button data-close>Fechar</button>
+    <button data-close>Close</button>
   </div>
 </dialog>
 
 <dialog id="dlg-import-units">
   <div class="head">
-    <h3>Unidades do arquivo de origem</h3>
+    <h3>Units in the source file</h3>
     <button class="ghost" data-close>✕</button>
   </div>
   <div class="body">
     <p class="hint">
-      Em que unidade o monitor gravou este arquivo? Se não souber, deixe como
-      está e confira as estatísticas depois — um rendimento médio de 180 num
-      mapa de trigo é bu/ac, não kg/ha.
+      Which unit did the monitor write this file in? If you are not sure, leave it
+      as it is and check the statistics afterwards — an average yield of 55 on a
+      canola map is bu/ac, not kg/ha.
     </p>
     <div id="import-units-body"></div>
   </div>
   <div class="foot">
-    <button data-close>Cancelar</button>
-    <button class="primary" id="btn-import-units-apply">Aplicar conversão</button>
+    <button data-close>Cancel</button>
+    <button class="primary" id="btn-import-units-apply">Apply conversion</button>
   </div>
 </dialog>
 

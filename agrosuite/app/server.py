@@ -1,12 +1,12 @@
-"""Servidor local do AgroSuite.
+"""AgroSuite's local server.
 
-O app roda como um servidor na própria máquina e a interface abre no
-navegador. A escolha é deliberada: dado agrícola é geoespacial, e um mapa
-de verdade — com zoom, camada de satélite e milhares de pontos coloridos —
-é muito melhor no navegador do que numa janela de widget.
+The app runs as a server on the machine itself and the interface opens in the
+browser. That is deliberate: agricultural data is geospatial, and a real map —
+with zoom, satellite imagery and thousands of coloured points — works far
+better in a browser than in a widget window.
 
-Nada sai da máquina. O servidor escuta apenas em ``127.0.0.1`` e os
-arquivos ficam numa pasta temporária da sessão.
+Nothing leaves the machine. The server listens only on ``127.0.0.1`` and the
+files live in a temporary session folder.
 """
 
 from __future__ import annotations
@@ -47,13 +47,13 @@ state = session_mod.Session()
 
 
 # ==========================================================================
-# Modelos de requisição
+# Request models
 # ==========================================================================
 
 class PathRequest(BaseModel):
     path: str
     brand: str | None = None
-    #: Unidades em que o arquivo de origem está, por coluna canônica.
+    #: Units the source file is in, keyed by canonical column.
     source_units: dict[str, str] = Field(default_factory=dict)
     crop: str | None = None
 
@@ -63,7 +63,7 @@ class DemoRequest(BaseModel):
 
 
 class UnitsRequest(BaseModel):
-    """Redeclaração de unidades de um dataset já carregado."""
+    """Re-declaring the units of an already-loaded dataset."""
 
     source_units: dict[str, str] = Field(default_factory=dict)
     crop: str | None = None
@@ -101,7 +101,7 @@ class DesignRequest(BaseModel):
 
 
 class GuidanceRequest(BaseModel):
-    """Geração de linha AB, por direção ou por dois pontos."""
+    """Building an AB line, from a direction or from two points."""
 
     boundary: list[list[float]] | None = None
     boundary_dataset_id: str | None = None
@@ -112,7 +112,7 @@ class GuidanceRequest(BaseModel):
 
 
 class PackageRequest(BaseModel):
-    """Pacote completo para levar ao monitor."""
+    """A complete package to take to the monitor."""
 
     monitor: str = "generic"
     features: dict[str, Any] | None = None
@@ -120,16 +120,16 @@ class PackageRequest(BaseModel):
     boundary_dataset_id: str | None = None
     guidance_lines: list[dict[str, Any]] = Field(default_factory=list)
     dataset_id: str | None = None
-    rate_property: str = "dose"
+    rate_property: str = "rate"
     rate_kind: str = "mass"
     rate_unit: str = "kg/ha"
     crop: str | None = None
     cell_m: float = 10.0
-    field_name: str = "Talhao"
-    task_name: str = "Prescricao"
-    product_name: str = "Produto"
+    field_name: str = "Field"
+    task_name: str = "Prescription"
+    product_name: str = "Product"
     customer_name: str = "AgroSuite"
-    farm_name: str = "Fazenda"
+    farm_name: str = "Farm"
 
 
 class ExportRequest(BaseModel):
@@ -137,20 +137,20 @@ class ExportRequest(BaseModel):
     features: dict[str, Any] | None = None
     formats: list[str] = Field(default_factory=lambda: ["shapefile"])
     brand: str = "generic"
-    rate_property: str = "dose"
+    rate_property: str = "rate"
     rate_kind: str = "mass"
-    #: Unidade em que a dose será **gravada** no arquivo de saída.
+    #: Unit the rate will be **written** in, in the output file.
     rate_unit: str = "kg/ha"
     crop: str | None = None
     cell_m: float = 10.0
-    task_name: str = "Prescricao"
-    field_name: str = "Talhao"
-    product_name: str = "Produto"
+    task_name: str = "Prescription"
+    field_name: str = "Field"
+    product_name: str = "Product"
     columns: list[str] | None = None
 
 
 # ==========================================================================
-# Utilidades
+# Helpers
 # ==========================================================================
 
 def _fail(message: str, status: int = 400) -> HTTPException:
@@ -158,8 +158,8 @@ def _fail(message: str, status: int = 400) -> HTTPException:
 
 
 @app.exception_handler(Exception)
-async def unhandled(request, exc: Exception):  # pragma: no cover - rede de segurança
-    """Converte falhas inesperadas numa mensagem legível em vez de 500 mudo."""
+async def unhandled(request, exc: Exception):  # pragma: no cover - safety net
+    """Turn unexpected failures into a readable message rather than a silent 500."""
     if isinstance(exc, HTTPException):
         return JSONResponse({"detail": exc.detail}, status_code=exc.status_code)
     return JSONResponse(
@@ -179,9 +179,8 @@ def _register(
     source_units: dict[str, str] | None = None,
     crop: str | None = None,
 ) -> dict[str, Any]:
-    # As unidades são aplicadas antes dos campos derivados: a velocidade
-    # reconstruída a partir da trajetória já sai em km/h, e converter depois
-    # a estragaria.
+    # Units are applied before the derived fields: speed reconstructed from the
+    # track already comes out in km/h, and converting it afterwards would break it.
     if source_units:
         apply_source_units(dataset, source_units, crop)
     dataset.ensure_derived()
@@ -190,22 +189,22 @@ def _register(
 
 
 # ==========================================================================
-# Catálogo
+# Catalogue
 # ==========================================================================
 
 @app.get("/api/units")
 def units_catalog() -> dict[str, Any]:
-    """Catálogo de unidades e culturas para os seletores da interface."""
+    """Catalogue of units and crops for the interface pickers."""
     return units_mod.unit_catalog()
 
 
 @app.post("/api/datasets/{dataset_id}/units")
 def redeclare_units(dataset_id: str, request: UnitsRequest) -> dict[str, Any]:
-    """Reaplica unidades de origem a um dataset já carregado.
+    """Re-apply source units to an already-loaded dataset.
 
-    Serve para o caso em que a unidade só é percebida depois de ver os
-    números: um rendimento médio de 180 num mapa de milho é bu/ac, não kg/ha.
-    A conversão gera um dataset novo, deixando o original intacto.
+    This covers the case where the unit only becomes obvious after seeing the
+    numbers: an average yield of 55 on a canola map is bu/ac, not kg/ha. The
+    conversion produces a new dataset, leaving the original untouched.
     """
     try:
         entry = state.get(dataset_id)
@@ -216,16 +215,16 @@ def redeclare_units(dataset_id: str, request: UnitsRequest) -> dict[str, Any]:
     applied = apply_source_units(converted, request.source_units, request.crop)
     if not applied:
         raise _fail(
-            "Nenhuma conversão aplicável: as unidades escolhidas já são as internas "
-            "ou as colunas não existem neste dataset."
+            "No conversion applies: the chosen units are already the internal ones, "
+            "or those columns do not exist in this dataset."
         )
-    summary = _register(converted, f"{entry.label} · convertido", "units", entry.id)
-    return {"dataset": summary, "conversoes": applied}
+    summary = _register(converted, f"{entry.label} · converted", "units", entry.id)
+    return {"dataset": summary, "conversions": applied}
 
 
 @app.get("/api/catalog")
 def catalog() -> dict[str, Any]:
-    """Tudo que a interface precisa para montar os formulários."""
+    """Everything the interface needs to build its forms."""
     return {
         "brands": brands_mod.brand_catalog(),
         "operations": OPERATION_LABELS,
@@ -261,7 +260,7 @@ def catalog() -> dict[str, Any]:
 
 
 # ==========================================================================
-# Importação
+# Import
 # ==========================================================================
 
 @app.post("/api/import/upload")
@@ -273,9 +272,9 @@ async def import_upload(
     length_unit: str | None = None,
     crop: str | None = None,
 ) -> dict[str, Any]:
-    """Importa um arquivo enviado pelo navegador."""
+    """Import a file uploaded from the browser."""
     if not file.filename:
-        raise _fail("Arquivo sem nome.")
+        raise _fail("File has no name.")
 
     target = state.uploads / file.filename
     target.parent.mkdir(parents=True, exist_ok=True)
@@ -284,15 +283,15 @@ async def import_upload(
 
     if target.suffix.lower() == ".shp":
         raise _fail(
-            "Um shapefile são vários arquivos (.shp, .shx, .dbf, .prj) e o envio "
-            "avulso do .shp não abre. Compacte a pasta num .zip e envie o zip, ou "
-            "use a importação por caminho local."
+            "A shapefile is several files (.shp, .shx, .dbf, .prj), and uploading the "
+            ".shp on its own will not open. Zip the folder and upload the zip, or "
+            "import by local path instead."
         )
 
     try:
         dataset = registry.read_any(target, brand)
     except Exception as exc:
-        raise _fail(f"Não foi possível ler '{file.filename}': {exc}")
+        raise _fail(f"Could not read '{file.filename}': {exc}")
 
     declared = {
         sch.VALUE: rate_unit, sch.TARGET_RATE: rate_unit, sch.APPLIED_RATE: rate_unit,
@@ -304,18 +303,18 @@ async def import_upload(
 
 @app.post("/api/import/path")
 def import_path(request: PathRequest) -> dict[str, Any]:
-    """Importa a partir de um caminho no disco desta máquina.
+    """Import from a path on this machine's disk.
 
-    É o caminho preferido para shapefile e para pasta ISOXML, que só fazem
-    sentido com todos os arquivos que os acompanham.
+    This is the preferred route for shapefiles and ISOXML folders, which only
+    make sense with all of their companion files present.
     """
     path = Path(request.path.strip().strip('"'))
     if not path.exists():
-        raise _fail(f"Caminho não encontrado: {path}")
+        raise _fail(f"Path not found: {path}")
     try:
         dataset = registry.read_any(path, request.brand)
     except Exception as exc:
-        raise _fail(f"Não foi possível ler '{path.name}': {exc}")
+        raise _fail(f"Could not read '{path.name}': {exc}")
     return _register(
         dataset, path.stem or path.name, "path",
         source_units=request.source_units, crop=request.crop,
@@ -324,22 +323,22 @@ def import_path(request: PathRequest) -> dict[str, Any]:
 
 @app.post("/api/import/demo")
 def import_demo(request: DemoRequest) -> dict[str, Any]:
-    """Carrega um conjunto sintético para experimentar o app."""
+    """Load a synthetic dataset for trying the app out."""
     if request.kind == "trial":
         dataset = demo_mod.synthetic_trial()
-        label = "Ensaio DIFM (demo)"
+        label = "DIFM trial (demo)"
     else:
         dataset = demo_mod.synthetic_harvest()
-        label = "Colheita com defeitos (demo)"
+        label = "Harvest with defects (demo)"
     return _register(dataset, label, "demo")
 
 
 @app.get("/api/browse")
 def browse(path: str = "") -> dict[str, Any]:
-    """Lista uma pasta do disco, para escolher arquivos sem digitar o caminho."""
+    """List a folder on disk, so files can be picked without typing a path."""
     target = Path(path).expanduser() if path else Path.home()
     if not target.exists():
-        raise _fail(f"Pasta não encontrada: {target}")
+        raise _fail(f"Folder not found: {target}")
     if target.is_file():
         target = target.parent
 
@@ -359,7 +358,7 @@ def browse(path: str = "") -> dict[str, Any]:
                 "size": child.stat().st_size if not is_dir else None,
             })
     except PermissionError:
-        raise _fail(f"Sem permissão para listar: {target}")
+        raise _fail(f"No permission to list: {target}")
 
     return {
         "path": str(target),
@@ -370,7 +369,7 @@ def browse(path: str = "") -> dict[str, Any]:
 
 @app.get("/api/inspect")
 def inspect(path: str) -> dict[str, Any]:
-    """Inspeção rápida de um caminho, antes de importar."""
+    """Quick inspection of a path, before importing."""
     try:
         return registry.inspect(path)
     except Exception as exc:
@@ -430,17 +429,17 @@ def dataset_report(dataset_id: str, kind: str) -> dict[str, Any]:
         raise _fail(str(exc), 404)
     report = entry.reports.get(kind)
     if report is None:
-        raise _fail(f"Este dataset não tem laudo de '{kind}'.", 404)
+        raise _fail(f"This dataset has no '{kind}' report.", 404)
     return report
 
 
 # ==========================================================================
-# Limpeza
+# Cleaning
 # ==========================================================================
 
 @app.post("/api/datasets/{dataset_id}/clean")
 def clean_dataset(dataset_id: str, request: CleanRequest) -> dict[str, Any]:
-    """Executa a limpeza e devolve o laudo com os datasets resultantes."""
+    """Run the cleaning and return the report with the resulting datasets."""
     try:
         entry = state.get(dataset_id)
     except KeyError as exc:
@@ -452,7 +451,7 @@ def clean_dataset(dataset_id: str, request: CleanRequest) -> dict[str, Any]:
         preset_key = request.preset or clean_pipeline.preset_for(entry.dataset.meta.operation)
         preset = clean_pipeline.PRESETS.get(preset_key)
         if preset is None:
-            raise _fail(f"Preset '{preset_key}' não existe.")
+            raise _fail(f"Preset '{preset_key}' does not exist.")
         config = {
             "corrections": {**preset["corrections"], **request.corrections},
             "steps": preset["steps"],
@@ -461,13 +460,13 @@ def clean_dataset(dataset_id: str, request: CleanRequest) -> dict[str, Any]:
     try:
         result = clean_pipeline.run(entry.dataset, config, request.value_column)
     except Exception as exc:
-        raise _fail(f"Falha na limpeza: {exc}")
+        raise _fail(f"Cleaning failed: {exc}")
 
-    clean_summary = _register(result.clean, f"{entry.label} · limpo", "clean", entry.id)
+    clean_summary = _register(result.clean, f"{entry.label} · clean", "clean", entry.id)
     removed_summary = None
     if len(result.removed):
         removed_summary = _register(
-            result.removed, f"{entry.label} · removidos", "clean_removed", entry.id
+            result.removed, f"{entry.label} · removed", "clean_removed", entry.id
         )
 
     state.get(clean_summary["id"]).reports["clean"] = result.report
@@ -482,7 +481,7 @@ def clean_dataset(dataset_id: str, request: CleanRequest) -> dict[str, Any]:
 
 
 # ==========================================================================
-# Análise DIFM
+# DIFM analysis
 # ==========================================================================
 
 @app.post("/api/datasets/{dataset_id}/difm")
@@ -505,14 +504,14 @@ def difm(dataset_id: str, request: DifmRequest) -> dict[str, Any]:
             rate_max=request.rate_max,
         )
     except Exception as exc:
-        raise _fail(f"Falha na análise DIFM: {exc}")
+        raise _fail(f"DIFM analysis failed: {exc}")
     entry.reports["difm"] = report
     return report
 
 
 @app.post("/api/datasets/{dataset_id}/augmenta")
 def augmenta_report(dataset_id: str) -> dict[str, Any]:
-    """Cruzamento vigor × dose, específico de dados Augmenta."""
+    """Vigour against rate, specific to Augmenta data."""
     try:
         entry = state.get(dataset_id)
     except KeyError as exc:
@@ -523,12 +522,12 @@ def augmenta_report(dataset_id: str) -> dict[str, Any]:
 
 
 # ==========================================================================
-# Desenho de ensaio
+# Trial layout
 # ==========================================================================
 
 @app.post("/api/design")
 def design(request: DesignRequest) -> dict[str, Any]:
-    """Gera o desenho de faixas de um ensaio DIFM."""
+    """Generate the strip layout for a DIFM trial."""
     boundary: list[tuple[float, float]] | None = None
 
     if request.boundary_dataset_id:
@@ -539,14 +538,14 @@ def design(request: DesignRequest) -> dict[str, Any]:
         boundary = _boundary_from_dataset(entry.dataset)
         if boundary is None:
             raise _fail(
-                "O dataset escolhido não tem um contorno de talhão utilizável. "
-                "Importe um shapefile de contorno ou desenhe o talhão no mapa."
+                "The chosen dataset has no usable field boundary. Import a boundary "
+                "shapefile, or draw the field on the map."
             )
     elif request.boundary:
         boundary = [(float(p[0]), float(p[1])) for p in request.boundary]
 
     if not boundary:
-        raise _fail("Informe o contorno do talhão para desenhar o ensaio.")
+        raise _fail("Give the field boundary to lay the trial out on.")
 
     try:
         return difm_design.design_strips(
@@ -564,11 +563,11 @@ def design(request: DesignRequest) -> dict[str, Any]:
 
 
 def _boundary_from_dataset(dataset) -> list[tuple[float, float]] | None:
-    """Extrai um contorno do dataset.
+    """Extract a boundary from the dataset.
 
-    A ordem de preferência importa: um contorno declarado no arquivo é o
-    limite real do talhão, enquanto o casco convexo dos pontos é só o
-    envoltório de onde a máquina passou — e infla cabeceiras e desvios.
+    The order of preference matters: a boundary declared in the file is the
+    field's real limit, while the convex hull of the points is only the
+    envelope of where the machine drove — and it inflates headlands and detours.
     """
     from shapely.geometry import MultiPoint
     from shapely.ops import unary_union
@@ -599,16 +598,17 @@ def _boundary_from_dataset(dataset) -> list[tuple[float, float]] | None:
 
 
 # ==========================================================================
-# Exportação
+# Export
 # ==========================================================================
 
 
 @app.get("/api/datasets/{dataset_id}/setup")
 def dataset_setup(dataset_id: str) -> dict[str, Any]:
-    """Contorno e linhas de orientação de um dataset, como GeoJSON.
+    """A dataset's boundary and guidance lines, as GeoJSON.
 
-    É o que permite importar o setup de um monitor e mandá-lo para outro:
-    o contorno e as linhas AB atravessam o app sem nenhuma reconstrução.
+    This is what allows importing setup from one monitor and sending it to
+    another: the boundary and the AB lines cross the app without any
+    reconstruction.
     """
     try:
         entry = state.get(dataset_id)
@@ -619,7 +619,7 @@ def dataset_setup(dataset_id: str) -> dict[str, Any]:
     if not setup:
         boundary = _boundary_from_dataset(entry.dataset)
         if not boundary:
-            return {"available": False, "reason": "Este dataset não traz contorno nem linhas AB."}
+            return {"available": False, "reason": "This dataset carries no boundary and no AB lines."}
         setup = {"fields": [{
             "name": entry.dataset.meta.field_name or entry.label,
             "boundaries": [[{"type": 1, "points": boundary}]],
@@ -656,7 +656,7 @@ def dataset_setup(dataset_id: str) -> dict[str, Any]:
 
 @app.post("/api/guidance")
 def make_guidance(request: GuidanceRequest) -> dict[str, Any]:
-    """Cria uma linha AB a partir de uma direção ou de dois pontos."""
+    """Create an AB line from a direction, or from two points."""
     if request.point_a and request.point_b:
         try:
             line = guidance_mod.ab_line_from_points(
@@ -670,7 +670,7 @@ def make_guidance(request: GuidanceRequest) -> dict[str, Any]:
 
     boundary = _resolve_boundary(request.boundary, request.boundary_dataset_id)
     if request.angle_deg is None:
-        raise _fail("Informe a direção da linha, ou os pontos A e B.")
+        raise _fail("Give the line's direction, or points A and B.")
     try:
         line = guidance_mod.ab_line_from_direction(boundary, request.angle_deg, request.name)
     except ValueError as exc:
@@ -680,7 +680,7 @@ def make_guidance(request: GuidanceRequest) -> dict[str, Any]:
 
 @app.post("/api/export/package")
 def export_package(request: PackageRequest) -> dict[str, Any]:
-    """Monta o pacote completo para o monitor escolhido e devolve o ZIP."""
+    """Assemble the full package for the chosen monitor and return the ZIP."""
     profile = packages_mod.get_profile(request.monitor)
 
     boundary = None
@@ -728,17 +728,17 @@ def export_package(request: PackageRequest) -> dict[str, Any]:
     except HTTPException:
         raise
     except Exception as exc:
-        raise _fail(f"Falha ao montar o pacote: {exc}")
+        raise _fail(f"Failed to assemble the package: {exc}")
 
     if not result["contents"]:
         raise _fail(
-            f"Nada foi gerado para o {profile.label}. Verifique se há prescrição, "
-            "contorno ou linhas AB selecionados."
+            f"Nothing was generated for the {profile.label}. Check that a prescription, "
+            "a boundary or AB lines are selected."
         )
 
-    # A verificação roda sobre os arquivos recém-gravados, não sobre o que se
-    # pretendia gravar: é a diferença entre confiar no código e conferir o
-    # resultado. O ZIP só é montado depois.
+    # Verification runs over the files just written, not over what we intended
+    # to write: that is the difference between trusting the code and checking
+    # the result. The ZIP is only assembled afterwards.
     verification = validate_mod.validate_package(out_dir, request.monitor)
 
     zip_path = state.exports / f"{out_dir.name}.zip"
@@ -747,7 +747,7 @@ def export_package(request: PackageRequest) -> dict[str, Any]:
 
     return {
         **result,
-        "verificacao": verification,
+        "verification": verification,
         "observacoes": notes,
         "bundle": {
             "entries": bundle_info["entries"],
@@ -761,7 +761,7 @@ def _resolve_boundary(
     explicit: list[list[float]] | None,
     dataset_id: str | None,
 ) -> list[tuple[float, float]]:
-    """Resolve o contorno vindo do mapa ou de um dataset carregado."""
+    """Resolve the boundary coming from the map or from a loaded dataset."""
     if explicit:
         return [(float(p[0]), float(p[1])) for p in explicit]
     if dataset_id:
@@ -772,10 +772,10 @@ def _resolve_boundary(
         boundary = _boundary_from_dataset(entry.dataset)
         if boundary:
             return boundary
-    raise _fail("Informe o contorno do talhão, ou escolha um dataset que o contenha.")
+    raise _fail("Give the field boundary, or pick a dataset that carries one.")
 
 
-#: Grupo de unidades correspondente a cada tipo de dose do ISOXML.
+#: Unit group matching each ISOXML rate kind.
 RATE_KIND_GROUP = {"mass": "rate_mass", "volume": "rate_volume", "count": "rate_count"}
 
 
@@ -786,11 +786,11 @@ def _convert_features_rate(
     rate_unit: str,
     crop: str | None,
 ) -> tuple[dict[str, Any], str | None]:
-    """Converte a dose das feições para a unidade de gravação escolhida.
+    """Convert the features' rate to the chosen output unit.
 
-    O ISOXML é exceção: o padrão fixa a unidade de cada DDI, então a grade
-    sempre é escrita a partir do valor interno. Só shapefile, CSV e GeoJSON
-    levam a unidade pedida pelo usuário.
+    ISOXML is the exception: the standard fixes the unit of each DDI, so the
+    grid is always written from the internal value. Only shapefile, CSV and
+    GeoJSON carry the unit the user asked for.
     """
     group = RATE_KIND_GROUP.get(rate_kind, "rate_mass")
     internal = units_mod.UNIT_GROUPS[group]["internal"]
@@ -821,12 +821,12 @@ def _convert_features_rate(
             for feature in features.get("features", [])
         ],
     }
-    return converted, f"Dose convertida de {internal} para {rate_unit} na gravação."
+    return converted, f"Rate converted from {internal} to {rate_unit} when written."
 
 
 @app.post("/api/export")
 def export(request: ExportRequest) -> dict[str, Any]:
-    """Gera os arquivos pedidos e devolve os links de download."""
+    """Generate the requested files and return the download links."""
     outputs: list[dict[str, Any]] = []
     generated: list[Path] = []
     out_dir = state.exports / f"export_{len(list(state.exports.iterdir())) + 1}"
@@ -876,7 +876,7 @@ def export(request: ExportRequest) -> dict[str, Any]:
                     info = writers.write_geojson(features_out, out_dir / f"{base}.geojson")
                     generated.append(Path(info["path"]))
                 else:
-                    raise _fail(f"Formato de prescrição não suportado: '{fmt}'.")
+                    raise _fail(f"Unsupported prescription format: '{fmt}'.")
                 outputs.append({"format": fmt, **info})
 
         elif request.dataset_id:
@@ -891,7 +891,7 @@ def export(request: ExportRequest) -> dict[str, Any]:
                     if column in export_dataset.df.columns:
                         export_dataset.df[column] = export_dataset.df[column] / factor
                 notes.append(
-                    f"Colunas de dose convertidas de {internal} para {request.rate_unit}."
+                    f"Rate columns converted from {internal} to {request.rate_unit}."
                 )
             for fmt in request.formats:
                 if fmt == "shapefile":
@@ -913,18 +913,18 @@ def export(request: ExportRequest) -> dict[str, Any]:
                         export_dataset, out_dir / f"{base}.csv", columns=request.columns
                     )
                 else:
-                    raise _fail(f"Formato de dados não suportado: '{fmt}'.")
+                    raise _fail(f"Unsupported data format: '{fmt}'.")
                 generated.append(Path(info["path"]))
                 outputs.append({"format": fmt, **info})
         else:
-            raise _fail("Informe um dataset ou uma prescrição para exportar.")
+            raise _fail("Give a dataset or a prescription to export.")
 
     except HTTPException:
         raise
     except KeyError as exc:
         raise _fail(str(exc), 404)
     except Exception as exc:
-        raise _fail(f"Falha ao exportar: {exc}")
+        raise _fail(f"Export failed: {exc}")
 
     zip_path = out_dir / f"{base}.zip"
     bundle_info = writers.bundle(generated, zip_path)
@@ -932,7 +932,7 @@ def export(request: ExportRequest) -> dict[str, Any]:
 
     return {
         "outputs": outputs,
-        "observacoes": notes,
+        "notes": notes,
         "bundle": {
             "entries": bundle_info["entries"],
             "download_url": f"/api/download/{token}",
@@ -944,19 +944,19 @@ def export(request: ExportRequest) -> dict[str, Any]:
 
 @app.post("/api/validate")
 def validate_folder(path: str) -> dict[str, Any]:
-    """Verifica um pacote já gravado em disco, inclusive de outra sessão."""
+    """Check a package already written to disk, including from another session."""
     target = Path(path).expanduser()
     if not target.exists():
-        raise _fail(f"Pasta não encontrada: {target}")
+        raise _fail(f"Folder not found: {target}")
     return validate_mod.validate_package(target, "generic")
 
 
 @app.get("/api/inspect/card")
 def inspect_card(path: str) -> dict[str, Any]:
-    """Inventaria um cartão John Deere sem importar nada."""
+    """Inventory a John Deere card without importing anything."""
     target = Path(path).expanduser()
     if not target.exists():
-        raise _fail(f"Caminho não encontrado: {target}")
+        raise _fail(f"Path not found: {target}")
     inv = jd_mod.inventory(target)
     return {**inv.to_dict(), "layers": jd_mod.readable_layers(inv)}
 
@@ -978,7 +978,7 @@ def download(token: str):
 def index() -> HTMLResponse:
     index_file = STATIC_DIR / "index.html"
     if not index_file.exists():
-        raise _fail("Interface não encontrada. Reinstale o app.", 500)
+        raise _fail("Interface not found. Reinstall the app.", 500)
     return HTMLResponse(index_file.read_text(encoding="utf-8"))
 
 
