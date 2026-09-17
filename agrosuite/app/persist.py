@@ -16,7 +16,11 @@ round-trips coordinates bit for bit; GeoJSON would round them.
 
 Nothing here decides *when* to save, and no function reads the clock: the
 timestamp is passed in by the caller, so a saved file says what the caller
-meant it to say and the library is reproducible under test.
+meant it to say and the library is reproducible under test. There are two
+callers — the Save button in :mod:`agrosuite.app.routes.persist` and the
+auto-saver in :mod:`agrosuite.app.autosave` — and they write the same file
+through the same function, so a project saved by hand and one the app saved
+by itself are the same thing on disk.
 """
 
 from __future__ import annotations
@@ -105,7 +109,7 @@ def _read_recent() -> list[dict[str, Any]]:
 def _write_recent(items: list[dict[str, Any]]) -> None:
     path = _recent_file()
     path.parent.mkdir(parents=True, exist_ok=True)
-    _write_atomically(path, json.dumps({"recent": items}, indent=2).encode("utf-8"))
+    write_atomically(path, json.dumps({"recent": items}, indent=2).encode("utf-8"))
 
 
 def remember_recent(path: str | Path, saved_at: str | None = None) -> list[dict[str, Any]]:
@@ -126,6 +130,20 @@ def remember_recent(path: str | Path, saved_at: str | None = None) -> list[dict[
     items = [item for item in _read_recent() if item.get("path") != key]
     items.insert(0, {"path": key, "name": resolved.stem, "saved_at": saved_at})
     _write_recent(items[:RECENT_LIMIT])
+    return recent_files()
+
+
+def forget_recent(path: str | Path) -> list[dict[str, Any]]:
+    """Take a file off the recent list, and return what is left.
+
+    For a project that has moved: renamed, or followed a change of the
+    projects folder. Its old name would otherwise sit in the list as an
+    entry that is "not found" and leads nowhere — for the very project that
+    is open, under its new name, one line further up.
+    """
+    key = str(Path(path).expanduser().resolve())
+    items = [item for item in _read_recent() if item.get("path") != key]
+    _write_recent(items)
     return recent_files()
 
 
@@ -178,8 +196,21 @@ def save_session(state: session_mod.Session, path: str | Path, saved_at: str) ->
         "app": APP_MARKER,
         "app_version": __version__,
         "format": FORMAT_VERSION,
+        # When the work was left. It is what the app names when it offers to
+        # pick the project up again, so it is read straight off the manifest
+        # rather than off the file's own timestamp, which a copy would move.
         "saved_at": saved_at,
         "project": _project_to_manifest(state.project),
+        # Where the reader was: the dataset selected and the tab open. Coming
+        # back to a project on the Data tab with nothing selected is not
+        # coming back to where the work was left.
+        #
+        # This is an added key, not a new format version: files written
+        # before it exist on the owner's machine, and they still open (see
+        # _view_from_manifest). Bumping FORMAT_VERSION would have refused
+        # files this code reads perfectly well, and a version before this one
+        # ignores a manifest key it does not know.
+        "view": _view_to_manifest(state.view),
         "datasets": [],
     }
 
@@ -199,7 +230,7 @@ def save_session(state: session_mod.Session, path: str | Path, saved_at: str) ->
             compress_type=zipfile.ZIP_DEFLATED,
         )
 
-    _write_atomically(target, buffer.getvalue())
+    write_atomically(target, buffer.getvalue())
     return {
         "path": str(target),
         "saved_at": saved_at,
@@ -304,6 +335,20 @@ def _project_to_manifest(project: dict[str, Any]) -> dict[str, Any]:
     return data
 
 
+def _view_to_manifest(view: dict[str, Any] | None) -> dict[str, Any]:
+    """The view state as it goes into the manifest: only what it is for.
+
+    Text and nothing else, so that whatever the interface starts keeping
+    beside the two fields cannot turn a project file into something only
+    this version can read.
+    """
+    source = view or {}
+    return {
+        key: value if isinstance(value, str) and value else None
+        for key, value in ((key, source.get(key)) for key in session_mod.default_view())
+    }
+
+
 def _json_default(value: Any) -> Any:
     """Make the odd non-JSON value in a report serializable.
 
@@ -325,7 +370,7 @@ def _json_default(value: Any) -> Any:
     return str(value)
 
 
-def _write_atomically(target: Path, payload: bytes) -> None:
+def write_atomically(target: Path, payload: bytes) -> None:
     """Write to a sibling temporary file and move it over the target.
 
     The move is the only moment the target changes, so a crash or a full disk
@@ -436,6 +481,7 @@ def load_session(state: session_mod.Session, path: str | Path) -> dict[str, Any]
 
     state.clear()
     state.project = _project_from_manifest(manifest.get("project") or {})
+    state.view = _view_from_manifest(manifest.get("view"), [r["id"] for r, _ in restored])
 
     entries: list[session_mod.Entry] = []
     for record, dataset in restored:
@@ -459,6 +505,9 @@ def load_session(state: session_mod.Session, path: str | Path) -> dict[str, Any]
         # Handed back with the datasets so the interface can put the strips
         # back on the map without a second request.
         "design": state.project.get("design"),
+        # And so it can select the dataset and open the tab the session was
+        # left on, in the same round trip.
+        "view": dict(state.view),
     }
 
 
@@ -517,6 +566,28 @@ def _meta_from_dict(data: dict[str, Any]) -> DatasetMeta:
     # one more field must still open here.
     known = {item.name for item in dataclass_fields(DatasetMeta)}
     return DatasetMeta(**{key: value for key, value in data.items() if key in known})
+
+
+def _view_from_manifest(data: Any, dataset_ids: list[str]) -> dict[str, Any]:
+    """The view state a file carries, or an empty one when it carries none.
+
+    A project file written before the view existed is not a damaged file: it
+    simply says nothing about where the reader was, and the interface falls
+    back to what it has always done — the first dataset, the first tab.
+
+    A dataset id the file no longer holds is dropped rather than restored:
+    it would select nothing and leave the panel empty.
+    """
+    view = session_mod.default_view()
+    if not isinstance(data, dict):
+        return view
+    for key in view:
+        value = data.get(key)
+        if isinstance(value, str) and value:
+            view[key] = value
+    if view["dataset_id"] not in dataset_ids:
+        view["dataset_id"] = None
+    return view
 
 
 def _project_from_manifest(data: dict[str, Any]) -> dict[str, Any]:

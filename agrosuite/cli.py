@@ -8,6 +8,7 @@ leaves the computer.
 from __future__ import annotations
 
 import argparse
+import os
 import socket
 import sys
 import threading
@@ -59,8 +60,21 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 1
 
+    # Imported here rather than at the top: this module must still be able
+    # to print the "dependencies are not installed" message above, and the
+    # app package pulls in pandas on the way.
+    from .app import autosave
+
     port = find_free_port(args.port, args.host)
     url = f"http://{args.host}:{port}"
+
+    # This process is the app, so it is the one that saves the session by
+    # itself and picks the last project up again. The environment carries
+    # that, rather than the app object, because with --reload the app is
+    # imported in a child process — and because importing the app in a test
+    # or a script must not start a thread writing to somebody's Documents
+    # folder. Someone who has set it already, to "off", keeps that.
+    os.environ.setdefault(autosave.ENV_FLAG, "on")
 
     print(f"\n  AgroSuite is running at {url}")
     print("  Close this window to stop the app.\n")

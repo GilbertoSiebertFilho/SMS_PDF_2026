@@ -91,6 +91,21 @@
         </div>
         <button class="ghost small wide" id="btn-project-new"
                 title="Close every dataset and start again">New project</button>
+        <!-- The app also saves the project by itself, into a folder chosen
+             once. This is all it says about that while it works: where the
+             folder is, whether it is on, and one line for the last write.
+             No dialog — it is background work and should read as some. -->
+        <div class="autosave" id="autosave">
+          <label class="inline" title="Write this project to the projects folder as you work">
+            <input type="checkbox" id="autosave-toggle"> Save automatically
+          </label>
+          <div class="folder">
+            <span class="path" id="autosave-folder"></span>
+            <button class="ghost small" id="btn-projects-folder"
+                    title="Choose where projects are kept">Change folder…</button>
+          </div>
+          <div class="status" id="autosave-status"></div>
+        </div>
         <div id="project-file"></div>
         <div id="recent-projects"></div>
       </div>

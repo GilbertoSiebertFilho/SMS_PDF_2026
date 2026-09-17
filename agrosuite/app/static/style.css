@@ -438,6 +438,20 @@ dialog .foot {
 #recent-projects .item .name { word-break: normal; overflow-wrap: anywhere; font-size: 12px; }
 #recent-projects .item .when { display: block; font: 11px var(--mono); color: var(--text-faint); }
 
+/* Auto-save says its piece in three short lines under the buttons: the
+   switch, the folder, and how the last write went. Quiet on purpose — it is
+   background work, and only the failure line asks to be looked at. */
+.autosave { margin: 10px 0 4px; font-size: 12px; }
+.autosave > label.inline { color: var(--text-muted); gap: 6px; }
+.autosave .folder { display: flex; align-items: baseline; gap: 6px; margin-top: 4px; }
+.autosave .folder .path {
+  flex: 1; min-width: 0; font: 11px var(--mono); color: var(--text-faint);
+  word-break: break-all;
+}
+.autosave .folder button { flex: none; }
+.autosave .status { margin-top: 4px; font-size: 11px; color: var(--text-muted); }
+.autosave .status.problem { color: var(--warn); }
+
 /* ------------------------------------------------------------------ toast */
 
 #toasts {
@@ -453,6 +467,9 @@ dialog .foot {
 .toast.warn { border-left-color: var(--warn); }
 .toast .t { font-weight: 600; margin-bottom: 2px; }
 .toast .m { color: var(--text-muted); font-size: 12px; white-space: pre-wrap; }
+/* A toast that offers something to do — "Start a new project instead" —
+   keeps the offer inside it rather than sending anyone hunting for a menu. */
+.toast .act { margin-top: 8px; width: 100%; }
 
 .busy { pointer-events: none; opacity: .55; }
 /* Files or a folder held over the window: the whole app is the target, and

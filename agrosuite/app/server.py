@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import shutil
 import traceback
+from contextlib import asynccontextmanager
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -22,6 +23,7 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
+from . import autosave as autosave_mod
 from .. import demo as demo_mod
 from ..clean import pipeline as clean_pipeline
 from ..clean import steps as clean_steps
@@ -50,8 +52,40 @@ from . import session as session_mod
 
 STATIC_DIR = Path(__file__).parent / "static"
 
-app = FastAPI(title="AgroSuite", version="1.0.0")
 state = session_mod.Session()
+
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    """What the app does before it answers anything, and on the way out.
+
+    Before: it picks the last project back up, so that starting the app is
+    the same gesture as coming back to the work. After: it writes the
+    session one last time, because the final couple of seconds are the ones
+    the auto-saver's idle delay has not reached yet.
+
+    Both belong to the process that serves — the launcher says so through
+    the environment. An app object imported by a test or a script starts no
+    thread, reopens nothing and writes nothing.
+    """
+    if autosave_mod.enabled_for_process():
+        from .routes import persist as persist_routes
+
+        try:
+            persist_routes.resume_latest()
+        except Exception as exc:  # pragma: no cover - the app has to start
+            state.resumed = {"ok": False, "name": None, "reason": (
+                f"The last project could not be reopened: {exc}. The app has started "
+                "empty; nothing on disk was changed."
+            )}
+    autosave_mod.start(lambda: state)
+    try:
+        yield
+    finally:
+        autosave_mod.stop()
+
+
+app = FastAPI(title="AgroSuite", version="1.0.0", lifespan=lifespan)
 
 
 # ==========================================================================
@@ -305,6 +339,11 @@ def _register(
     entry.role = inherited or report.get("suggested_role")
     state.project["roles"][entry.id] = entry.role
 
+    # Every import comes through here — a file, a folder, a demo, a QGIS
+    # layer, a cleaned copy, a join, a set of zones — which makes this the
+    # one place that has to say the session changed for all of them.
+    state.touch()
+
     summary = entry.summary(state.display_units)
     summary["preflight"] = report
     return summary
@@ -371,6 +410,7 @@ def redeclare_units(dataset_id: str, request: UnitsRequest) -> dict[str, Any]:
     # in and stated what it means. Making them tick a second box would be
     # asking the same question twice.
     state.project["reviewed"].add(summary["id"])
+    state.touch()
     return {"dataset": summary, "conversions": applied}
 
 
@@ -502,6 +542,9 @@ def update_project(request: ProjectRequest) -> dict[str, Any]:
         if request.goal not in workflow_mod.GOALS:
             raise _fail(f"Unknown goal: '{request.goal}'.")
         state.project["goal"] = request.goal
+    # The project's name is also the auto-saved file's name: renaming it
+    # here renames the file, rather than leaving the old one behind.
+    state.touch()
     return _project_state()
 
 
@@ -520,6 +563,7 @@ def set_role(request: RoleRequest) -> dict[str, Any]:
     entry.role = request.role
     state.project["roles"][request.dataset_id] = request.role
     state.project["reviewed"].add(request.dataset_id)
+    state.touch()
     return _project_state()
 
 
@@ -531,6 +575,7 @@ def set_prices(request: PricesRequest) -> dict[str, Any]:
         "currency": request.currency,
         "crop": request.crop,
     }
+    state.touch()
     return _project_state()
 
 
@@ -568,6 +613,7 @@ def join_project(request: JoinRequest) -> dict[str, Any]:
     state.project["roles"].pop(summary["id"], None)
     state.get(summary["id"]).role = None
     state.get(summary["id"]).reports["join"] = report
+    state.touch()
     return {"dataset": summary, "report": report, "cell_m": cell_m}
 
 
@@ -668,6 +714,7 @@ def usb_write(request: UsbRequest) -> dict[str, Any]:
     except ValueError as exc:
         raise _fail(str(exc))
     state.project["exported"] = True
+    state.touch()
     return result
 
 
@@ -855,6 +902,7 @@ def get_dataset(dataset_id: str) -> dict[str, Any]:
 @app.delete("/api/datasets/{dataset_id}")
 def delete_dataset(dataset_id: str) -> dict[str, Any]:
     state.remove(dataset_id)
+    state.touch()
     return {"ok": True}
 
 
@@ -970,6 +1018,7 @@ def clean_dataset(dataset_id: str, request: CleanRequest) -> dict[str, Any]:
 
     state.get(clean_summary["id"]).reports["clean"] = result.report
     entry.reports["clean"] = result.report
+    state.touch()
 
     return {
         "report": result.report,
@@ -1012,6 +1061,7 @@ def difm(dataset_id: str, request: DifmRequest) -> dict[str, Any]:
     except Exception as exc:
         raise _fail(f"The economic analysis failed: {exc}")
     entry.reports["difm"] = report
+    state.touch()
     return report
 
 
@@ -1024,6 +1074,7 @@ def augmenta_report(dataset_id: str) -> dict[str, Any]:
         raise _fail(str(exc), 404)
     report = augmenta_mod.vigor_rate_summary(entry.dataset)
     entry.reports["augmenta"] = report
+    state.touch()
     return report
 
 
@@ -1078,6 +1129,7 @@ def design(request: DesignRequest) -> dict[str, Any]:
         "dataset_id": request.boundary_dataset_id,
         "created_at": datetime.now().astimezone().isoformat(timespec="seconds"),
     }
+    state.touch()
     return result
 
 

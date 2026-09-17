@@ -1,4 +1,5 @@
-"""Project file endpoints: save the session, reopen it, start afresh.
+"""Project file endpoints: save the session, reopen it, start afresh, and
+pick it up where it was left.
 
 The library that writes and reads the file is :mod:`agrosuite.app.persist`;
 this module only decides *where* a save goes, *whether* an existing file may
@@ -6,6 +7,12 @@ be replaced, and what to tell the user when either goes wrong. It also
 remembers which file the session came from or last went to, so that
 re-saving it asks nothing and reloading the page does not forget it, and it
 looks at a file before the session is given up for it.
+
+The app also saves by itself, into the projects folder
+(:mod:`agrosuite.app.autosave`). Two ends of that live here: the start-up
+reopen, which puts the last project back before anyone asks, and the view
+state, which is what makes the reopened session look like the one that was
+left rather than a list of layers on an empty map.
 """
 
 from __future__ import annotations
@@ -18,8 +25,10 @@ from typing import Any
 from fastapi import APIRouter, File, UploadFile
 from pydantic import BaseModel
 
+from .. import autosave as autosave_mod
 from .. import persist as persist_mod
 from .. import session as session_mod
+from .. import settings as settings_mod
 
 router = APIRouter(prefix="/api/session", tags=["session"])
 
@@ -43,6 +52,17 @@ class SaveRequest(BaseModel):
 
 class OpenRequest(BaseModel):
     path: str
+
+
+class ViewRequest(BaseModel):
+    """Where the reader is: the dataset selected, the tab open.
+
+    Both optional, because the interface sends whichever it knows: a tab is
+    open before anything is loaded, and a dataset can be selected on any tab.
+    """
+
+    dataset_id: str | None = None
+    tab: str | None = None
 
 
 def _strip_quotes(raw: str) -> str:
@@ -189,6 +209,11 @@ def save_session(request: SaveRequest) -> dict[str, Any]:
 
     token = state.register_file(target)
     state.project_file = {"path": target, "saved_at": saved_at, "token": token}
+    # The name given here is the project's, and the auto-saved file is named
+    # after the project: a save under a new name renames that file too,
+    # rather than leaving a copy of the work under the old one.
+    if name != previous_name:
+        state.touch()
     return {
         "path": str(target),
         "name": target.stem,
@@ -263,6 +288,12 @@ def _open(path: Path, remember: bool) -> dict[str, Any]:
         raise server_mod._fail(f"Could not open '{path.name}': {exc}")
 
     state.project_file = {"path": path, "saved_at": result["saved_at"], "token": None}
+    _adopt_for_autosave(state, path)
+    # A project that has just been opened is a session the auto-saver has
+    # never written. If it came from the projects folder that write goes
+    # straight back to the same file; if it came from a USB stick or a
+    # mailbox, this is what gives it a home on this machine.
+    state.touch()
     return {
         "path": str(path),
         "name": path.stem,
@@ -270,9 +301,27 @@ def _open(path: Path, remember: bool) -> dict[str, Any]:
         "project": result["project"],
         "datasets": result["datasets"],
         "design": result["design"],
+        "view": result["view"],
         "file": _file_payload(state),
         "warning": _add_to_recent(path, result["saved_at"]) if remember else None,
     }
+
+
+def _adopt_for_autosave(state: session_mod.Session, path: Path) -> None:
+    """Let the auto-saver carry on with the file that was just opened.
+
+    A project opened out of the projects folder keeps writing to itself —
+    the same file, one history, and the one the app offers to pick up next
+    time. A project opened from anywhere else is left alone: writing an
+    auto-save into somebody's Downloads folder, or onto a USB stick that
+    will be pulled out, is not what the folder they chose is for, so the
+    auto-saver gives it a file of its own on the next change.
+    """
+    try:
+        folder = settings_mod.read().projects_dir
+        state.autosave_path = path if path.parent == folder.resolve() else None
+    except OSError:
+        state.autosave_path = None
 
 
 @router.post("/open")
@@ -310,12 +359,152 @@ async def upload_session(file: UploadFile = File(...)) -> dict[str, Any]:
 
 @router.get("/recent")
 def recent_sessions() -> dict[str, Any]:
-    """Recently saved or opened project files, most recent first, and the
-    file the session is on now — the interface asks for both on every load,
-    which is what lets a reloaded page know where the next save goes."""
+    """What a page needs the moment it loads.
+
+    Recently saved or opened project files, most recent first; the file the
+    session is on now, which is what lets a reloaded page know where the
+    next save goes; where the reader was, so the page can come back to it;
+    and whether the app reopened a project by itself when it started.
+
+    That last one is handed over once and then forgotten: the toast it
+    produces offers to start a new project instead, and offering that again
+    every time the page is reloaded would be nagging about a decision
+    already made.
+    """
     from agrosuite.app import server as server_mod
 
-    return {"recent": persist_mod.recent_files(), "current": _file_payload(server_mod.state)}
+    state = server_mod.state
+    resumed, state.resumed = state.resumed, None
+    return {
+        "recent": persist_mod.recent_files(),
+        "current": _file_payload(state),
+        "view": dict(state.view),
+        "resumed": resumed,
+    }
+
+
+@router.put("/view")
+def set_view(request: ViewRequest) -> dict[str, Any]:
+    """Record which dataset is selected and which tab is open.
+
+    It is saved with the project, so a change here is a change to the
+    session like any other. The interface sends it when it actually changes
+    — not while the mouse moves — and identical values are not treated as a
+    change at all, or clicking the same tab twice would write the file.
+    """
+    from agrosuite.app import server as server_mod
+
+    state = server_mod.state
+    view = dict(state.view)
+    for key, value in (("dataset_id", request.dataset_id), ("tab", request.tab)):
+        if value is not None:
+            view[key] = value
+    if view != state.view:
+        state.view = view
+        state.touch()
+    return {"view": dict(state.view)}
+
+
+@router.get("/autosave")
+def autosave_status() -> dict[str, Any]:
+    """Whether the session is saving itself, where, and how that is going.
+
+    The status line in the panel reads this: "Saved 12:04", "Saving…", or
+    the reason it could not and what to do about it.
+    """
+    from agrosuite.app import server as server_mod
+
+    return autosave_mod.status(server_mod.state)
+
+
+@router.get("/latest")
+def latest_session() -> dict[str, Any]:
+    """The project that would be picked up again, without loading it.
+
+    ``available`` says there is one; ``resumable`` says the app would
+    actually reopen it — which it only does into an empty session, and only
+    while auto-save is on. The name, the layer count and the time it was
+    saved come out of the manifest, so the interface can say which project
+    it is offering before anything is read.
+    """
+    from agrosuite.app import server as server_mod
+
+    state = server_mod.state
+    config = settings_mod.read()
+    candidate = autosave_mod.latest_project(config.projects_dir)
+    return {
+        "available": candidate is not None,
+        "resumable": bool(candidate and config.autosave and not state.list()),
+        "folder": str(config.projects_dir),
+        "project": candidate,
+    }
+
+
+def resume_latest() -> dict[str, Any] | None:
+    """Reopen the last project, on start-up, into an empty session.
+
+    This is what "pick it up where I left off" comes down to: the app is
+    started by double-clicking, and the session it had is the one it should
+    still have. It is done here rather than asked about in the interface,
+    because a question at every start-up is a worse deal than a toast with
+    'Start a new project instead' in it — one click to undo, and no click at
+    all in the usual case.
+
+    It never stops the app from starting. A folder that is not there, a file
+    from a newer version, a damaged ZIP: each is reported on the session as
+    something to say in the interface, and the app opens empty.
+    """
+    from agrosuite.app import server as server_mod
+
+    state = server_mod.state
+    config = settings_mod.read()
+    if not config.autosave or state.list():
+        return None
+
+    found = autosave_mod.scan(config.projects_dir)
+    candidate, skipped = found["project"], found["skipped"]
+    if candidate is None:
+        if not skipped:
+            return None
+        # Nothing in the folder opens. Starting empty and saying nothing
+        # would look exactly like work that had gone.
+        first = skipped[0]
+        state.resumed = {"ok": False, "name": first["name"], "skipped": skipped, "reason": (
+            f"The newest project in {config.projects_dir} could not be read: "
+            f"{first['reason']} The app has started empty and the file was not "
+            "changed — open it with 'Open project' to see the whole message."
+        )}
+        return state.resumed
+
+    path = Path(candidate["path"])
+    try:
+        result = persist_mod.load_session(state, path)
+    except Exception as exc:
+        state.resumed = {"ok": False, "name": path.stem, "path": str(path), "reason": (
+            f"'{path.name}' could not be reopened: {exc} The app has started empty; "
+            "the file was not changed, and 'Open project' will say more about it."
+        )}
+        return state.resumed
+
+    state.project_file = {"path": path, "saved_at": result["saved_at"], "token": None}
+    # The file is its own auto-save from here on: the same file keeps the
+    # project's history rather than a second one appearing beside it. It is
+    # deliberately not marked as changed — what is on disk already says
+    # exactly this, and writing it again would only move its clock.
+    state.autosave_path = path
+    state.resumed = {
+        "ok": True,
+        "path": str(path),
+        "name": path.stem,
+        "project": result["project"],
+        "saved_at": result["saved_at"],
+        "datasets": len(result["datasets"]),
+        # Anything newer that could not be read. The project that came back
+        # is the right one to offer, but a file the app walked past on the
+        # way to it is the one the person will be looking for.
+        "skipped": skipped,
+    }
+    return state.resumed
 
 
 @router.post("/new")
@@ -325,6 +514,12 @@ def new_session() -> dict[str, Any]:
     Files already generated for download stay reachable: they are on disk
     and the tokens cost nothing, whereas a link that stops working the moment
     a new project starts would surprise anyone who had just exported.
+
+    The project that was open stays on disk exactly as it was. Starting a
+    new one lets go of the file — ``Session.clear`` drops it — so the next
+    auto-save writes a new file beside it rather than emptying that one:
+    "new project" is not "delete the last one", and this is also the button
+    the start-up toast offers, one click after the app reopened something.
     """
     from agrosuite.app import server as server_mod
 

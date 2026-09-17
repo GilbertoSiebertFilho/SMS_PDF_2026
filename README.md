@@ -7,7 +7,8 @@ what the trial earned, and generate the files to take back to the monitor —
 already laid out the way each terminal expects.
 
 Everything runs on your computer. No data leaves the machine: the server
-listens only on `127.0.0.1` and the files live in a session folder.
+listens only on `127.0.0.1`, the working files live in a session folder, and
+the projects in a folder of your choosing.
 
 ![workflow](docs/workflow.svg)
 
@@ -285,6 +286,51 @@ copied to another computer with a text editor. A file the app cannot read is
 refused, not overwritten; a profile typed into it that the app would refuse
 to save is listed as *needs attention* and not applied until it is fixed.
 
+## Your projects
+
+A **project file** (`.agrosuite`) is the whole session in one file: every
+dataset with its geometry, the cleaning report with the reason each record
+was removed, the roles, the prices, the trial layout — and the dataset you
+had selected with the tab you had open. Opening one puts all of it back,
+under the same dataset ids, so every report still points at the layer it
+describes.
+
+You do not have to remember to write it. The app keeps projects in a folder
+you choose once — **Documents/AgroSuite** until you say otherwise — and
+writes the project there a couple of seconds after each change: a file
+imported, units declared, a cleaning run, the economics, a trial laid out,
+a role, a price, a renamed project. It writes when you stop, not while you
+work, and once more when the app closes.
+
+Start the app again and it opens on what you left — the same layers, the
+same reports, the same dataset selected, the same tab open — and says which
+project it picked up and when it was saved. If that is not the one you
+wanted, **Start a new project instead** is in the same line.
+
+Nothing is lost on the way:
+
+- the version before the last save is kept beside it as
+  `<name>.agrosuite.backup`. One step back, replaced at every save, which is
+  what it takes to undo an auto-save made over a mistake;
+- an empty session is never written over a project that holds data, so
+  starting a new project cannot empty the file you just closed;
+- rename the project and the file is renamed with it; change the folder and
+  the project moves there rather than leaving a copy behind under the old
+  name;
+- a project whose name matches a file already in the folder gets a file of
+  its own beside it — `Untitled project 2.agrosuite` — rather than writing
+  over a project it did not create;
+- a save that fails — a full disk, a USB drive pulled out, a folder gone
+  read-only — is said once, quietly, in the panel, with the reason, and the
+  next change tries again. Nothing you were doing is interrupted.
+
+The switch, the folder and that one line are in the **Project file** block
+on the left. Turn the switch off and the app behaves as it always did:
+nothing is written until you press **Save project**, which still writes
+wherever you point it. The folder itself is remembered in
+`~/.agrosuite/settings.json`, beside the machine profiles — `AGROSUITE_HOME`
+moves both.
+
 ## Check before you take it out
 
 Every package goes through an automatic check, run **over the files already
@@ -357,10 +403,17 @@ any other monitor without redrawing anything.
 ## Development
 
 ```
-python -m pytest tests/ -q          # 800 tests, about five minutes
+python -m pytest tests/ -q          # 880 tests, about five minutes
 python tests/fixtures.py samples    # sample files for every monitor
 python -m agrosuite --reload        # server with auto-reload
 ```
+
+The app saves and reopens projects only when it is started the way the
+launcher starts it (`python -m agrosuite`, which is what `run.bat` runs).
+An app object imported by a script or a test writes nothing of its own —
+importing a module should not start writing to somebody's Documents folder
+— and `AGROSUITE_AUTOSAVE=off` keeps the writer out of the way even when
+the launcher started it.
 
 The tests run against files that mimic each platform's real export — same
 column names, same units, same folder structure. If a manufacturer changes a

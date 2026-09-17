@@ -2,7 +2,11 @@
 
 Since AgroSuite runs locally and for one person, state lives in memory: the
 loaded datasets, the cleaning and analysis results, and the files generated
-for export. Nothing is written to disk unless the user asks.
+for export. What is on disk is a copy: the auto-saver writes the session to
+the projects folder whenever it has changed and gone quiet (see
+:mod:`agrosuite.app.autosave`), and it is this object that says when that
+happened — :meth:`Session.touch`, called by every route that changes
+anything.
 
 A dataset is never overwritten. Cleaning produces two new datasets — clean
 and removed — that live alongside the original. That is what makes it
@@ -40,6 +44,7 @@ from __future__ import annotations
 import shutil
 import tempfile
 import threading
+import time
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -136,6 +141,19 @@ def default_project() -> dict[str, Any]:
     }
 
 
+def default_view() -> dict[str, Any]:
+    """Where the reader is, as a fresh session starts: nowhere in particular.
+
+    The two things that decide what is on screen — which dataset is selected
+    and which tab is open — and nothing else. They are saved with the project
+    so that reopening it lands on the work rather than on the Data tab with
+    an empty map, and they are kept here rather than in the browser because
+    the browser is reloaded, replaced and closed, while the session is what
+    gets written to the file.
+    """
+    return {"dataset_id": None, "tab": None}
+
+
 class Session:
     """In-memory repository for the session's data."""
 
@@ -150,6 +168,22 @@ class Session:
         # than in the browser so that reloading the page does not forget
         # where the next save should go.
         self.project_file: dict[str, Any] | None = None
+        # The file the auto-saver writes this session to, inside the projects
+        # folder, or None until it has chosen one. Kept here because it
+        # belongs to the session: a rename moves it, a new project drops it,
+        # and a reopened project inherits the file it came out of.
+        self.autosave_path: Path | None = None
+        # What the app reopened by itself when it started, until the
+        # interface has said so once. See routes.persist.resume_latest.
+        self.resumed: dict[str, Any] | None = None
+        # Which dataset is selected and which tab is open.
+        self.view: dict[str, Any] = default_view()
+        # How many times the session has changed, and when it last did.
+        # Together they are the whole of what the auto-saver watches: a
+        # number that has moved since the last write, and a clock that has
+        # been still long enough to suggest the person has stopped typing.
+        self.revision: int = 0
+        self.touched_at: float = time.monotonic()
         # The unit set every sentence is written in, until the interface
         # says otherwise: the app's default preset, the same one the
         # pickers open on.
@@ -161,6 +195,20 @@ class Session:
         self.exports = self.workdir / "exports"
         self.uploads.mkdir(parents=True, exist_ok=True)
         self.exports.mkdir(parents=True, exist_ok=True)
+
+    # -- what has changed ------------------------------------------------
+    def touch(self) -> None:
+        """Say that something in the session changed.
+
+        Every route that changes state calls this, and it does the least it
+        can — one increment and one clock reading — because it is on the way
+        out of an import of a million records as much as on the way out of a
+        tick box. Deciding what to do about the change is somebody else's
+        job: see :mod:`agrosuite.app.autosave`.
+        """
+        with self._lock:
+            self.revision += 1
+            self.touched_at = time.monotonic()
 
     # -- datasets --------------------------------------------------------
     def add(
@@ -212,10 +260,15 @@ class Session:
 
     def clear(self) -> None:
         # Whatever replaces the datasets — a new project, a reopened file —
-        # is no longer what the remembered file holds, so the link goes too.
+        # is no longer what the remembered file holds, so the link goes too,
+        # and so does the file the auto-saver was writing: the next project
+        # gets a file of its own rather than being written over the last
+        # one. The view goes with the datasets it pointed at.
         with self._lock:
             self._entries.clear()
             self.project_file = None
+            self.autosave_path = None
+            self.view = default_view()
 
     # -- files -----------------------------------------------------------
     def register_file(self, path: Path) -> str:

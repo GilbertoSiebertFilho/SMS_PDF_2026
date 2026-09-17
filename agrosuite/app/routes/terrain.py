@@ -394,6 +394,7 @@ def analyze(request: AnalyzeRequest) -> dict[str, Any]:
     # Replaces any earlier report: an analysis re-run with other options is
     # the one the user now wants to read.
     entry.reports["terrain"] = summary
+    server_mod.state.touch()
     return {
         "dataset_id": request.dataset_id,
         "summary": analysis_mod.restate(summary, units),
@@ -652,6 +653,7 @@ def yield_against_relief(dataset_id: str, request: YieldReliefRequest) -> dict[s
     except ValueError as exc:
         raise server_mod._fail(str(exc), 400)
     entry.reports["terrain_yield"] = summary
+    server_mod.state.touch()
     return {**summary, "findings": yieldrelief.findings(summary, units)}
 
 
@@ -697,6 +699,7 @@ def zones(dataset_id: str, request: ZonesRequest) -> dict[str, Any]:
     server_mod.state.project["roles"].pop(summary["id"], None)
     server_mod.state.get(summary["id"]).role = None
     summary["role"] = None
+    server_mod.state.touch()
 
     zone_labels = dataset.meta.extra.get("zone_labels", {})
     return {

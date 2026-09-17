@@ -24,8 +24,14 @@ const App = {
     drawing: null,
     projectFile: null,   // the .agrosuite file open or last saved, as the server reports it
     projectOpen: false,  // the path dialog is picking a project, not data
+    folderPick: false,   // ...or the folder projects are kept in
     saving: false,       // a project save is on its way
     recent: null,
+    settings: null,      // the projects folder and the auto-save switch, from the server
+    autosaveProblem: null, // the failure already reported, so it is reported once
+    autosaveSeen: null,  // the auto-saved file the panel has already been told about
+    view: null,          // where the reader is, as the server last heard it
+    viewTimer: null,
     machinePicked: {},   // the machine picked on each tab, by name: a redraw must not forget it
     machinePlaced: {},   // what the app put in a physical field, with its exact metric number
     terrain: null,       // the relief analysis on screen: {id, summary, layers, ...}
@@ -65,15 +71,25 @@ const App = {
 
   /* ------------------------------------------------------------- toasts */
 
-  toast(title, message = "", kind = "") {
+  /* ``action`` is {label, run}: something the toast offers to do about what
+   * it is reporting — undoing an auto-resume, say. An offer has to outlast
+   * a glance, so a toast carrying one stays up four times as long. */
+  toast(title, message = "", kind = "", action = null) {
     const box = document.getElementById("toasts");
     const node = document.createElement("div");
     node.className = `toast ${kind}`;
     node.innerHTML = `<div class="t"></div><div class="m"></div>`;
     node.querySelector(".t").textContent = title;
     node.querySelector(".m").textContent = message;
+    if (action) {
+      const button = document.createElement("button");
+      button.className = "small act";
+      button.textContent = action.label;
+      button.addEventListener("click", () => { node.remove(); action.run(); });
+      node.appendChild(button);
+    }
     box.appendChild(node);
-    setTimeout(() => node.remove(), kind === "error" ? 11000 : 5000);
+    setTimeout(() => node.remove(), action ? 20000 : kind === "error" ? 11000 : 5000);
   },
 
   async busy(node, fn) {
@@ -107,28 +123,25 @@ const App = {
     this.bindDialogs();
     this.bindMachineDialog();
     this.bindProjectFiles();
+    this.bindAutosave();
     this.renderTab();
     this.refreshDatasets().then(async () => {
       await this.refreshProject();
-      // A reload keeps the server's session but not the page's selection,
-      // and a full list over an empty map reads as if the data were gone.
-      // The first dataset is selected, as it is when a project is reopened.
-      if (this.state.datasets.length && !this.state.selectedId) {
-        await this.selectDataset(this.state.datasets[0].id);
-      }
+      // The recent list first, because it brings the view the server holds:
+      // a reload keeps the session but not the page's selection, and so does
+      // a restart, after which the session is the one the app reopened by
+      // itself. Either way the page comes back where the work was left.
+      await this.refreshRecent();
+      await this.restoreView();
     });
-    this.refreshRecent();
+    this.refreshSettings();
+    this.watchAutosave();
   },
 
   bindTopbar() {
     document.getElementById("steps").addEventListener("click", (event) => {
       const button = event.target.closest("button[data-tab]");
-      if (!button) return;
-      this.state.tab = button.dataset.tab;
-      for (const b of document.querySelectorAll("#steps button")) {
-        b.setAttribute("aria-selected", String(b === button));
-      }
-      this.renderTab();
+      if (button) this.openTab(button.dataset.tab);
     });
 
     document.getElementById("theme-toggle").addEventListener("click", () => {
@@ -279,6 +292,7 @@ const App = {
     await this.loadMap();
     if (detail.bounds) MapView.fit(detail.bounds);
     this.renderTab();
+    this.noteView();
   },
 
   buildColorColumns(columns) {
@@ -4334,7 +4348,7 @@ Object.assign(App, {
     }
 
     document.getElementById("btn-open-path").addEventListener("click", () => {
-      this.setPathDialogMode(false);
+      this.setPathDialogMode("data");
       document.getElementById("dlg-path").showModal();
       this.browse("");
     });
@@ -4552,6 +4566,13 @@ Object.assign(App, {
     document.getElementById("btn-path-open").addEventListener("click", async () => {
       const path = this.value("path-input");
       if (!path) return;
+      // Choosing the projects folder: the same browser, used for the folder
+      // itself rather than for something inside it. The server decides
+      // whether it will do, so a refused folder leaves the picker open on it.
+      if (this.state.folderPick) {
+        await this.applyProjectsFolder(path);
+        return;
+      }
       // An .agrosuite file is a whole session, not one more layer: it goes to
       // "open", which replaces what is loaded, and never to import.
       if (this.state.projectOpen || this.isProjectFile(path)) {
@@ -4596,7 +4617,11 @@ Object.assign(App, {
     box.innerHTML = "";
 
     if (!payload.entries.length) {
-      box.innerHTML = '<div class="empty">Nothing the app can open in this folder.</div>';
+      // An empty folder is the normal case when one is being chosen to keep
+      // projects in, and "nothing the app can open" would read as a refusal.
+      box.innerHTML = this.state.folderPick
+        ? '<div class="empty">This folder is empty. Press "Use this folder" to keep projects here.</div>'
+        : '<div class="empty">Nothing the app can open in this folder.</div>';
       return;
     }
     for (const entry of payload.entries) {
@@ -5509,7 +5534,7 @@ Object.assign(App, {
     // The same browser as "Open by path", pointed at projects: it lists
     // .agrosuite files already, and an .agrosuite pick goes to "open".
     document.getElementById("btn-project-open").addEventListener("click", () => {
-      this.setPathDialogMode(true);
+      this.setPathDialogMode("project");
       document.getElementById("path-input").value = "";
       document.getElementById("dlg-path").showModal();
       const last = (this.state.recent || []).find((item) => item.exists);
@@ -5518,13 +5543,20 @@ Object.assign(App, {
     });
     // Cancelled or not, the dialog is a plain data picker the next time.
     document.getElementById("dlg-path")
-      .addEventListener("close", () => this.setPathDialogMode(false));
+      .addEventListener("close", () => this.setPathDialogMode("data"));
   },
 
-  setPathDialogMode(project) {
-    this.state.projectOpen = project;
+  /* The path browser does three jobs: picking data to import, picking a
+   * project to open, and picking the folder projects are kept in. The mode
+   * decides the title, the button and where "Open" sends what was picked. */
+  setPathDialogMode(mode) {
+    this.state.projectOpen = mode === "project";
+    this.state.folderPick = mode === "folder";
     document.getElementById("dlg-path-title").textContent =
-      project ? "Open a project" : "Open by path";
+      mode === "project" ? "Open a project"
+        : mode === "folder" ? "Choose the projects folder" : "Open by path";
+    document.getElementById("btn-path-open").textContent =
+      mode === "folder" ? "Use this folder" : "Open";
   },
 
   /* ".agrosuite" is what the file browser and the drop zone go by: the
@@ -5640,8 +5672,14 @@ Object.assign(App, {
     // to; a copy kept only here would not survive a page reload, and the
     // next save would quietly go to the temporary folder.
     this.state.projectFile = payload.current;
+    // And where the reader was, which is the other half of coming back.
+    this.state.view = payload.view || this.state.view;
     this.renderProjectFile();
     this.renderRecentProjects();
+    // Handed over once, by the server: work that appeared on screen without
+    // being asked for has to be named, and the offer to undo it belongs
+    // with the notice rather than in a menu.
+    if (payload.resumed) this.announceResume(payload.resumed);
   },
 
   renderRecentProjects() {
@@ -5723,8 +5761,12 @@ Object.assign(App, {
     await this.sessionReplaced(result);
   },
 
-  async newProject() {
-    if (!this.confirmReplace("A new project")) return;
+  /* ``ask`` is false only where the question has already been answered:
+   * the start-up toast, whose "Start a new project instead" closes a project
+   * that was reopened from a file and is whole on disk. Asking "anything not
+   * saved is lost" there would be asking about nothing. */
+  async newProject(ask = true) {
+    if (ask && !this.confirmReplace("A new project")) return;
     const ok = await this.busy(document.querySelector("aside.left"), () =>
       this.api("/api/session/new", { method: "POST" }));
     if (!ok) return;
@@ -5735,7 +5777,18 @@ Object.assign(App, {
     await this.refreshDatasets();
     await this.refreshProject();
     this.renderTab();
-    this.toast("New project", "The session is empty. Load a file, or open a saved project.");
+    // What was open a moment ago is still on disk, whole. Naming it here is
+    // the way back if "New project" — or the start-up toast's offer — was a
+    // slip, without going looking for the file.
+    // The status line belongs to the project that was open; asked for now
+    // rather than at the next tick, it says "nothing to save yet" straight
+    // away instead of naming the file for another three seconds.
+    this.refreshAutosaveStatus();
+    const latest = await this.api("/api/session/latest").catch(() => null);
+    const last = latest?.project;
+    this.toast("New project", "The session is empty. Load a file, or open a saved project.",
+      "", last ? { label: `Reopen '${last.project}'`, run: () => this.openProject(last.path) }
+               : null);
   },
 
   /* Everything the client cached about the old session goes: the report
@@ -5773,8 +5826,19 @@ Object.assign(App, {
     await this.refreshDatasets();
     await this.refreshProject();
     this.refreshRecent();
-    if (this.state.datasets.length) await this.selectDataset(this.state.datasets[0].id);
+    // Where the file says the work was left. A file saved before the view
+    // was recorded says nothing, and the first dataset is picked as it
+    // always was.
+    this.state.view = result.view || { dataset_id: null, tab: null };
+    // The tab is read out before anything is selected: selecting notes the
+    // view, and what it would note is the tab the page is on now.
+    const openOn = this.state.view.tab;
+    const wanted = this.state.datasets.find((d) => d.id === this.state.view.dataset_id);
+    const target = wanted || this.state.datasets[0];
+    if (target) await this.selectDataset(target.id);
     else this.renderTab();
+    this.openTab(openOn);
+    this.refreshAutosaveStatus();
     this.toast(`Opened '${result.project}'`,
       `${result.datasets.length} dataset(s) from ${result.name}.agrosuite` +
       (result.saved_at ? `, saved ${this.when(result.saved_at)}.` : ".") +
@@ -5827,6 +5891,218 @@ Object.assign(App, {
     if (!report || this.state.tab !== "difm") return;
     this.state.reports[`${d.id}:difm`] = report;
     this.renderDifmReport(report);
+  },
+});
+
+/* ======================================================================
+ * Auto-save, the projects folder, and where the reader was
+ *
+ * The server writes the session to the projects folder as it is worked on
+ * and reopens it at start-up; the page's part is three small things. It
+ * says where that folder is and lets it be changed. It reports how the last
+ * write went in one line — background work, reported the way background
+ * work should be, with no dialog and nothing to dismiss. And it tells the
+ * server which dataset is selected and which tab is open, because that is
+ * the difference between reopening a project and coming back to it.
+ * ==================================================================== */
+
+Object.assign(App, {
+  bindAutosave() {
+    document.getElementById("autosave-toggle").addEventListener("change", (event) =>
+      this.setAutosave(event.target.checked));
+    document.getElementById("btn-projects-folder")
+      .addEventListener("click", () => this.chooseProjectsFolder());
+  },
+
+  /* ------------------------------------------------------------ settings */
+
+  async refreshSettings() {
+    const payload = await this.api("/api/settings").catch(() => null);
+    if (!payload) return;
+    this.state.settings = payload;
+    this.renderAutosave(payload.autosave_status);
+    // A settings file that could not be read, or a folder that could not be
+    // made, is said once when the app opens: the app works either way, on
+    // the defaults, and silence would make the folder in the panel a lie.
+    for (const problem of [payload.warning, payload.problem]) {
+      if (problem) this.toast("Projects folder", problem, "warn");
+    }
+  },
+
+  async setAutosave(on) {
+    const result = await this.busy(document.getElementById("autosave"), () =>
+      this.api("/api/settings", { method: "PUT", body: { autosave: on } }));
+    if (!result) {
+      // The switch shows what the server holds, not what was clicked.
+      this.renderAutosave(this.state.settings?.autosave_status || {});
+      return;
+    }
+    this.state.settings = result;
+    this.renderAutosave(result.autosave_status);
+    this.toast(on ? "Saving automatically" : "Auto-save off",
+      on ? `This project is written to ${result.projects_dir} as you work.`
+         : "Nothing is written from now on. 'Save project' still keeps a copy " +
+           "wherever you point it, and what is already saved stays where it is.");
+  },
+
+  async chooseProjectsFolder() {
+    // Asked again rather than remembered: the folder may have been made by
+    // a save since the page loaded, and the browser cannot list one that is
+    // not there yet — a folder waiting for its first save opens on home.
+    await this.refreshSettings();
+    this.setPathDialogMode("folder");
+    const folder = this.state.settings?.projects_dir || "";
+    document.getElementById("path-input").value = folder;
+    document.getElementById("dlg-path").showModal();
+    this.browse(this.state.settings?.exists ? folder : "");
+    this.toast("Choose the projects folder",
+      "Click through to the folder — or type its full path — and press " +
+      "'Use this folder'. The project open now moves there with it.");
+  },
+
+  async applyProjectsFolder(path) {
+    const result = await this.busy(document.getElementById("dlg-path"), () =>
+      this.api("/api/settings", { method: "PUT", body: { projects_dir: path } }));
+    if (!result) return;
+    document.getElementById("dlg-path").close();
+    this.state.settings = result;
+    this.renderAutosave(result.autosave_status);
+    this.toast("Projects folder", `${result.projects_dir}` +
+      (result.moved ? `\n${result.to.split(/[\\/]/).pop()} moved there with it.` : "") +
+      (result.problem ? `\n${result.problem}` : ""), result.problem ? "warn" : "");
+  },
+
+  /* -------------------------------------------------------- the one line */
+
+  /* The status is read on a slow timer rather than after each action: the
+   * write happens a couple of seconds after the change that caused it, so a
+   * line refreshed on the click would always report the save before last.
+   * Three seconds is cheap — one small JSON from a server on this machine —
+   * and keeps "Saving…" visible for as long as it is true. */
+  watchAutosave() {
+    this.refreshAutosaveStatus();
+    setInterval(() => this.refreshAutosaveStatus(), 3000);
+  },
+
+  async refreshAutosaveStatus() {
+    const status = await this.api("/api/session/autosave").catch(() => null);
+    if (status) this.renderAutosave(status);
+  },
+
+  renderAutosave(status) {
+    document.getElementById("autosave-toggle").checked = !!status.enabled;
+    document.getElementById("autosave-folder").textContent =
+      status.folder || this.state.settings?.projects_dir || "";
+    const line = document.getElementById("autosave-status");
+    line.textContent = this.autosaveLine(status);
+    line.classList.toggle("problem", status.state === "failed");
+
+    // A failure is reported once, with the reason and what to do; the line
+    // keeps it after the toast has gone. Repeating it every three seconds
+    // would be the app shouting about a disk the person is already dealing
+    // with, and saying nothing would hide it behind a small grey line.
+    // The block above names "the file the session is on", and the server
+    // fills that in the first time it writes one by itself. The page only
+    // learns it by asking, so it asks once per new file rather than on
+    // every tick of the status.
+    if (status.path && status.path !== this.state.autosaveSeen) {
+      this.state.autosaveSeen = status.path;
+      this.refreshRecent();
+    }
+
+    if (status.state === "failed" && status.message !== this.state.autosaveProblem) {
+      this.state.autosaveProblem = status.message;
+      this.toast("Not saved automatically", status.message, "warn");
+    }
+    if (status.state !== "failed") this.state.autosaveProblem = null;
+  },
+
+  autosaveLine(status) {
+    if (!status.enabled) return "Off — keep this session with 'Save project'.";
+    if (status.state === "failed") return status.message;
+    if (status.state === "saving") return "Saving…";
+    if (status.saved_at) return `Saved ${this.clock(status.saved_at)}`;
+    if (status.path) return `In ${status.path.split(/[\\/]/).pop()} — saved on the next change.`;
+    return this.state.datasets.length ? "Saving shortly…" : "Nothing to save yet.";
+  },
+
+  clock(iso) {
+    const date = new Date(iso);
+    return Number.isNaN(date.getTime()) ? String(iso)
+      : date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  },
+
+  /* ------------------------------------------------------ the start-up toast */
+
+  /* The app reopened the last project by itself. That has to be said: work
+   * appearing on screen nobody asked for is unsettling until it is named,
+   * and the way out is one click here rather than a question asked at every
+   * start-up — which is the same question, answered the same way, every day. */
+  announceResume(resumed) {
+    if (!resumed.ok) {
+      this.toast("Could not pick up where you left off", resumed.reason, "warn");
+      return;
+    }
+    // A newer file in the folder that would not open is named here rather
+    // than left for him to find: the project that came back is the right one
+    // to offer, but the one it walked past is the one he will look for.
+    const skipped = (resumed.skipped || []).map((item) => `\n${item.name}: ${item.reason}`);
+    this.toast(`Picked up '${resumed.project}'`,
+      `${resumed.datasets} dataset(s) from ${resumed.name}.agrosuite` +
+      (resumed.saved_at ? `, saved ${this.when(resumed.saved_at)}.` : ".") +
+      (skipped.length ? `\nNewer, and could not be read:${skipped.join("")}` : ""),
+      skipped.length ? "warn" : "",
+      { label: "Start a new project instead", run: () => this.newProject(false) });
+  },
+
+  /* ------------------------------------------------------------ the view */
+
+  /* Open a tab: from a click, or from where a project was left. */
+  openTab(name) {
+    if (!name || name === this.state.tab) return;
+    const button = document.querySelector(`#steps button[data-tab="${name}"]`);
+    // A tab named by a file this version no longer has is not an error to
+    // report; the tab that is open stays open.
+    if (!button) return;
+    this.state.tab = name;
+    for (const b of document.querySelectorAll("#steps button")) {
+      b.setAttribute("aria-selected", String(b === button));
+    }
+    this.renderTab();
+    this.noteView();
+  },
+
+  /* Tell the server where the reader is, so the project file can bring them
+   * back to it. Only when it has actually changed — clicking the tab that is
+   * already open is not a change worth writing a file for — and after a
+   * pause, so that clicking through four tabs is one request and one save
+   * rather than four of each. */
+  noteView() {
+    const view = { dataset_id: this.state.selectedId, tab: this.state.tab };
+    const known = this.state.view || {};
+    if (view.dataset_id === known.dataset_id && view.tab === known.tab) return;
+    this.state.view = view;
+    clearTimeout(this.state.viewTimer);
+    this.state.viewTimer = setTimeout(() => {
+      // Nothing on screen depends on this, and the next move sends it
+      // again: a failure here is not worth a message.
+      this.api("/api/session/view", { method: "PUT", body: view }).catch(() => {});
+    }, 600);
+  },
+
+  /* Where the session says the reader was, once the page has the datasets:
+   * after a reload, and after the app reopened a project at start-up. */
+  async restoreView() {
+    const wanted = this.state.datasets.find((d) => d.id === this.state.view?.dataset_id);
+    const target = wanted || this.state.datasets[0];
+    // Read out first, for the same reason as in sessionReplaced: selecting a
+    // dataset notes the view, and by then this.state.view would say the tab
+    // the page opened on rather than the one the session was left on.
+    const openOn = this.state.view?.tab;
+    // A full list over an empty map reads as if the data were gone, so
+    // something is always selected when there is something to select.
+    if (target && !this.state.selectedId) await this.selectDataset(target.id);
+    this.openTab(openOn);
   },
 });
 
