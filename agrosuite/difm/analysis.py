@@ -210,8 +210,8 @@ def analyze(
     trimmed, dropped = drop_strip_edges(df, rate_column, edge_margin_m)
     if dropped:
         notes.append(
-            f"{dropped} registros descartados por estarem a menos de "
-            f"{edge_margin_m:g} m da transição entre doses."
+            f"{dropped} registros descartados por caírem dentro da margem de borda "
+            "das faixas, onde as doses vizinhas se misturam."
         )
 
     group_columns = (zone_column,) if zone_column and zone_column in df.columns else ()
@@ -219,7 +219,7 @@ def analyze(
         trimmed, cell_m=cell_m, rate_column=rate_column,
         value_column=value_column, group_columns=group_columns,
     )
-    notes.append(f"{len(cells)} células de {cell_m:g} m utilizadas no ajuste.")
+    notes.append(f"{len(cells)} células utilizadas no ajuste da curva.")
 
     rates = cells["dose"].to_numpy(dtype="float64")
     yields = cells["rendimento"].to_numpy(dtype="float64")
@@ -269,6 +269,13 @@ def analyze(
         "coluna_dose": rate_column,
         "coluna_rendimento": value_column,
         "celulas": len(cells),
+        # Parâmetros ecoados em unidade interna, para a interface reexibi-los
+        # na unidade que o usuário escolheu.
+        "parametros": {
+            "cell_m": cell_m,
+            "edge_margin_m": edge_margin_m,
+            "registros_descartados_borda": dropped,
+        },
         "doses_testadas": sorted({round(float(r), 1) for r in np.unique(rates)}),
         "modelo_escolhido": best.to_dict(),
         "modelos_avaliados": [f.to_dict() for f in all_fits],

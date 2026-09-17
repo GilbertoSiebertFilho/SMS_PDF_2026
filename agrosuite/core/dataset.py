@@ -362,3 +362,63 @@ class Dataset:
             "area_ha": round(self.area_ha(), 2),
             "stats": self.stats(),
         }
+
+#: Colunas que aceitam declaração de unidade de origem, e o grupo de cada uma.
+SOURCE_UNIT_COLUMNS = {
+    sch.VALUE: "rate_mass",
+    sch.TARGET_RATE: "rate_mass",
+    sch.APPLIED_RATE: "rate_mass",
+    sch.SPEED: "speed",
+    sch.SWATH: "length",
+    sch.DISTANCE: "length",
+    sch.ELEVATION: "length",
+}
+
+
+def apply_source_units(
+    dataset: "Dataset",
+    declared: dict[str, str],
+    crop: str | None = None,
+) -> list[str]:
+    """Converte colunas da unidade declarada no arquivo para a unidade interna.
+
+    O monitor grava no sistema em que foi configurado — um John Deere norte-
+    americano entrega bu/ac, mph e pés; um Väderstad europeu entrega kg/ha,
+    km/h e metros. Sem declarar isso, um mapa em bu/ac seria lido como se
+    fosse kg/ha e todos os números sairiam 60 vezes menores.
+
+    Parameters
+    ----------
+    declared:
+        Mapa ``{coluna: unidade}``, ex. ``{"value": "bu/ac", "speed": "mph"}``.
+    crop:
+        Cultura, necessária para as unidades em bushel.
+
+    Returns
+    -------
+    list[str]
+        Descrição das conversões aplicadas, para registro nas notas.
+    """
+    applied: list[str] = []
+    for column, unit in (declared or {}).items():
+        if not unit or column not in dataset.df.columns:
+            continue
+        group = SOURCE_UNIT_COLUMNS.get(column)
+        if group is None:
+            continue
+        internal = units_mod.UNIT_GROUPS[group]["internal"]
+        if unit == internal:
+            continue
+        try:
+            factor = units_mod.unit_factor(group, unit, crop)
+        except ValueError:
+            continue
+        dataset.df[column] = pd.to_numeric(dataset.df[column], errors="coerce") * factor
+        label = sch.LABELS.get(column, column)
+        applied.append(f"{label}: convertido de {unit} para {internal}.")
+
+    if applied:
+        dataset.meta.notes.extend(applied)
+        if crop and not dataset.meta.crop:
+            dataset.meta.crop = crop
+    return applied

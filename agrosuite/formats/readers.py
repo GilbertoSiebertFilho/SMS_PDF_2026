@@ -180,6 +180,10 @@ def _guess_operation(df: pd.DataFrame, path: Path, brand: str) -> str:
         return "prescription"
     if any(k in cols for k in ("yield", "yld", "dry_yield", "moisture_pct", "flow_kgs")):
         return "harvest"
+    # Um log que traz dose alvo **e** medida é registro de aplicação: o alvo
+    # veio do mapa e o valor é o que a máquina entregou.
+    if sch.TARGET_RATE in cols and sch.VALUE in cols:
+        return "application"
     if any(k in text for k in ("harvest", "colheita", "yield", "rendimento")):
         return "harvest"
     if any(k in cols for k in ("vigor", "ndvi", "ndre", "biomass_index", "canopy")):
@@ -276,6 +280,12 @@ def read_shapefile(path: Path, brand_hint: str | None = None) -> Dataset:
         ds.meta.geometry_type = "line"
         if ds.meta.operation == "unknown":
             ds.meta.operation = "guidance"
+
+    # Um shapefile de contorno ou de linha AB é material de setup, não de
+    # análise: guardar a geometria em WGS84 permite reexportá-la para outro
+    # monitor sem passar por nenhuma conversão com perda.
+    if ds.meta.operation in ("boundary", "guidance"):
+        ds.meta.extra["field_setup"] = _setup_from_geometry(gdf, ds.meta.operation)
     return ds
 
 
@@ -384,3 +394,43 @@ def read_kml(path: Path, brand_hint: str | None = None) -> Dataset:
     if polygonal:
         ds.meta.operation = "boundary"
     return ds
+
+
+def _setup_from_geometry(gdf, operation: str) -> dict:
+    """Extrai contorno ou linhas de orientação de uma camada vetorial."""
+    rings: list[list[tuple[float, float]]] = []
+    lines: list[dict] = []
+
+    for _, row in gdf.iterrows():
+        geometry = row[gdf.geometry.name]
+        if geometry is None or geometry.is_empty:
+            continue
+        parts = geometry.geoms if geometry.geom_type.startswith("Multi") else [geometry]
+        for part in parts:
+            if part.geom_type == "Polygon":
+                rings.append([(float(x), float(y)) for x, y in part.exterior.coords])
+            elif part.geom_type == "LineString":
+                points = [(float(x), float(y)) for x, y in part.coords]
+                if len(points) < 2:
+                    continue
+                name = next(
+                    (str(row[c]) for c in ("name", "NAME", "Name", "label", "LABEL")
+                     if c in gdf.columns and row.get(c) is not None),
+                    f"Linha {len(lines) + 1}",
+                )
+                lines.append({
+                    "name": name,
+                    "type": 1 if len(points) == 2 else 3,  # AB ou curva gravada
+                    "a": points[0],
+                    "b": points[-1],
+                    "points": points,
+                })
+
+    field = {
+        "name": None,
+        "boundaries": [[{"type": 1, "points": r}] for r in rings],
+        "headlands": [],
+        "obstacles": [],
+        "guidance_lines": lines,
+    }
+    return {"fields": [field]}

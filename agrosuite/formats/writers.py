@@ -378,3 +378,222 @@ def bundle(paths: list[Path], zip_path: Path) -> dict[str, Any]:
                             added.append(sidecar.name)
 
     return {"path": str(zip_path), "entries": sorted(set(added))}
+
+
+# ==========================================================================
+# Pacote pronto para o monitor
+# ==========================================================================
+
+def build_package(
+    out_dir: Path,
+    monitor: str = "generic",
+    prescription: dict[str, Any] | None = None,
+    boundary: list[tuple[float, float]] | None = None,
+    guidance_lines: list[dict[str, Any]] | None = None,
+    dataset: Dataset | None = None,
+    rate_property: str = "dose",
+    rate_kind: str = "mass",
+    rate_unit: str = "kg/ha",
+    cell_m: float = 10.0,
+    field_name: str = "Talhao",
+    task_name: str = "Prescricao",
+    product_name: str = "Produto",
+    customer_name: str = "AgroSuite",
+    farm_name: str = "Fazenda",
+) -> dict[str, Any]:
+    """Monta a pasta que vai para o pen drive, no arranjo que o monitor espera.
+
+    Junta num só lugar tudo que a máquina precisa para executar o trabalho:
+    contorno do talhão, linhas de orientação e prescrição. O que a plataforma
+    escolhida não aceita é simplesmente omitido, e isso vai registrado no
+    resultado — é melhor o usuário saber que o Ag Leader não recebeu as linhas
+    AB do que descobrir na cabine.
+
+    Returns
+    -------
+    dict
+        ``{"folder", "contents", "skipped", "readme", "monitor"}``.
+    """
+    from . import packages as packages_mod
+
+    profile = packages_mod.get_profile(monitor)
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    contents: list[dict[str, Any]] = []
+    skipped: list[str] = []
+    rate_field: str | None = None
+
+    def subfolder(fmt: str) -> Path:
+        name = profile.layout.get(fmt, ".")
+        target = out_dir if name == "." else out_dir / name
+        target.mkdir(parents=True, exist_ok=True)
+        return target
+
+    # ---------------------------------------------------------------- ISOXML
+    wants_isoxml = any(
+        profile.preferred.get(artifact) == "isoxml"
+        for artifact in ("prescription", "boundary", "guidance")
+        if artifact in profile.accepts
+    )
+    iso_boundary = boundary if "boundary" in profile.accepts else None
+    iso_guidance = guidance_lines if "guidance" in profile.accepts else None
+    iso_prescription = None
+
+    if prescription and "prescription" in profile.accepts and wants_isoxml:
+        raster = rasterize_prescription(prescription, rate_property, cell_m)
+        iso_prescription = {
+            "grid": raster["grid"],
+            "min_lon": raster["min_lon"], "min_lat": raster["min_lat"],
+            "cell_lon": raster["cell_lon"], "cell_lat": raster["cell_lat"],
+            "rate_kind": rate_kind,
+        }
+        if iso_boundary is None:
+            iso_boundary = _outer_ring(prescription)
+
+    if wants_isoxml and (iso_boundary or iso_guidance or iso_prescription):
+        taskdata = isoxml_mod.write_field_setup(
+            subfolder("isoxml"),
+            field_name=field_name,
+            boundary=iso_boundary,
+            guidance_lines=iso_guidance,
+            customer_name=customer_name,
+            farm_name=farm_name,
+            prescription=iso_prescription,
+            task_name=task_name,
+            product_name=product_name,
+        )
+        parts = []
+        if iso_boundary:
+            parts.append("contorno")
+        if iso_guidance:
+            parts.append(f"{len(iso_guidance)} linha(s) AB")
+        if iso_prescription:
+            parts.append("prescrição em grade")
+        contents.append({
+            "artifact": "isoxml",
+            "path": str(Path(taskdata).relative_to(out_dir)),
+            "detail": ", ".join(parts),
+            "absolute": str(taskdata),
+        })
+
+    # ------------------------------------------------------------ shapefile
+    if prescription and "prescription" in profile.accepts:
+        target = subfolder("shapefile")
+        info = write_prescription_shapefile(
+            prescription, target / f"{_slug(task_name)}.shp",
+            brand=profile.key, rate_property=rate_property,
+            rate_unit=rate_unit, product=product_name,
+        )
+        rate_field = info["rate_field"]
+        contents.append({
+            "artifact": "prescription",
+            "path": str(Path(info["path"]).relative_to(out_dir)),
+            "detail": f"{info['features']} polígonos, campo {rate_field}",
+            "absolute": info["path"],
+        })
+
+    if boundary and "boundary" in profile.accepts and \
+            profile.preferred.get("boundary") in ("shapefile", "geojson"):
+        target = subfolder(profile.preferred["boundary"])
+        collection = _boundary_collection(boundary, field_name)
+        if profile.preferred["boundary"] == "geojson":
+            path = target / f"{_slug(field_name)}_contorno.geojson"
+            write_geojson(collection, path)
+        else:
+            path = target / f"{_slug(field_name)}_contorno.shp"
+            _write_boundary_shapefile(collection, path)
+        contents.append({
+            "artifact": "boundary",
+            "path": str(path.relative_to(out_dir)),
+            "detail": "polígono do talhão",
+            "absolute": str(path),
+        })
+
+    if prescription and profile.preferred.get("prescription") == "geojson":
+        target = subfolder("geojson")
+        path = target / f"{_slug(task_name)}.geojson"
+        write_geojson(prescription, path)
+        contents.append({
+            "artifact": "prescription",
+            "path": str(path.relative_to(out_dir)),
+            "detail": f"{len(prescription.get('features', []))} feições",
+            "absolute": str(path),
+        })
+
+    # ----------------------------------------------------------------- dados
+    if dataset is not None and "data" in profile.accepts:
+        target = subfolder("shapefile")
+        path = target / f"{_slug(dataset.meta.name)}.shp"
+        info = write_vector(dataset, path)
+        contents.append({
+            "artifact": "data",
+            "path": str(path.relative_to(out_dir)),
+            "detail": f"{info['features']} pontos",
+            "absolute": info["path"],
+        })
+
+    # ----------------------------------------------------- o que ficou de fora
+    for artifact, value in (("prescription", prescription), ("boundary", boundary),
+                            ("guidance", guidance_lines), ("data", dataset)):
+        if value is not None and artifact not in profile.accepts:
+            skipped.append(
+                f"{packages_mod.ARTIFACT_LABELS[artifact]}: o "
+                f"{profile.label} não recebe este tipo de arquivo por esta via."
+            )
+    if guidance_lines and "guidance" in profile.accepts and not wants_isoxml:
+        skipped.append(
+            "Linhas de orientação: esta plataforma recebe linhas AB por ISOXML, "
+            "que não faz parte do arranjo preferido dela. Gere o pacote ISOBUS "
+            "genérico se precisar levar as linhas."
+        )
+
+    readme = packages_mod.write_readme(out_dir, profile, contents, rate_field, rate_unit)
+    return {
+        "folder": str(out_dir),
+        "monitor": profile.key,
+        "monitor_label": profile.label,
+        "contents": contents,
+        "skipped": skipped,
+        "readme": str(readme),
+        "instructions": list(profile.instructions),
+    }
+
+
+def _slug(text: str) -> str:
+    """Nome de arquivo seguro: sem acento, espaço nem caractere especial."""
+    import unicodedata
+
+    normalized = unicodedata.normalize("NFKD", str(text))
+    ascii_only = "".join(c for c in normalized if not unicodedata.combining(c))
+    safe = "".join(c if c.isalnum() or c in "-_" else "_" for c in ascii_only)
+    return safe.strip("_") or "arquivo"
+
+
+def _boundary_collection(ring: list[tuple[float, float]], name: str) -> dict[str, Any]:
+    """Empacota um anel de contorno como ``FeatureCollection``."""
+    closed = [list(p) for p in ring]
+    if closed and closed[0] != closed[-1]:
+        closed.append(closed[0])
+    return {
+        "type": "FeatureCollection",
+        "features": [{
+            "type": "Feature",
+            "geometry": {"type": "Polygon", "coordinates": [closed]},
+            "properties": {"NAME": name[:32], "TYPE": "boundary"},
+        }],
+    }
+
+
+def _write_boundary_shapefile(collection: dict[str, Any], path: Path) -> None:
+    import geopandas as gpd
+    from shapely.geometry import shape
+
+    rows, geometries = [], []
+    for feature in collection["features"]:
+        geometries.append(shape(feature["geometry"]))
+        rows.append(feature.get("properties") or {})
+    path.parent.mkdir(parents=True, exist_ok=True)
+    gpd.GeoDataFrame(pd.DataFrame(rows), geometry=geometries, crs=WGS84).to_file(
+        path, driver="ESRI Shapefile"
+    )

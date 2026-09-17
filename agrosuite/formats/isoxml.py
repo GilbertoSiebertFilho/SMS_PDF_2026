@@ -451,7 +451,14 @@ def read_isoxml(path: Path, brand_hint: str | None = None) -> Dataset:
 
     from . import brands as brands_mod
 
-    brand = brands_mod.get_brand(brand_hint or "isoxml")
+    # O TASKDATA declara quem o gerou; isso identifica a plataforma melhor do
+    # que qualquer heurística de coluna.
+    detected = brand_hint
+    if not detected:
+        software = catalog.get("software") or ""
+        guessed, confidence = brands_mod.detect_brand(path=software)
+        detected = guessed if confidence >= 0.4 else "isoxml"
+    brand = brands_mod.get_brand(detected)
     first_field = catalog["fields"][0]["name"] if catalog["fields"] else None
     meta = DatasetMeta(
         name=first_field or taskdata.parent.name,
@@ -463,13 +470,18 @@ def read_isoxml(path: Path, brand_hint: str | None = None) -> Dataset:
         field_name=first_field,
         geometry_type="polygon" if geometry else "point",
         notes=notes,
-        extra={"isoxml_catalog": {
-            "version": catalog["version"],
-            "software": catalog["software"],
-            "fields": [f["name"] for f in catalog["fields"]],
-            "tasks": [t["name"] for t in catalog["tasks"]],
-            "products": list(catalog["products"].values()),
-        }},
+        extra={
+            "isoxml_catalog": {
+                "version": catalog["version"],
+                "software": catalog["software"],
+                "fields": [f["name"] for f in catalog["fields"]],
+                "tasks": [t["name"] for t in catalog["tasks"]],
+                "products": list(catalog["products"].values()),
+            },
+            # Contorno e linhas AB viajam junto com os dados: é o que permite
+            # importar de um monitor e reexportar para outro sem redesenhar.
+            "field_setup": read_field_setup(taskdata),
+        },
     )
     return Dataset(df, meta, geometry=geometry)
 
@@ -573,3 +585,272 @@ def write_prescription(
         taskdata_dir / "TASKDATA.XML", encoding="UTF-8", xml_declaration=True
     )
     return taskdata_dir
+
+
+# ==========================================================================
+# Cadastro de talhão: contorno, linhas de orientação e prescrição
+# ==========================================================================
+# O ISO 11783-10 classifica cada geometria por um código numérico. Os que
+# interessam aqui:
+#
+#   PLN@A  tipo de polígono      1 = contorno do talhão, 7 = cabeceira,
+#                                6 = obstáculo, 11 = enclave
+#   LSG@A  tipo de linha         1 = anel externo, 2 = anel interno,
+#                                5 = padrão de orientação, 3 = rodado
+#   PNT@A  tipo de ponto         2 = genérico, 6 = referência A,
+#                                7 = referência B, 10 = ponto do talhão
+#   GPN@C  tipo de orientação    1 = linha AB, 2 = A+, 3 = curva,
+#                                4 = pivô, 5 = espiral
+
+PLN_BOUNDARY = 1
+PLN_OBSTACLE = 6
+PLN_HEADLAND = 7
+PLN_ENCLAVE = 11
+
+LSG_EXTERIOR = 1
+LSG_INTERIOR = 2
+LSG_GUIDANCE = 5
+
+PNT_GENERIC = 2
+PNT_GUIDANCE_A = 6
+PNT_GUIDANCE_B = 7
+
+GPN_AB_LINE = 1
+GPN_A_PLUS = 2
+GPN_CURVE = 3
+GPN_PIVOT = 4
+
+GUIDANCE_TYPE_LABELS = {
+    GPN_AB_LINE: "Linha AB (dois pontos)",
+    GPN_A_PLUS: "A+ (ponto e rumo)",
+    GPN_CURVE: "Curva gravada",
+    GPN_PIVOT: "Pivô central",
+}
+
+
+def _ring_element(parent: ET.Element, ring, line_type: int, point_type: int) -> None:
+    """Escreve um LSG com seus pontos, em graus decimais."""
+    lsg = ET.SubElement(parent, "LSG", {"A": str(line_type)})
+    for order, (lon, lat) in enumerate(ring, start=1):
+        ET.SubElement(lsg, "PNT", {
+            "A": str(point_type),
+            "C": f"{lat:.9f}",
+            "D": f"{lon:.9f}",
+            "I": str(order),
+        })
+
+
+def write_field_setup(
+    out_dir: Path,
+    field_name: str = "Talhao",
+    boundary: list[tuple[float, float]] | None = None,
+    inner_rings: list[list[tuple[float, float]]] | None = None,
+    headland: list[tuple[float, float]] | None = None,
+    guidance_lines: list[dict] | None = None,
+    customer_name: str = "AgroSuite",
+    farm_name: str = "Fazenda",
+    area_m2: float | None = None,
+    prescription: dict | None = None,
+    task_name: str | None = None,
+    product_name: str = "Produto",
+) -> Path:
+    """Escreve um TASKDATA com contorno, linhas de orientação e, se houver, Rx.
+
+    É o arquivo de setup que se leva no pen drive: o terminal ISOBUS carrega
+    o talhão, as linhas AB e a prescrição de uma vez, sem precisar redesenhar
+    nada na cabine.
+
+    Parameters
+    ----------
+    boundary:
+        Anel externo do talhão, em ``(lon, lat)``. É fechado automaticamente.
+    inner_rings:
+        Enclaves — áreas de dentro que não fazem parte do talhão.
+    headland:
+        Polígono de cabeceira, se houver um distinto do contorno.
+    guidance_lines:
+        Lista de linhas, cada uma ``{"name": str, "type": int, "a": (lon, lat),
+        "b": (lon, lat)}`` para linha AB, ou ``{"name", "type": 3, "points":
+        [(lon, lat), ...]}`` para curva gravada.
+    prescription:
+        ``{"grid": ndarray, "min_lon", "min_lat", "cell_lon", "cell_lat",
+        "rate_kind"}`` — a mesma estrutura devolvida pela rasterização.
+
+    Returns
+    -------
+    Path
+        A pasta ``TASKDATA`` criada.
+    """
+    out_dir = Path(out_dir)
+    taskdata_dir = out_dir / "TASKDATA"
+    taskdata_dir.mkdir(parents=True, exist_ok=True)
+
+    root = ET.Element("ISO11783_TaskData", {
+        "VersionMajor": "4",
+        "VersionMinor": "0",
+        "ManagementSoftwareManufacturer": "AgroSuite",
+        "ManagementSoftwareVersion": "1.0",
+        "DataTransferOrigin": "1",
+    })
+    ET.SubElement(root, "CTR", {"A": "CTR1", "B": customer_name})
+    ET.SubElement(root, "FRM", {"A": "FRM1", "B": farm_name, "I": "CTR1"})
+
+    pfd_attrs = {"A": "PFD1", "C": field_name, "E": "CTR1", "F": "FRM1"}
+    if area_m2:
+        pfd_attrs["D"] = str(int(round(area_m2)))
+    pfd = ET.SubElement(root, "PFD", pfd_attrs)
+
+    if boundary and len(boundary) >= 3:
+        closed = list(boundary)
+        if closed[0] != closed[-1]:
+            closed.append(closed[0])
+        pln = ET.SubElement(pfd, "PLN", {"A": str(PLN_BOUNDARY), "B": f"{field_name} — contorno"})
+        _ring_element(pln, closed, LSG_EXTERIOR, PNT_GENERIC)
+        # Enclaves entram como anéis internos do mesmo polígono.
+        for ring in (inner_rings or []):
+            if len(ring) >= 3:
+                inner = list(ring)
+                if inner[0] != inner[-1]:
+                    inner.append(inner[0])
+                _ring_element(pln, inner, LSG_INTERIOR, PNT_GENERIC)
+
+    if headland and len(headland) >= 3:
+        closed = list(headland)
+        if closed[0] != closed[-1]:
+            closed.append(closed[0])
+        pln = ET.SubElement(pfd, "PLN", {"A": str(PLN_HEADLAND), "B": "Cabeceira"})
+        _ring_element(pln, closed, LSG_EXTERIOR, PNT_GENERIC)
+
+    if guidance_lines:
+        ggp = ET.SubElement(pfd, "GGP", {"A": "GGP1", "B": f"{field_name} — orientação"})
+        for index, line in enumerate(guidance_lines, start=1):
+            pattern_type = int(line.get("type", GPN_AB_LINE))
+            attrs = {
+                "A": f"GPN{index}",
+                "B": line.get("name") or f"Linha {index}",
+                "C": str(pattern_type),
+            }
+            if line.get("heading") is not None:
+                attrs["G"] = f"{float(line['heading']):.2f}"
+            gpn = ET.SubElement(ggp, "GPN", attrs)
+
+            if pattern_type in (GPN_AB_LINE, GPN_A_PLUS) and line.get("a"):
+                lsg = ET.SubElement(gpn, "LSG", {"A": str(LSG_GUIDANCE)})
+                a_lon, a_lat = line["a"]
+                ET.SubElement(lsg, "PNT", {
+                    "A": str(PNT_GUIDANCE_A), "C": f"{a_lat:.9f}", "D": f"{a_lon:.9f}", "I": "1",
+                })
+                if line.get("b"):
+                    b_lon, b_lat = line["b"]
+                    ET.SubElement(lsg, "PNT", {
+                        "A": str(PNT_GUIDANCE_B), "C": f"{b_lat:.9f}", "D": f"{b_lon:.9f}", "I": "2",
+                    })
+            elif line.get("points"):
+                _ring_element(gpn, line["points"], LSG_GUIDANCE, PNT_GENERIC)
+
+    if prescription is not None:
+        grid = np.asarray(prescription["grid"], dtype="float64")
+        rows, cols = grid.shape
+        rate_kind = prescription.get("rate_kind", "mass")
+        scale = ddi_scale_to_iso(rate_kind)
+        iso_values = np.rint(
+            np.clip(np.nan_to_num(grid, nan=0.0) * scale, 0, 2**31 - 1)
+        ).astype("<u4")
+
+        grid_name = "GRD00001"
+        grid_path = taskdata_dir / f"{grid_name}.BIN"
+        grid_path.write_bytes(iso_values.tobytes(order="C"))
+
+        ET.SubElement(root, "PDT", {"A": "PDT1", "B": product_name})
+        tsk = ET.SubElement(root, "TSK", {
+            "A": "TSK1", "B": task_name or f"Rx {field_name}",
+            "C": "CTR1", "D": "FRM1", "E": "PFD1", "G": "1",
+        })
+        tzn = ET.SubElement(tsk, "TZN", {"A": "0"})
+        ET.SubElement(tzn, "PDV", {
+            "A": f"{RX_DDI[rate_kind]:04X}", "B": "0", "C": "PDT1",
+        })
+        ET.SubElement(tsk, "GRD", {
+            "A": f"{prescription['min_lat']:.9f}",
+            "B": f"{prescription['min_lon']:.9f}",
+            "C": f"{prescription['cell_lat']:.9f}",
+            "D": f"{prescription['cell_lon']:.9f}",
+            "E": str(cols), "F": str(rows),
+            "G": grid_name, "H": str(grid_path.stat().st_size), "I": "2",
+        })
+    else:
+        # Uma tarefa vazia amarrada ao talhão faz o terminal listar o campo
+        # mesmo quando o pen drive leva só contorno e linhas AB.
+        ET.SubElement(root, "TSK", {
+            "A": "TSK1", "B": task_name or f"Setup {field_name}",
+            "C": "CTR1", "D": "FRM1", "E": "PFD1", "G": "1",
+        })
+
+    ET.indent(root, space="  ")
+    ET.ElementTree(root).write(
+        taskdata_dir / "TASKDATA.XML", encoding="UTF-8", xml_declaration=True
+    )
+    return taskdata_dir
+
+
+def read_field_setup(taskdata_path: Path) -> dict:
+    """Lê contorno, cabeceira e linhas de orientação de um TASKDATA."""
+    root = ET.parse(Path(taskdata_path)).getroot()
+    fields: list[dict] = []
+
+    for pfd in root.iter("PFD"):
+        boundaries, headlands, obstacles = [], [], []
+        for pln in pfd.findall("PLN"):
+            poly_type = int(pln.get("A") or PLN_BOUNDARY)
+            rings = []
+            for lsg in pln.findall("LSG"):
+                ring = [
+                    (float(p.get("D")), float(p.get("C")))
+                    for p in lsg.findall("PNT")
+                    if p.get("C") and p.get("D")
+                ]
+                if len(ring) >= 3:
+                    rings.append({"type": int(lsg.get("A") or LSG_EXTERIOR), "points": ring})
+            if not rings:
+                continue
+            target = (headlands if poly_type == PLN_HEADLAND
+                      else obstacles if poly_type in (PLN_OBSTACLE, PLN_ENCLAVE)
+                      else boundaries)
+            target.append(rings)
+
+        lines: list[dict] = []
+        for ggp in pfd.findall("GGP"):
+            for gpn in ggp.findall("GPN"):
+                pattern_type = int(gpn.get("C") or GPN_AB_LINE)
+                points = [
+                    {
+                        "point_type": int(p.get("A") or PNT_GENERIC),
+                        "lon": float(p.get("D")),
+                        "lat": float(p.get("C")),
+                    }
+                    for lsg in gpn.findall("LSG")
+                    for p in lsg.findall("PNT")
+                    if p.get("C") and p.get("D")
+                ]
+                a = next((p for p in points if p["point_type"] == PNT_GUIDANCE_A), None)
+                b = next((p for p in points if p["point_type"] == PNT_GUIDANCE_B), None)
+                lines.append({
+                    "name": gpn.get("B") or gpn.get("A"),
+                    "type": pattern_type,
+                    "type_label": GUIDANCE_TYPE_LABELS.get(pattern_type, "Outro"),
+                    "heading": float(gpn.get("G")) if gpn.get("G") else None,
+                    "a": (a["lon"], a["lat"]) if a else None,
+                    "b": (b["lon"], b["lat"]) if b else None,
+                    "points": [(p["lon"], p["lat"]) for p in points],
+                })
+
+        fields.append({
+            "name": pfd.get("C") or pfd.get("B") or pfd.get("A"),
+            "area_m2": float(pfd.get("D")) if pfd.get("D") else None,
+            "boundaries": boundaries,
+            "headlands": headlands,
+            "obstacles": obstacles,
+            "guidance_lines": lines,
+        })
+
+    return {"fields": fields}

@@ -106,7 +106,8 @@ ALIASES: dict[str, tuple[str, ...]] = {
         "coord_y", "point_y",
     ),
     TIMESTAMP: (
-        "timestamp", "date_time", "datetime", "date_and_time", "time_stamp",
+        "timestamp", "zeitstempel", "horodatage", "marca_tiempo",
+        "date_time", "datetime", "date_and_time", "time_stamp",
         "gps_time", "utc_time", "record_time", "data_hora", "isotime",
         "time", "date", "logtime", "sample_time", "acquisition_time",
     ),
@@ -122,17 +123,23 @@ ALIASES: dict[str, tuple[str, ...]] = {
         "as_applied_rate", "app_rate", "rate", "dose", "taxa",
         "seed_rate", "seeding_rate", "population", "pop", "plant_pop",
         "prod_rate", "product_rate", "vrappliedrate", "appld_rate",
+        "saatmenge", "aussaatmenge", "duengermenge", "ausbringmenge",
+        "dose_semis", "dosis_siembra",
     ),
     SPEED: (
         "speed", "velocity", "gps_speed", "ground_speed", "speed_kmh",
         "speed_km_h", "speed_mph", "speed_mi_h", "velocidade", "spd",
         "machine_speed", "travel_speed", "speed_ms", "speed_m_s",
+        # Terminais europeus exportam nos idiomas locais.
+        "geschwindigkeit", "fahrgeschwindigkeit", "vitesse", "velocidad",
+        "snelheid", "hastighet",
     ),
     SWATH: (
         "swath", "swath_width", "swth_wdth", "width", "swathwidth",
         "implement_width", "impl_width", "header_width", "head_width",
         "effective_width", "largura", "working_width", "boom_width",
         "swth_wdth_", "swathwidth_m", "cut_width",
+        "arbeitsbreite", "largeur_travail", "ancho_trabajo", "werkbreedte",
     ),
     DISTANCE: (
         "distance", "dist", "dist_m", "distance_m", "interval_distance",

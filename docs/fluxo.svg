@@ -1,0 +1,58 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 190" width="900" height="190" role="img" aria-label="Fluxo do AgroSuite: dados do monitor, limpeza, análise DIFM, desenho de ensaio, exportação verificada de volta ao monitor">
+  <style>
+    .box { fill: #ffffff; stroke: #bcc5bc; stroke-width: 1.5; }
+    .accent { fill: #e3f0e8; stroke: #2f7d4f; }
+    .t { font: 600 13px system-ui, sans-serif; fill: #1b241b; }
+    .s { font: 11px system-ui, sans-serif; fill: #5d6a5d; }
+    .n { font: 700 11px system-ui, sans-serif; fill: #2f7d4f; }
+    .arrow { stroke: #8a958a; stroke-width: 1.5; fill: none; marker-end: url(#a); }
+    @media (prefers-color-scheme: dark) {
+      .box { fill: #1a1f17; stroke: #414c3d; }
+      .accent { fill: #1e3227; stroke: #6cc38c; }
+      .t { fill: #e6ebe4; } .s { fill: #a3afa0; } .n { fill: #6cc38c; }
+      .arrow { stroke: #75806f; }
+    }
+  </style>
+  <defs>
+    <marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+      <path d="M0,0 L10,5 L0,10 z" fill="#8a958a"/>
+    </marker>
+  </defs>
+
+  <rect class="box accent" x="8" y="45" width="150" height="72" rx="8"/>
+  <text class="n" x="20" y="66">1</text>
+  <text class="t" x="20" y="84">Dados do monitor</text>
+  <text class="s" x="20" y="101">SHP · CSV · ISOXML</text>
+  <text class="s" x="20" y="114">cartão JD · Augmenta</text>
+
+  <rect class="box" x="186" y="45" width="140" height="72" rx="8"/>
+  <text class="n" x="198" y="66">2</text>
+  <text class="t" x="198" y="84">Limpeza</text>
+  <text class="s" x="198" y="101">13 filtros</text>
+  <text class="s" x="198" y="114">laudo antes/depois</text>
+
+  <rect class="box" x="354" y="45" width="140" height="72" rx="8"/>
+  <text class="n" x="366" y="66">3</text>
+  <text class="t" x="366" y="84">Análise DIFM</text>
+  <text class="s" x="366" y="101">curva de resposta</text>
+  <text class="s" x="366" y="114">dose ótima · zonas</text>
+
+  <rect class="box" x="522" y="45" width="140" height="72" rx="8"/>
+  <text class="n" x="534" y="66">4</text>
+  <text class="t" x="534" y="84">Ensaio</text>
+  <text class="s" x="534" y="101">faixas casualizadas</text>
+  <text class="s" x="534" y="114">linha AB</text>
+
+  <rect class="box accent" x="690" y="45" width="200" height="72" rx="8"/>
+  <text class="n" x="702" y="66">5</text>
+  <text class="t" x="702" y="84">Volta ao monitor</text>
+  <text class="s" x="702" y="101">pacote por plataforma</text>
+  <text class="s" x="702" y="114">verificado antes de sair</text>
+
+  <path class="arrow" d="M162,81 L182,81"/>
+  <path class="arrow" d="M330,81 L350,81"/>
+  <path class="arrow" d="M498,81 L518,81"/>
+  <path class="arrow" d="M666,81 L686,81"/>
+
+  <text class="s" x="8" y="160">Tudo roda na sua máquina. Unidades no padrão canadense por definição — bu/ac, lb/ac, acres, pés — trocáveis a qualquer momento.</text>
+</svg>
