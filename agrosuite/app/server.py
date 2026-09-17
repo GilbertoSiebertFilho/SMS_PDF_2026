@@ -1355,5 +1355,21 @@ def health() -> dict[str, Any]:
     return {"ok": True, "datasets": len(state.list()), "workdir": str(state.workdir)}
 
 
+def _include_feature_routers() -> None:
+    """Include every ``router`` found in :mod:`agrosuite.app.routes`."""
+    import importlib
+    import pkgutil
+
+    from . import routes as routes_package
+
+    for module_info in pkgutil.iter_modules(routes_package.__path__):
+        module = importlib.import_module(f"{routes_package.__name__}.{module_info.name}")
+        router = getattr(module, "router", None)
+        if router is not None:
+            app.include_router(router)
+
+
+_include_feature_routers()
+
 if STATIC_DIR.exists():
     app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
