@@ -23,14 +23,28 @@ import uuid
 from pathlib import Path, PurePosixPath
 from typing import Any
 
-from fastapi import APIRouter, File, Form, UploadFile
+from fastapi import APIRouter, Request
+from starlette.datastructures import UploadFile
+# Starlette's own base class: the parser raises that one, and FastAPI's
+# subclass would not catch it.
+from starlette.exceptions import HTTPException
 
+from ...core import schema as sch
 from ...core.dataset import Dataset
 from ...formats import isoxml as isoxml_mod
 from ...formats import johndeere as jd_mod
-from ...formats import registry
+from ...formats import readers, registry
 
 router = APIRouter(prefix="/api/import", tags=["import"])
+
+#: The most files one drop may carry. Starlette's multipart parser stops at
+#: 1,000 parts unless told otherwise, and a season's folder holds more: the
+#: drop was uploaded whole and then refused at the parser, the worst of both.
+#: The page refuses a bigger drop before uploading it (``maxFiles`` in
+#: app.js), and the two numbers must agree.
+MAX_FILES = 2000
+#: One ``paths`` field travels with every file; the parser counts them apart.
+MAX_FIELDS = 2 * MAX_FILES
 
 #: A shapefile opens without its ``.prj`` (the projection is then assumed),
 #: but not without the index and the attribute table.
@@ -42,6 +56,20 @@ REQUIRED_SIDECARS = (".shx", ".dbf")
 SYSTEM_NAMES = {"__macosx", "thumbs.db", "desktop.ini"}
 
 _WINDOWS_DRIVE = re.compile(r"^[A-Za-z]:")
+
+
+def _system_name(name: str) -> bool:
+    """Whether the operating system, not the user, put this entry here.
+
+    Dot-names cover ``.DS_Store`` and the AppleDouble ``._name`` forks macOS
+    writes beside every file on a FAT stick.
+    """
+    return name.startswith(".") or name.lower() in SYSTEM_NAMES
+
+
+def _system_file(relative: PurePosixPath) -> bool:
+    """A dropped file the walk never sees: a system entry, or inside one."""
+    return any(_system_name(part) for part in relative.parts)
 
 
 # ==========================================================================
@@ -74,6 +102,16 @@ def safe_relative_path(raw: str) -> PurePosixPath:
         raise ValueError(
             f"Path '{raw}' climbs out of the dropped folder ('..') and was refused."
         )
+    # 'field/D:evil.csv' passes the absolute-path check above, yet Windows
+    # pathlib reads a drive letter in any part and joins from that drive,
+    # which lands the file outside the upload folder. A colon is not valid
+    # in a Windows file name in any case, so nothing legitimate is lost.
+    for part in parts:
+        if ":" in part:
+            raise ValueError(
+                f"Path '{raw}' holds a ':' in '{part}', which Windows reads as a drive "
+                "letter, and was refused. Rename the file without the colon and drop again."
+            )
     return PurePosixPath(*parts)
 
 
@@ -149,10 +187,7 @@ def _write_tree(root: Path, files: list[UploadFile], relatives: list[PurePosixPa
 def _visible(folder: Path) -> list[Path]:
     """The folder's entries, minus what the operating system planted there."""
     return sorted(
-        (
-            child for child in folder.iterdir()
-            if not child.name.startswith(".") and child.name.lower() not in SYSTEM_NAMES
-        ),
+        (child for child in folder.iterdir() if not _system_name(child.name)),
         key=lambda child: (not child.is_dir(), child.name.lower()),
     )
 
@@ -181,6 +216,24 @@ def _sibling(folder: Path, stem: str, suffix: str) -> Path | None:
         if candidate.is_file() and candidate.stem == stem and candidate.suffix.lower() == suffix:
             return candidate
     return None
+
+
+def _looks_tabular(path: Path) -> bool:
+    """Whether a text file's first lines are split into columns at all.
+
+    A note parses: pandas makes one column of its first line and a row of
+    every line after, and the "dataset" is prose with no position. What
+    tells a table from a note is the separator, and it shows in the first
+    lines or not at all. Only the bytes are looked at, as every encoding the
+    reader tries keeps the separators as they are. An empty file is left to
+    the reader, which names it as empty rather than as prose.
+    """
+    with open(path, "rb") as handle:
+        head = handle.read(4096).decode("latin-1")
+    lines = [line for line in head.splitlines() if line.strip()][:5]
+    if not lines:
+        return True
+    return any(delimiter in line for line in lines for delimiter in readers.DELIMITERS)
 
 
 def _items(children: list[Path]) -> list[Path]:
@@ -308,12 +361,48 @@ class _Walk:
         if suffix not in registry.ALL_IMPORT_EXT:
             self.skip(path, f"Extension '{suffix or path.name}' is not supported on import.")
             return
+        if suffix in registry.TABULAR_EXT and not _looks_tabular(path):
+            self.skip(
+                path,
+                f"'{path.name}' is not a table: its first lines hold no comma, semicolon "
+                "or tab between columns. A data file has one record per line.",
+            )
+            return
+        if suffix in (".xml", ".iso"):
+            # A loose XML is ISOXML only through a TASKDATA.XML near it, and
+            # `detect` finds one anywhere below its folder. That task is
+            # reached by the walk in its own folder; read through the loose
+            # file it would be imported a second time, under the wrong name.
+            try:
+                source = registry.detect(path)
+            except (ValueError, FileNotFoundError) as exc:
+                self.skip(path, str(exc))
+                return
+            if source.path != path:
+                self.skip(
+                    path,
+                    f"'{path.name}' is not an ISOXML task on its own; the TASKDATA.XML it "
+                    f"stands near ({self._name(source.path)}) is read from its own folder.",
+                )
+                return
         try:
             dataset = registry.read_any(path)
         except Exception as exc:
             # QGIS and AgroSuite project files land here too, with the
             # registry's own advice on which button opens them.
             self.skip(path, str(exc))
+            return
+        if sch.LON not in dataset.df.columns or sch.LAT not in dataset.df.columns:
+            # Registered, a table with no position sits in the list with
+            # nothing to draw; with half the pair, the summary fails on the
+            # other's bare name. A price list or a sampling sheet dropped
+            # with the field folder is the usual way to get one.
+            self.skip(
+                path,
+                f"No coordinates (lon/lat or x/y) found in '{path.name}'. Every record "
+                "needs a longitude and a latitude column (or X and Y) to be placed on "
+                "the map; check the export's column names.",
+            )
             return
         self.found.append((dataset, path.stem))
 
@@ -387,19 +476,45 @@ def import_tree(root: Path) -> tuple[list[tuple[Dataset, str]], list[dict[str, s
 # ==========================================================================
 
 @router.post("/files")
-async def import_files(
-    files: list[UploadFile] = File(...),
-    paths: list[str] = Form(default=[]),
-) -> dict[str, Any]:
+async def import_files(request: Request) -> dict[str, Any]:
     """Import a dropped folder, or several files, in one request.
 
     ``paths`` runs parallel to ``files`` and carries each file's path inside
     the dropped folder, with forward slashes. Left out, the file names are
     used, which covers a handful of loose files dropped together.
+
+    The form is read here rather than through ``File``/``Form`` parameters:
+    those leave the parser at Starlette's defaults, which is fewer files
+    than the page allows in one drop.
     """
     from agrosuite.app import server as server_mod
 
+    try:
+        form = await request.form(max_files=MAX_FILES, max_fields=MAX_FIELDS)
+    except HTTPException as exc:
+        if "Too many" not in str(exc.detail):
+            raise
+        # Starlette's message says the number, not what to do about it.
+        raise server_mod._fail(
+            f"The drop holds more than {MAX_FILES:,} files, which is more than one request "
+            "takes. Drop one field's folder at a time, or zip it."
+        )
+    try:
+        files = [item for item in form.getlist("files") if isinstance(item, UploadFile)]
+        paths = [str(item) for item in form.getlist("paths")]
+        return _import_form(files, paths)
+    finally:
+        await form.close()
+
+
+def _import_form(files: list[UploadFile], paths: list[str]) -> dict[str, Any]:
+    """The import proper, once the form is in hand."""
+    from agrosuite.app import server as server_mod
+
     relatives = _plan_tree(files, paths)
+    # Thumbs.db, .DS_Store and their kind come with the folder and are never
+    # walked; counted, the file total the page shows still adds up.
+    ignored = sum(1 for relative in relatives if _system_file(relative))
 
     # Each drop gets its own folder: two drops of files with the same names
     # must not overwrite each other, and a shapefile's sidecars must land
@@ -425,7 +540,8 @@ async def import_files(
         raise server_mod._fail(
             "Nothing in the drop could be imported. "
             + (f"{reasons} " if reasons else "")
+            + (f"{ignored} system file(s) such as .DS_Store or Thumbs.db ignored. " if ignored else "")
             + "Drop a folder holding a shapefile (.shp with .shx, .dbf, .prj), a "
             "TASKDATA folder, a John Deere card, or CSV, GeoJSON, KML, Excel or ZIP files."
         )
-    return {"imported": imported, "skipped": skipped}
+    return {"imported": imported, "skipped": skipped, "ignored": ignored}

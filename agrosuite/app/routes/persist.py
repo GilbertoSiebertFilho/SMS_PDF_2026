@@ -4,7 +4,8 @@ The library that writes and reads the file is :mod:`agrosuite.app.persist`;
 this module only decides *where* a save goes, *whether* an existing file may
 be replaced, and what to tell the user when either goes wrong. It also
 remembers which file the session came from or last went to, so that
-re-saving it asks nothing and reloading the page does not forget it.
+re-saving it asks nothing and reloading the page does not forget it, and it
+looks at a file before the session is given up for it.
 """
 
 from __future__ import annotations
@@ -51,6 +52,48 @@ def _strip_quotes(raw: str) -> str:
 
 def _clean_path(raw: str) -> Path:
     return Path(_strip_quotes(raw)).expanduser()
+
+
+def _save_target(chosen: Path, slug: str) -> Path:
+    """The file a typed 'Save to' means, with its folder in place.
+
+    One rule, the same in the dialog's hint: a path ending in ``.agrosuite``
+    is the file; anything else is a folder, and the file inside it is named
+    after the project. Whether the folder exists yet does not enter into it
+    — the earlier rule looked, and a folder typed before it was created
+    quietly became a file of that name in its parent. A missing folder is
+    created instead: nothing can be overwritten by making one.
+
+    Relative paths are refused. The server resolves them against wherever
+    the app was started from, a place the person cannot see and did not
+    choose; the file would land somewhere only a search would find.
+    """
+    from agrosuite.app import server as server_mod
+
+    if not chosen.is_absolute():
+        raise server_mod._fail(
+            f"'{chosen}' is a relative path, and the app cannot tell where it is "
+            "meant from. Give the full path of a folder, from the drive or the root "
+            "(e.g. C:\\Data\\Projects or /home/you/projects)."
+        )
+    if chosen.suffix.lower() == persist_mod.EXTENSION:
+        target, folder = chosen, chosen.parent
+    else:
+        target, folder = chosen / f"{slug}{persist_mod.EXTENSION}", chosen
+
+    if folder.exists() and not folder.is_dir():
+        raise server_mod._fail(
+            f"'{folder}' is a file, not a folder. To save as a file, end the path in "
+            f"{persist_mod.EXTENSION}; otherwise give a folder."
+        )
+    try:
+        folder.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        raise server_mod._fail(
+            f"Could not create the folder '{folder}': {exc.strerror or exc}. "
+            "Check the path, and that its parent folder is writable."
+        )
+    return target
 
 
 def _is_current(state: session_mod.Session, target: Path) -> bool:
@@ -113,24 +156,9 @@ def save_session(request: SaveRequest) -> dict[str, Any]:
 
     name = (request.name or "").strip() or state.project["name"]
     slug = persist_mod.slugify(name)
-    if request.path:
-        raw = _strip_quotes(request.path)
-        target = Path(raw).expanduser()
-        # A trailing separator means a folder even when the folder is not
-        # there yet; taken as a file path it would produce a file named after
-        # the folder, in the folder's parent, under a name nobody chose.
-        if raw.endswith(("/", "\\")) or target.is_dir():
-            if not target.is_dir():
-                raise server_mod._fail(
-                    f"Folder not found: {target}. Create it first, or save somewhere else."
-                )
-            target = target / f"{slug}{persist_mod.EXTENSION}"
-        elif target.suffix.lower() != persist_mod.EXTENSION:
-            target = target.with_name(target.name + persist_mod.EXTENSION)
-        if not target.parent.exists():
-            raise server_mod._fail(
-                f"Folder not found: {target.parent}. Create it first, or save somewhere else."
-            )
+    chosen = _strip_quotes(request.path or "")
+    if chosen:
+        target = _save_target(Path(chosen).expanduser(), slug)
     else:
         target = state.exports / f"{slug}{persist_mod.EXTENSION}"
     # Resolved once, here: the status line, the recent list and the check
@@ -173,10 +201,57 @@ def save_session(request: SaveRequest) -> dict[str, Any]:
     }
 
 
+def _peek(path: Path) -> dict[str, Any]:
+    """What a project file holds, or why it cannot be opened — without
+    loading it.
+
+    Opening replaces the session, so the interface asks first; but a
+    question about a path that will then fail ("closes the 3 datasets ...
+    File not found") is worse than no question. The file browser puts the
+    folder in the box when one is clicked, which made that the common case.
+    The manifest is a small member of the ZIP, cheap to read on its own.
+    """
+    if path.is_dir():
+        return {"ok": False, "reason": (
+            f"That is a folder; choose the {persist_mod.EXTENSION} file inside it: {path}"
+        )}
+    if not path.exists():
+        return {"ok": False, "reason": f"File not found: {path}"}
+    try:
+        manifest = persist_mod.read_manifest(path)
+    except ValueError as exc:
+        return {"ok": False, "reason": str(exc)}
+    except OSError as exc:
+        return {"ok": False, "reason": (
+            f"Could not read '{path.name}': {exc.strerror or exc}. Check that the file "
+            "is readable and, on a removable drive, that the drive is still there."
+        )}
+    return {
+        "ok": True,
+        "path": str(path.resolve()),
+        "name": path.stem,
+        "project": (manifest.get("project") or {}).get("name"),
+        "saved_at": manifest.get("saved_at"),
+        "datasets": len(manifest["datasets"]),
+    }
+
+
+@router.get("/peek")
+def peek_session(path: str) -> dict[str, Any]:
+    """Describe a project file before opening it: ``{ok, name, project,
+    saved_at, datasets}``, or ``{ok: false, reason}`` in words the person
+    can act on. Never an error status: a refused path is an answer."""
+    return _peek(_clean_path(path))
+
+
 def _open(path: Path, remember: bool) -> dict[str, Any]:
     from agrosuite.app import server as server_mod
 
     state = server_mod.state
+    if path.is_dir():
+        raise server_mod._fail(
+            f"That is a folder; choose the {persist_mod.EXTENSION} file inside it: {path}"
+        )
     if not path.exists():
         raise server_mod._fail(f"File not found: {path}", 404)
     path = path.resolve()
@@ -194,6 +269,7 @@ def _open(path: Path, remember: bool) -> dict[str, Any]:
         "saved_at": result["saved_at"],
         "project": result["project"],
         "datasets": result["datasets"],
+        "design": result["design"],
         "file": _file_payload(state),
         "warning": _add_to_recent(path, result["saved_at"]) if remember else None,
     }

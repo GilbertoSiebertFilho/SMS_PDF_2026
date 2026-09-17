@@ -168,8 +168,11 @@ def test_arcgis_metadata_without_its_shp_is_named_as_a_shapefile_part(client, tm
 # ==========================================================================
 
 def test_a_text_file_with_no_records_is_a_skip_not_a_dataset(client, tmp_path):
+    """A header with columns and nothing under it: the walk lets it through
+    to the reader (it is shaped like a table), and the reader names it."""
     csv = fx.raven_viper_csv(tmp_path / "raven")
-    response = _drop(client, [("Field/notes.txt", b"hello\n"), (f"Field/{csv.name}", csv.read_bytes())])
+    response = _drop(client, [("Field/notes.txt", b"Longitude,Latitude,Yield\n"),
+                              (f"Field/{csv.name}", csv.read_bytes())])
     assert response.status_code == 200, response.text
     body = response.json()
     assert [i["label"] for i in body["imported"]] == [csv.stem]

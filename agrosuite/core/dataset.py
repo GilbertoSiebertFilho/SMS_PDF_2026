@@ -271,7 +271,9 @@ class Dataset:
 
     def bounds(self) -> list[float] | None:
         """Bounding box in WGS84: ``[west, south, east, north]``."""
-        if sch.LON not in self.df.columns or self.df.empty:
+        # Half a pair — a table with a longitude column and no latitude — is
+        # no more placeable than none, and must not fail on the bare name.
+        if sch.LON not in self.df.columns or sch.LAT not in self.df.columns or self.df.empty:
             return None
         lon = self.df[sch.LON].to_numpy(dtype="float64", na_value=np.nan)
         lat = self.df[sch.LAT].to_numpy(dtype="float64", na_value=np.nan)

@@ -20,24 +20,33 @@ Three rules keep the page honest:
   season, these prices. The closing note mirrors the app's own tone: the
   known causes of error have been looked at; that is not a guarantee.
 
-Fonts are the PDF standard set (Helvetica), which every viewer carries and
-which covers the characters the app uses — currency signs, degrees, the
-squared in R². Nothing has to be found on the user's disk.
+The app's own wording is set in the PDF standard font (Helvetica), which
+every viewer carries and which covers the characters the app uses —
+currency signs, degrees, the squared in R². The lines that carry the user's
+words — the heading, the subtitle and the footer, where the project name and
+the dataset label go — are set in a Unicode TrueType font found on the
+machine when there is one: a standard font stops at WinAnsi, and a project
+named in Cyrillic or Chinese would print as a row of squares. When no such
+font loads, those lines fall back to Helvetica and the page is still built.
 """
 
 from __future__ import annotations
 
 import math
+import threading
 from pathlib import Path
 from typing import Any, Callable
 from xml.sax.saxutils import escape
 
+from reportlab import rl_config
 from reportlab.graphics.shapes import Circle, Drawing, Line, PolyLine, String
 from reportlab.lib import colors
 from reportlab.lib.enums import TA_RIGHT
 from reportlab.lib.pagesizes import letter
 from reportlab.lib.styles import ParagraphStyle
 from reportlab.lib.units import mm
+from reportlab.pdfbase import pdfmetrics
+from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.platypus import (
     HRFlowable,
     KeepTogether,
@@ -54,6 +63,9 @@ from .core.dataset import OPERATION_LABELS
 #: Section keys, in the order they appear on the page.
 SECTIONS = ("header", "preflight", "clean", "difm", "caveat")
 
+#: Origins the cleaning gives its two products, as the server registers them.
+CLEANING_ORIGINS = ("clean", "clean_removed")
+
 #: The interface's palette, so the printed page reads like the screen.
 ACCENT = colors.HexColor("#2f7d4f")
 ACCENT_SOFT = colors.HexColor("#e3f0e8")
@@ -69,6 +81,19 @@ BG = colors.HexColor("#f4f6f4")
 
 FONT = "Helvetica"
 FONT_BOLD = "Helvetica-Bold"
+
+#: Unicode TrueType fonts for the lines that carry the user's own words, in
+#: order of preference: the name to register, the regular file, and the bold
+#: files it may come with (Windows and macOS name Arial's bold differently).
+#: DejaVu and Liberation cover Cyrillic, Greek and the accented Latin that
+#: WinAnsi lacks; Arial is what Windows and macOS have; Vera ships inside
+#: reportlab, so it is always there, but it covers Latin only.
+UNICODE_FONTS = (
+    ("DejaVuSans", "DejaVuSans.ttf", ("DejaVuSans-Bold.ttf",)),
+    ("LiberationSans", "LiberationSans-Regular.ttf", ("LiberationSans-Bold.ttf",)),
+    ("Arial", "arial.ttf", ("arialbd.ttf", "Arial Bold.ttf")),
+    ("Vera", "Vera.ttf", ("VeraBd.ttf",)),
+)
 
 #: Wording the first look uses on screen, and what to print in its place.
 #: A finding's action is written for the panel it appears in, where the
@@ -282,17 +307,97 @@ def _on_paper(text: Any) -> str:
 
 
 # ==========================================================================
+# A font for the user's own words
+# ==========================================================================
+
+def _ttf_index() -> dict[str, Path]:
+    """Every TrueType file under reportlab's font search path, by lower-cased name.
+
+    reportlab searches the same directories, but only one level deep, and
+    the distributions keep the fonts a level down — ``truetype/dejavu`` on
+    Debian, ``TTF`` on Arch, ``Supplemental`` on macOS. One walk, kept as a
+    map, answers for every candidate without walking again. Names are
+    compared lower-cased because Windows keeps ``arial.ttf`` and macOS
+    ``Arial.ttf``.
+    """
+    index: dict[str, Path] = {}
+    for folder in rl_config.TTFSearchPath:
+        root = Path(folder).expanduser()
+        if not root.is_dir():
+            continue
+        try:
+            for path in root.rglob("*.[tT][tT][fF]"):
+                index.setdefault(path.name.lower(), path)
+        except OSError:  # a folder that cannot be read is a folder without fonts
+            continue
+    return index
+
+
+_FONTS_LOCK = threading.Lock()
+_fonts: tuple[str, str] | None = None
+
+
+def unicode_fonts() -> tuple[str, str]:
+    """The (regular, bold) font names for the lines that carry the user's words.
+
+    The first font in :data:`UNICODE_FONTS` that is on the disk and that
+    reportlab can read is registered and returned; when none is, the
+    standard Helvetica pair, so the page is still built. The search and the
+    registration happen once per process, under a lock: two reports printed
+    at the same moment must not race to register the same name. A bold file
+    that is missing or unreadable costs only the bold — the regular face
+    stands in for it rather than losing the font.
+    """
+    global _fonts
+    with _FONTS_LOCK:
+        if _fonts is None:
+            _fonts = _register_unicode_fonts()
+        return _fonts
+
+
+def _register_unicode_fonts() -> tuple[str, str]:
+    index = _ttf_index()
+    for name, regular_file, bold_files in UNICODE_FONTS:
+        regular = index.get(regular_file.lower())
+        if regular is None:
+            continue
+        try:
+            pdfmetrics.registerFont(TTFont(name, str(regular)))
+        except Exception:  # a font file reportlab cannot parse is as good as absent
+            continue
+        bold_name = name
+        for bold_file in bold_files:
+            bold = index.get(bold_file.lower())
+            if bold is None:
+                continue
+            try:
+                pdfmetrics.registerFont(TTFont(f"{name}-Bold", str(bold)))
+            except Exception:
+                continue
+            bold_name = f"{name}-Bold"
+            break
+        # Paragraph markup (<b>) resolves through the family; without it a
+        # tag inside a registered TrueType font is an error, not a style.
+        pdfmetrics.registerFontFamily(name, normal=name, bold=bold_name,
+                                      italic=name, boldItalic=bold_name)
+        return name, bold_name
+    return FONT, FONT_BOLD
+
+
+# ==========================================================================
 # Styles and building blocks
 # ==========================================================================
 
-def _styles() -> dict[str, ParagraphStyle]:
+def _styles(user_fonts: tuple[str, str] = (FONT, FONT_BOLD)) -> dict[str, ParagraphStyle]:
+    """The page's styles; ``user_fonts`` is the pair for the user's own words."""
+    user_font, user_font_bold = user_fonts
     base = ParagraphStyle("base", fontName=FONT, fontSize=7.6, leading=9.6, textColor=TEXT)
     return {
         "base": base,
-        "title": ParagraphStyle("title", parent=base, fontName=FONT_BOLD, fontSize=13,
+        "title": ParagraphStyle("title", parent=base, fontName=user_font_bold, fontSize=13,
                                 leading=16, spaceAfter=1),
-        "subtitle": ParagraphStyle("subtitle", parent=base, fontSize=8.4, leading=10.5,
-                                   textColor=MUTED),
+        "subtitle": ParagraphStyle("subtitle", parent=base, fontName=user_font, fontSize=8.4,
+                                   leading=10.5, textColor=MUTED),
         "brand": ParagraphStyle("brand", parent=base, fontSize=7, leading=9,
                                 textColor=FAINT, alignment=TA_RIGHT),
         "h2": ParagraphStyle("h2", parent=base, fontName=FONT_BOLD, fontSize=9.2,
@@ -454,7 +559,15 @@ def _header(entry, units: _Units, generated_at: str, project: dict, title: str |
     ]
 
 
-def _preflight_section(report: dict, st: dict, width: float) -> list:
+def _preflight_section(report: dict, st: dict, width: float, next_step: bool = True) -> list:
+    """The first look; ``next_step`` is False once the step it names is done.
+
+    The first look runs when a dataset is registered, and its advice is
+    written for a raw file: clean it. A clean copy, the removed records, or
+    an original that has since been cleaned carry that same advice, and on
+    paper it would sit right above the Cleaning section that answers it.
+    What follows cleaning is the reader's decision, not the page's.
+    """
     verdict = str(report.get("verdict") or "warning")
     summary = str(report.get("summary") or "")
     findings = [f for f in (report.get("findings") or []) if f.get("level") != "ok"]
@@ -471,11 +584,11 @@ def _preflight_section(report: dict, st: dict, width: float) -> list:
         flow.append(Spacer(1, 2))
         flow.append(Paragraph("Every check came back clear.", st["muted"]))
 
-    next_step = report.get("next_step") or {}
-    if next_step.get("label"):
+    suggestion = (report.get("next_step") or {}) if next_step else {}
+    if suggestion.get("label"):
         flow.append(Spacer(1, 2))
         flow.append(Paragraph(
-            f"Suggested next step: <b>{_t(next_step['label'])}</b> — {_t(next_step.get('why', ''))}",
+            f"Suggested next step: <b>{_t(suggestion['label'])}</b> — {_t(suggestion.get('why', ''))}",
             st["muted"],
         ))
     return flow
@@ -837,7 +950,8 @@ def build_pdf(
     out_path = Path(out_path)
     resolved = _Units(units, fallback_crop=entry.dataset.meta.crop)
     reports = entry.reports or {}
-    st = _styles()
+    user_font, _ = user_fonts = unicode_fonts()
+    st = _styles(user_fonts)
 
     doc = SimpleDocTemplate(
         str(out_path), pagesize=letter,
@@ -854,7 +968,10 @@ def build_pdf(
 
     if reports.get("preflight"):
         story.append(Spacer(1, 5))
-        story.append(KeepTogether(_preflight_section(reports["preflight"], st, width)))
+        already_cleaned = entry.origin in CLEANING_ORIGINS or bool(reports.get("clean"))
+        story.append(KeepTogether(_preflight_section(
+            reports["preflight"], st, width, next_step=not already_cleaned,
+        )))
         sections.append("preflight")
 
     if reports.get("clean"):
@@ -885,7 +1002,7 @@ def build_pdf(
 
     def on_page(canvas, document):
         canvas.saveState()
-        canvas.setFont(FONT, 6.2)
+        canvas.setFont(user_font, 6.2)
         canvas.setFillColor(FAINT)
         canvas.drawString(document.leftMargin, 7 * mm, footer_text)
         canvas.drawRightString(document.pagesize[0] - document.rightMargin, 7 * mm,

@@ -25,7 +25,7 @@ import os
 import threading
 from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
-from typing import Any
+from typing import Any, Collection
 
 import numpy as np
 import pandas as pd
@@ -101,6 +101,10 @@ class MachineProfile:
         data = asdict(self)
         data["kind_label"] = KINDS.get(self.kind, self.kind)
         data["monitor_label"] = brands_mod.get_brand(self.monitor).label
+        # The file is edited by hand, so a listed profile is not always one
+        # the app would have saved: the interface marks these and refuses to
+        # pour an inverted speed range into the cleaning.
+        data["problems"] = self.problems()
         return data
 
     @classmethod
@@ -150,8 +154,13 @@ class MachineProfile:
             )
         self.passes_per_strip = int(passes)
 
-    def problems(self) -> list[str]:
-        """Everything that stops this profile from being saved, in plain words."""
+    def problems(self, *, defaulted: Collection[str] = ()) -> list[str]:
+        """Everything that stops this profile from being saved, in plain words.
+
+        ``defaulted`` names the speed fields the caller filled with the kind's
+        typical range because they were left empty: a refusal then says so
+        instead of quoting a number nobody typed.
+        """
         found: list[str] = []
         if not self.name:
             found.append("Give the profile a name, e.g. 'My combine'.")
@@ -183,20 +192,26 @@ class MachineProfile:
         if self.speed_min_kmh < 0:
             found.append("The minimum speed cannot be negative.")
         if self.speed_min_kmh >= self.speed_max_kmh:
+            kind = KINDS.get(self.kind, self.kind).split(" /")[0].lower()
+            low = f"{self.speed_min_kmh:g} km/h"
+            high = f"{self.speed_max_kmh:g} km/h"
+            if "speed_min_kmh" in defaulted:
+                low = f"the typical minimum for a {kind}, {low}"
+            if "speed_max_kmh" in defaulted:
+                high = f"the typical maximum for a {kind}, {high}"
             found.append(
-                "The minimum speed must be below the maximum speed "
-                f"(got {self.speed_min_kmh:g} and {self.speed_max_kmh:g} km/h)."
+                f"The minimum speed must be below the maximum speed (got {low} and {high})."
             )
         return found
 
-    def validate(self) -> "MachineProfile":
+    def validate(self, *, defaulted: Collection[str] = ()) -> "MachineProfile":
         """Raise ``ValueError`` listing every problem at once, or return self.
 
         All problems come back together: fixing them one round trip at a time
         is the kind of friction profiles exist to remove.
         """
         self._coerce()
-        found = self.problems()
+        found = self.problems(defaulted=defaulted)
         if found:
             raise ValueError(" ".join(found))
         return self
@@ -205,6 +220,22 @@ class MachineProfile:
 def _key(name: str) -> str:
     """Two names that differ only in case or spacing are the same profile."""
     return " ".join(str(name or "").split()).casefold()
+
+
+class ProfileExists(Exception):
+    """A profile is already saved under this name and replacing was not agreed.
+
+    Carries the profile as it is saved, so the question the interface asks
+    names the machine the way the list shows it, not the way it was just
+    typed.
+    """
+
+    def __init__(self, existing: MachineProfile):
+        super().__init__(
+            f"A machine named '{existing.name}' already exists. "
+            "Choose another name, or confirm replacing it."
+        )
+        self.existing = existing
 
 
 # ==========================================================================
@@ -237,7 +268,16 @@ def _read_all() -> list[MachineProfile]:
         raise ValueError(
             f"The profiles file could not be read ({exc}). Fix or move it away: {path}"
         ) from exc
-    items = raw.get("profiles", []) if isinstance(raw, dict) else raw
+    # A file that is an object but has lost its 'profiles' key is not empty,
+    # it is broken: read as empty, the next save would write over whatever
+    # it does hold. A bare list is still taken as the list of profiles.
+    if isinstance(raw, dict) and "profiles" not in raw:
+        keys = ", ".join(f"'{k}'" for k in raw) or "no keys at all"
+        raise ValueError(
+            f"The profiles file has no 'profiles' list (it holds {keys}). "
+            f"Fix or move it away: {path}"
+        )
+    items = raw["profiles"] if isinstance(raw, dict) else raw
     if not isinstance(items, list):
         raise ValueError(
             f"The profiles file does not hold a list of profiles. Fix or move it away: {path}"
@@ -245,9 +285,17 @@ def _read_all() -> list[MachineProfile]:
     profiles = []
     for item in items:
         try:
-            profiles.append(MachineProfile.from_dict(item))
+            profile = MachineProfile.from_dict(item)
         except ValueError as exc:
             raise ValueError(f"A profile in {path} could not be read: {exc}") from exc
+        # Any other problem is reported under the profile's name; a profile
+        # without one could be neither picked nor deleted, so the file is.
+        if not profile.name:
+            raise ValueError(
+                f"A profile in {path} has an empty name, so it could not be listed "
+                f"or deleted. Give it one, or move the file away: {path}"
+            )
+        profiles.append(profile)
     return profiles
 
 
@@ -288,11 +336,22 @@ def get_profile(name: str) -> MachineProfile:
     raise KeyError(_missing(name))
 
 
-def save_profile(profile: MachineProfile) -> list[MachineProfile]:
-    """Save the profile, replacing any with the same name; return the list."""
+def save_profile(profile: MachineProfile, *, replace: bool = True) -> list[MachineProfile]:
+    """Save the profile and return the list.
+
+    A profile already saved under the same name is replaced — that is how a
+    machine gets corrected — unless ``replace`` is False, when
+    :class:`ProfileExists` is raised so the caller can ask first. The check
+    and the write share one lock: two windows saving the same name at the
+    same moment cannot both find it free.
+    """
     profile.validate()
     with _lock:
-        profiles = [p for p in _read_all() if _key(p.name) != _key(profile.name)]
+        profiles = _read_all()
+        same = [p for p in profiles if _key(p.name) == _key(profile.name)]
+        if same and not replace:
+            raise ProfileExists(same[0])
+        profiles = [p for p in profiles if _key(p.name) != _key(profile.name)]
         profiles.append(profile)
         _write_all(profiles)
         return sorted(profiles, key=lambda p: _key(p.name))

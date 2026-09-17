@@ -255,12 +255,13 @@ def test_the_dialog_sends_its_kind_and_keeps_the_passes():
 
 def test_a_unit_change_refills_the_picked_machine():
     """The whole tab is redrawn on a unit change; the machine that was
-    picked is filled in again, in the new units, instead of vanishing."""
-    keep = _block("rerenderKeepingMachines")
-    assert "select[data-machine-picker]" in keep
-    assert "this.renderTab()" in keep
-    assert ".fill(profile)" in keep
-    # Both unit pickers — the preset and the ⚙ panel — go through it.
-    preset = _block("buildUnitPreset")
-    assert "this.rerenderKeepingMachines()" in preset and "this.renderTab()" not in preset
-    assert APP_JS.count("this.rerenderKeepingMachines()") == 2  # the preset picker and the ⚙ panel
+    picked is remembered by name and filled in again, in the new units,
+    instead of vanishing — the same memory that survives a tab switch."""
+    bind = _block("bindMachinePicker")
+    assert "this.machinePickedIn(scope)" in bind
+    assert "this.applyMachine(scope, picked, { quiet: true })" in bind
+    assert ".fill(profile)" in _block("applyMachine")
+    # Both unit pickers — the preset and the ⚙ panel — just redraw the tab.
+    assert "this.renderTab()" in _block("buildUnitPreset")
+    assert "this.renderTab()" in _block("openUnitsDialog")
+    assert "rerenderKeepingMachines" not in APP_JS

@@ -1,5 +1,5 @@
-/* AgroSuite — folha de estilo única.
-   Tokens no :root, redefinidos para o tema escuro. */
+/* AgroSuite — the one stylesheet.
+   Tokens on :root, redefined for the dark theme. */
 
 :root {
   --bg: #f4f6f4;
@@ -163,7 +163,7 @@ aside.right { border-left: 1px solid var(--border); }
 
 main.center { position: relative; min-width: 0; display: flex; flex-direction: column; }
 
-/* ------------------------------------------------------------------ mapa */
+/* ------------------------------------------------------------------- map */
 
 .map-panes { flex: 1; min-height: 0; display: flex; }
 /* The canvas is positioned against its own pane, not the whole centre column,
@@ -213,7 +213,7 @@ main.center { position: relative; min-width: 0; display: flex; flex-direction: c
   flex: none; font-size: 13px;
 }
 
-/* --------------------------------------------------------------- painéis */
+/* ---------------------------------------------------------------- panels */
 
 .panel { padding: 14px; border-bottom: 1px solid var(--border); }
 .panel:last-child { border-bottom: none; }
@@ -343,7 +343,7 @@ table.data td.num { font-family: var(--mono); }
 .progress-track { height: 5px; background: var(--surface-2); border-radius: 3px; overflow: hidden; }
 .progress-fill { height: 100%; background: var(--accent); }
 
-/* --------------------------------------------------------------- diálogos */
+/* --------------------------------------------------------------- dialogs */
 
 dialog {
   border: 1px solid var(--border); border-radius: var(--radius);

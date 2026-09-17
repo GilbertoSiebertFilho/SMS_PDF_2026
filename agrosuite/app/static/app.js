@@ -20,6 +20,8 @@ const App = {
     projectOpen: false,  // the path dialog is picking a project, not data
     saving: false,       // a project save is on its way
     recent: null,
+    machinePicked: {},   // the machine picked on each tab, by name: a redraw must not forget it
+    machinePlaced: {},   // what the app put in a physical field, with its exact metric number
   },
 
   /* ---------------------------------------------------------------- API */
@@ -156,7 +158,7 @@ const App = {
       Units.applyPreset(event.target.value);
       this.toast("Units", this.state.units.presets[event.target.value].description);
       this.loadMap();
-      this.rerenderKeepingMachines();
+      this.renderTab();
     });
   },
 
@@ -167,8 +169,26 @@ const App = {
     if (!payload) return;
     this.state.datasets = payload.datasets;
     this.forgetGoneReports();
+    // The selected dataset's detail is fetched once, when it is picked; a
+    // cleaning or an analysis run afterwards flips the flags the tabs read
+    // to decide whether there is a stored report to fetch. A tab redrawn
+    // after its cached result was pruned would otherwise believe there is
+    // nothing to fetch. The list carries the same summary, fresh.
+    const current = payload.datasets.find((d) => d.id === this.state.selectedId);
+    if (current && this.state.selected) Object.assign(this.state.selected, current);
     this.renderDatasetList();
     this.refreshProject();
+  },
+
+  /* Nothing selected: the map, the overlays and the legend that belonged to
+   * the selection go with it. */
+  clearSelection() {
+    this.state.selectedId = null;
+    this.state.selected = null;
+    MapView.clearPoints();
+    MapView.clearOverlays();
+    this.clearRemovedOverlay();
+    document.getElementById("legend").hidden = true;
   },
 
   /* A cached cleaning result names the clean copy and the removed records it
@@ -365,7 +385,7 @@ const App = {
 };
 
 /* ======================================================================
- * Aba 1 — Dados
+ * Tab 1 — Data
  * ==================================================================== */
 
 Object.assign(App, {
@@ -460,12 +480,7 @@ Object.assign(App, {
       this.printReport(this.state.selectedId, event.currentTarget));
     document.getElementById("btn-remove-dataset").addEventListener("click", async () => {
       await this.api(`/api/datasets/${this.state.selectedId}`, { method: "DELETE" });
-      this.state.selectedId = null;
-      this.state.selected = null;
-      MapView.clearPoints();
-      MapView.clearOverlays();
-      this.clearRemovedOverlay();
-      document.getElementById("legend").hidden = true;
+      this.clearSelection();
       await this.refreshDatasets();
       this.renderTab();
     });
@@ -618,7 +633,7 @@ Object.assign(App, {
 });
 
 /* ======================================================================
- * Aba 2 — Limpeza
+ * Tab 2 — Cleaning
  * ==================================================================== */
 
 Object.assign(App, {
@@ -1125,7 +1140,7 @@ Object.assign(App, {
 });
 
 /* ======================================================================
- * Aba 3 — Análise DIFM
+ * Tab 3 — DIFM analysis
  * ==================================================================== */
 
 Object.assign(App, {
@@ -1400,7 +1415,7 @@ Object.assign(App, {
 });
 
 /* ======================================================================
- * Aba 4 — Desenhar ensaio
+ * Tab 4 — Trial layout
  * ==================================================================== */
 
 Object.assign(App, {
@@ -1409,8 +1424,8 @@ Object.assign(App, {
     const inputUnit = Units.label.inputRate();
     const areaUnit = Units.label.area();
     const datasets = this.state.datasets.map((d) => [d.id, d.label]);
-    /* Largura usual do implemento na unidade escolhida: 60 pés é a barra e o
-     * semeador padrão das Pradarias; 12 metros, o equivalente métrico comum. */
+    /* The usual implement width in the chosen unit: 60 ft is the standard
+     * drill and boom on the Prairies; 12 m, the common metric equivalent. */
     const defaultWidth = Units.label.length() === "ft" ? 60
       : Math.round(Units.convert.length(12));
 
@@ -1474,7 +1489,14 @@ Object.assign(App, {
       document.getElementById("draw-status").textContent = "";
     });
 
-    if (this.state.design) this.renderDesignReport(this.state.design);
+    if (this.state.design) {
+      this.renderDesignReport(this.state.design);
+      // The strips go back on the map with the report: after a reopened
+      // project, or a visit to a tab that painted its own overlays, the
+      // report alone would describe a layout nobody can see. A drawing in
+      // progress is left alone — it is the boundary of the next layout.
+      if (!this.state.drawing) this.drawDesignWithGuidance();
+    }
   },
 
   startDrawing() {
@@ -1639,7 +1661,7 @@ Object.assign(App, {
 });
 
 /* ======================================================================
- * Aba 5 — Exportar
+ * Tab 5 — Export
  * ==================================================================== */
 
 Object.assign(App, {
@@ -1877,11 +1899,11 @@ Object.assign(App, {
       rate_unit: this.value("pkg-unit"),
       crop: this.value("pkg-crop"),
       cell_m: Units.toInternal.length(this.number("pkg-cell", 10)),
-      field_name: this.value("pkg-field") || "Talhao",
-      task_name: this.value("pkg-task") || "Prescricao",
-      product_name: this.value("pkg-product") || "Produto",
+      field_name: this.value("pkg-field") || "Field",
+      task_name: this.value("pkg-task") || "Prescription",
+      product_name: this.value("pkg-product") || "Product",
       customer_name: this.value("pkg-customer") || "AgroSuite",
-      farm_name: this.value("pkg-farm") || "Fazenda",
+      farm_name: this.value("pkg-farm") || "Farm",
     };
 
     if (this.checked("pkg-rx") && this.state.design) {
@@ -2176,9 +2198,9 @@ Object.assign(App, {
       rate_unit: this.value("exp-unit"),
       crop: this.value("exp-crop"),
       cell_m: Units.toInternal.length(this.number("exp-cell", 10)),
-      task_name: this.value("exp-task") || "Prescricao",
-      field_name: this.value("exp-field") || "Talhao",
-      product_name: this.value("exp-product") || "Produto",
+      task_name: this.value("exp-task") || "Prescription",
+      field_name: this.value("exp-field") || "Field",
+      product_name: this.value("exp-product") || "Product",
     };
 
     if (this.value("exp-source") === "design") {
@@ -2307,9 +2329,16 @@ Object.assign(App, {
       // costs nothing, and the drop then gets its answer below.
       return !types.length || types.includes("Files");
     };
+    // A drop is taken from the moment it lands. Reading a big folder's
+    // entries takes a while, and the .busy class only went on once the
+    // upload started: a second drop meanwhile passed the check below and
+    // raced the first for the dataset list. The flag holds for the whole
+    // drop; the class dims the window for the same span, and is the one
+    // the pickers and every other request share.
+    let reading = false;
     // Why a drop has to wait, or "" when it can be taken now.
     const blocked = () => {
-      if (document.querySelector(".busy")) {
+      if (reading || document.querySelector(".busy")) {
         return "Something is still running. Wait for it to finish, then drop again.";
       }
       if (document.querySelector("dialog[open]")) return "Close the dialog first, then drop again.";
@@ -2333,20 +2362,27 @@ Object.assign(App, {
       dropZone.classList.remove("dropping");
       const why = blocked();
       if (why) { this.toast("Not now", why, "warn"); return; }
-      const entries = await this.collectDropped(e.dataTransfer).catch((err) => {
-        this.toast("Could not read the drop", `${err.message || err}\nTry "Open a folder" instead.`, "error");
-        return [];
-      });
-      const file = entries[0]?.file;
-      if (!file) {
-        // An empty folder drops without a file in it; the person who dropped
-        // it is otherwise left wondering whether the drop was seen.
-        this.toast("Nothing to import", "The drop holds no files: an empty folder, or one " +
-          "holding only hidden files.", "warn");
-        return;
+      reading = true;
+      dropZone.classList.add("busy");
+      try {
+        const entries = await this.collectDropped(e.dataTransfer).catch((err) => {
+          this.toast("Could not read the drop", `${err.message || err}\nTry "Open a folder" instead.`, "error");
+          return [];
+        });
+        const file = entries[0]?.file;
+        if (!file) {
+          // An empty folder drops without a file in it; the person who dropped
+          // it is otherwise left wondering whether the drop was seen.
+          this.toast("Nothing to import", "The drop holds no files: an empty folder, or one " +
+            "holding only hidden files.", "warn");
+          return;
+        }
+        if (entries.length === 1 && this.isProjectFile(file.name)) { await this.uploadProject(file); return; }
+        await this.importFiles(entries);
+      } finally {
+        reading = false;
+        dropZone.classList.remove("busy");
       }
-      if (entries.length === 1 && this.isProjectFile(file.name)) { await this.uploadProject(file); return; }
-      await this.importFiles(entries);
     });
   },
 
@@ -2417,7 +2453,11 @@ Object.assign(App, {
     this.renderDropReport(result.skipped);
 
     const skipped = result.skipped || [];
-    const lines = [`${Units.num(entries.length, 0)} file(s) → ${Units.num(result.imported.length, 0)} dataset(s).`];
+    // Thumbs.db, .DS_Store and their kind travel with the folder and the
+    // server never walks them; named here, the file total still adds up.
+    const ignored = result.ignored || 0;
+    const lines = [`${Units.num(entries.length, 0)} file(s) → ${Units.num(result.imported.length, 0)} dataset(s)` +
+      (ignored ? ` (${Units.num(ignored, 0)} system file(s) ignored)` : "") + "."];
     if (result.imported.length === 1) {
       const only = result.imported[0];
       lines[0] += ` ${only.meta.brand_label} · ${Units.num(only.rows, 0)} records.`;
@@ -2460,8 +2500,13 @@ Object.assign(App, {
       // An .agrosuite file is a whole session, not one more layer: it goes to
       // "open", which replaces what is loaded, and never to import.
       if (this.state.projectOpen || this.isProjectFile(path)) {
+        // Looked at before the picker closes: a refused path — a folder,
+        // which a click in the browser puts in the box — leaves the picker
+        // open on it, with the file inside still there to choose.
+        const peek = await this.peekProject(path);
+        if (!peek) return;
         document.getElementById("dlg-path").close();
-        await this.openProject(path);
+        await this.openProject(path, peek);
         return;
       }
       // A .qgs or .qgz is a project, not a data file: it names layers rather
@@ -2554,7 +2599,7 @@ Object.assign(App, {
       Units.set("crop", this.value("u-crop"));
       Units.set("currency", this.value("u-currency"));
       this.loadMap();
-      this.rerenderKeepingMachines();
+      this.renderTab();
     };
     for (const id of ["u-yield", "u-input", "u-area", "u-length", "u-speed", "u-mass",
                       "u-crop", "u-currency"]) {
@@ -2844,9 +2889,11 @@ Object.assign(App, {
  * not to the field, yet three tabs ask for them. A profile is entered once,
  * kept by the server in profiles.json, and picked from one small row on each
  * tab: choosing a machine fills the fields that tab needs, "Save as
- * machine" reads them back. Nothing is remembered on the client — the
- * server owns the list, so it is fetched on every render. Every number
- * crosses the wire in metric and is shown in the units the user chose.
+ * machine" reads them back, "Update machine" edits the one picked. The
+ * server owns the list, so it is fetched on every render; the client keeps
+ * only which machine each tab picked, so a tab switch does not forget it.
+ * Every number crosses the wire in metric and is shown in the units the
+ * user chose.
  * ==================================================================== */
 
 Object.assign(App, {
@@ -2861,10 +2908,7 @@ Object.assign(App, {
       const node = document.getElementById(id);
       if (node) node.value = value;
     };
-    const metric = (kind, id) => {
-      const value = this.number(id, null);
-      return value == null ? undefined : this.machineMetric(kind, value);
-    };
+    const metric = (kind, id) => this.machineFieldMetric(kind, id) ?? undefined;
     const kindFromOperation = (d) => ({
       harvest: "combine", planting: "seeder", application: "sprayer",
     })[d?.meta?.operation] || null;
@@ -2880,6 +2924,8 @@ Object.assign(App, {
           put("clean-delay", p.flow_delay_s);
           put("p-speed_range-min", low);
           put("p-speed_range-max", high);
+          this.machinePlaced("p-speed_range-min", low, p.speed_min_kmh);
+          this.machinePlaced("p-speed_range-max", high, p.speed_max_kmh);
           // Filling a filter that is switched off would change nothing and say
           // nothing; switching it on is what picking a speed range means.
           const step = document.getElementById("en-speed_range");
@@ -2905,6 +2951,7 @@ Object.assign(App, {
           const width = shown("length", p.implement_width_m);
           put("design-width", width);
           put("design-passes", p.passes_per_strip);
+          this.machinePlaced("design-width", width, p.implement_width_m);
           return `implement width ${said(width)} ${Units.label.length()}, ` +
             `${p.passes_per_strip} pass(es) per strip.`;
         },
@@ -2937,14 +2984,17 @@ Object.assign(App, {
    * anything is written. */
   machinePicker(scope) {
     const { hint } = this.machineScope(scope);
+    const picked = this.machinePickedIn(scope);
     return `
       <div class="row tight machine-row">
         <label class="field">
           <span>Machine</span>
-          <select id="machine-${scope}" data-machine-picker>${this.machineOptions()}</select>
+          <select id="machine-${scope}" data-machine-picker>${
+            this.machineOptions(picked?.name || "")}</select>
         </label>
         <button class="small" id="btn-machine-save-${scope}"
-          title="Save the settings on this tab as a machine">Save as machine…</button>
+          title="Save the settings on this tab as a machine">${
+            this.machineSaveLabel(picked)}</button>
         <button class="small ghost" id="btn-machine-delete-${scope}"
           title="Delete the chosen machine">✕</button>
       </div>
@@ -2953,25 +3003,36 @@ Object.assign(App, {
 
   machineOptions(selected = "") {
     const profiles = this.state.machines?.profiles || [];
-    const placeholder = profiles.length ? "— choose a machine —" : "— no machine saved yet —";
-    return [["", placeholder], ...profiles.map((p) => [p.name, `${p.name} · ${p.kind_label}`])]
-      .map(([value, label]) =>
+    const placeholder = this.state.machinesRefused ? "— profiles.json could not be read —"
+      : profiles.length ? "— choose a machine —" : "— no machine saved yet —";
+    // A profile typed into the file that the app would refuse to save is
+    // listed, so it can be fixed from here, but marked.
+    const label = (p) => `${p.name} · ${p.kind_label}` +
+      (p.problems?.length ? " · ⚠ needs attention" : "");
+    return [["", placeholder], ...profiles.map((p) => [p.name, label(p)])]
+      .map(([value, text]) =>
         `<option value="${this.escape(value)}"${value === selected ? " selected" : ""}>${
-          this.escape(label)}</option>`).join("");
+          this.escape(text)}</option>`).join("");
+  },
+
+  /* With a machine picked, the save button edits it rather than adding one. */
+  machineSaveLabel(picked) {
+    return picked ? "Update machine…" : "Save as machine…";
   },
 
   bindMachinePicker(scope) {
     const select = document.getElementById(`machine-${scope}`);
     if (!select) return;
-    select.addEventListener("change", () => {
-      const profile = this.machineNamed(select.value);
-      if (!profile) return;
-      this.toast(`Filled from '${profile.name}'`, this.machineScope(scope).fill(profile));
-    });
+    select.addEventListener("change", () => this.pickMachine(scope, select.value));
     document.getElementById(`btn-machine-save-${scope}`)
       .addEventListener("click", () => this.openMachineDialog(scope));
     document.getElementById(`btn-machine-delete-${scope}`)
       .addEventListener("click", () => this.deleteMachine(scope));
+    // The tab was just redrawn from its defaults — a tab switch, a unit
+    // change — over whatever the machine picked here had filled in. Its
+    // values go back, quietly: the picker shows which machine they are.
+    const picked = this.machinePickedIn(scope);
+    if (picked) this.applyMachine(scope, picked, { quiet: true });
     this.loadMachines();
   },
 
@@ -2984,49 +3045,86 @@ Object.assign(App, {
 
   /* The server owns the list: it is fetched on every render rather than kept
    * on the client, so a profile added in another window, or by hand in the
-   * file, shows up at the next tab change. */
-  async loadMachines() {
+   * file, shows up at the next tab change. `always` repeats a refusal that
+   * was already said: a click asked for the list and gets its answer. */
+  async loadMachines({ always = false } = {}) {
     const listing = await this.api("/api/profiles").catch((err) => {
-      // A corrupt profiles.json is refused, not overwritten: the message names
-      // the file so it can be fixed or moved away.
-      this.toast("Machine profiles unavailable", err.message, "error");
+      // A profiles.json the app cannot read is refused, not overwritten: the
+      // message names the file and what is wrong. Every tab asks for the list
+      // again, and the same refusal is said once, not at every tab switch.
+      if (always || this.state.machinesRefused !== err.message) {
+        this.toast("Machine profiles unavailable", err.message, "error");
+      }
+      this.state.machinesRefused = err.message;
       return null;
     });
-    if (listing) this.setMachines(listing);
+    if (listing) this.state.machinesRefused = null;
+    this.setMachines(listing);
     return listing;
   },
 
   setMachines(listing) {
     this.state.machines = listing;
     for (const select of document.querySelectorAll("select[data-machine-picker]")) {
-      const kept = this.machineNamed(select.value)?.name || "";
-      select.innerHTML = this.machineOptions(kept);
+      this.drawMachinePicker(select.id.replace("machine-", ""));
     }
   },
 
-  /* A unit change redraws the tab from its defaults, which would put the
-   * picker back at its placeholder and the preset's numbers over the
-   * machine's. The machine that was picked is filled in again, in the new
-   * units, so "pick the machine, then switch to km/h to check" works. */
-  rerenderKeepingMachines() {
-    const picked = [...document.querySelectorAll("select[data-machine-picker]")]
-      .map((select) => [select.id.replace("machine-", ""), this.machineNamed(select.value)])
-      .filter(([, profile]) => profile);
-    this.renderTab();
-    for (const [scope, profile] of picked) {
-      const select = document.getElementById(`machine-${scope}`);
-      if (!select) continue;
-      select.value = profile.name;
-      this.toast(`Filled from '${profile.name}'`, this.machineScope(scope).fill(profile));
+  /* The picker's list and its save button, in line with the list the server
+   * holds now and with what this tab picked. */
+  drawMachinePicker(scope) {
+    const select = document.getElementById(`machine-${scope}`);
+    if (!select) return;
+    const picked = this.machinePickedIn(scope);
+    select.innerHTML = this.machineOptions(picked?.name || "");
+    const button = document.getElementById(`btn-machine-save-${scope}`);
+    if (button) button.textContent = this.machineSaveLabel(picked);
+  },
+
+  /* What the tab picked, remembered by name so the choice survives the tab
+   * being redrawn; resolved against the list as it is now, so a machine
+   * deleted in the meantime is simply no longer picked. */
+  machinePickedIn(scope) {
+    return this.machineNamed(this.state.machinePicked?.[scope]);
+  },
+
+  pickMachine(scope, name) {
+    this.state.machinePicked = { ...(this.state.machinePicked || {}), [scope]: name };
+    const profile = this.machineNamed(name);
+    document.getElementById(`btn-machine-save-${scope}`).textContent =
+      this.machineSaveLabel(profile);
+    if (profile) this.applyMachine(scope, profile);
+  },
+
+  /* The machine's values onto the tab, with what was done said in a toast.
+   * A profile the file holds but the app would refuse to save — an inverted
+   * speed range, a kind it does not know — is not applied: its numbers would
+   * go into the cleaning as they are. It stays picked, so "Update machine…"
+   * opens on it and can put it right. */
+  applyMachine(scope, profile, { quiet = false } = {}) {
+    if (profile.problems?.length) {
+      if (!quiet) {
+        this.toast(`'${profile.name}' needs attention`,
+          `${profile.problems.join(" ")} Fix it with "Update machine…", or in ` +
+          `${this.state.machines.storage}. Nothing was filled in.`, "warn");
+      }
+      return;
     }
+    const done = this.machineScope(scope).fill(profile);
+    if (!quiet) this.toast(`Filled from '${profile.name}'`, done);
   },
 
   /* Names match the way the server matches them — case and spacing aside —
    * so the profile just saved is found under whatever spelling came back. */
+  machineKey(name) {
+    return String(name || "").split(/\s+/).join(" ").trim().toLowerCase();
+  },
+
   machineNamed(name) {
-    const key = (s) => String(s || "").split(/\s+/).join(" ").trim().toLowerCase();
-    if (!key(name)) return null;
-    return (this.state.machines?.profiles || []).find((p) => key(p.name) === key(name)) || null;
+    const key = this.machineKey(name);
+    if (!key) return null;
+    return (this.state.machines?.profiles || []).find((p) => this.machineKey(p.name) === key)
+      || null;
   },
 
   machineKindLabel(kind) {
@@ -3040,6 +3138,28 @@ Object.assign(App, {
    * forms show. */
   machineMetric(kind, value) {
     return Math.round(Units.toInternal[kind](value) * 1e6) / 1e6;
+  },
+
+  /* What the app itself put in a physical field, with the metric number it
+   * was converted from. A field still showing that value is read back as
+   * that number rather than re-converted: 9 m shown as 29.528 ft and
+   * converted back is 9.000134 m, a drift that would be written to
+   * profiles.json and read as a change nobody made. Keyed by field id; the
+   * ids are distinct across the tabs and the dialog. */
+  machinePlaced(id, display, metric) {
+    const placed = (this.state.machinePlaced = this.state.machinePlaced || {});
+    if (metric == null || display === "") delete placed[id];
+    else placed[id] = { display, metric };
+  },
+
+  /* A physical field read back in metric: the exact number the app placed
+   * there while the field still shows it, the typed value converted once it
+   * does not. Null when the field is empty. */
+  machineFieldMetric(kind, id) {
+    const value = this.number(id, null);
+    if (value == null) return null;
+    const placed = this.state.machinePlaced?.[id];
+    return placed && placed.display === value ? placed.metric : this.machineMetric(kind, value);
   },
 
   /* "John Deere combine", or "My seeder" when the file does not say who made it. */
@@ -3062,12 +3182,16 @@ Object.assign(App, {
   },
 
   async openMachineDialog(scope) {
-    if (!this.state.machines && !(await this.loadMachines())) return;
+    if (!this.state.machines && !(await this.loadMachines({ always: true }))) return;
     const d = this.state.selected;
     const handlers = this.machineScope(scope);
-    const kind = handlers.kind(d);
+    // A picked machine is edited, not copied: the dialog opens on its name,
+    // kind, monitor and notes, and saving under that name updates it without
+    // asking. Otherwise the form starts a new one from the file.
+    const picked = this.machinePickedIn(scope);
+    const kind = picked?.kind || handlers.kind(d);
     const brands = this.state.catalog.brands.map((b) => b.key);
-    const draft = {
+    const draft = picked ? { ...picked } : {
       name: this.machineNameFor(d, kind),
       kind,
       monitor: brands.includes(d?.meta?.brand) ? d.meta.brand : "generic",
@@ -3078,10 +3202,13 @@ Object.assign(App, {
       speed_max_kmh: null,
       notes: "",
     };
+    // What the tab shows wins over what was saved: a width corrected on the
+    // form is the correction being saved. A field the machine filled and
+    // nobody touched reads back as the exact number it came from.
     for (const [key, value] of Object.entries(handlers.collect())) {
       if (value !== undefined) draft[key] = value;
     }
-    this.state.machineDialog = { scope };
+    this.state.machineDialog = { scope, editing: picked?.name || null };
     this.renderMachineDialog(draft);
     document.getElementById("dlg-machine").showModal();
   },
@@ -3089,33 +3216,45 @@ Object.assign(App, {
   renderMachineDialog(p) {
     const lengthUnit = Units.label.length();
     const speedUnit = Units.label.speed();
+    const editing = this.state.machineDialog?.editing;
     // A speed minimum of 0 is a real setting and stays 0; an empty box is
     // what makes the server fill in the kind's typical range instead.
     const shown = (kind, value) => (value == null ? "" : Number(Units.convert[kind](value).toFixed(3)));
     const brands = this.state.catalog.brands.map((b) => [b.key, b.label]);
+    // Only the width keeps 0 for "unknown": that is what a suggestion sends
+    // when the file has no swath, and the placeholder is the better prompt.
+    const width = shown("length", p.implement_width_m || null);
+    const low = shown("speed", p.speed_min_kmh);
+    const high = shown("speed", p.speed_max_kmh);
+    this.machinePlaced("mp-width", width, p.implement_width_m || null);
+    this.machinePlaced("mp-speed-min", low, p.speed_min_kmh);
+    this.machinePlaced("mp-speed-max", high, p.speed_max_kmh);
 
+    document.querySelector("#dlg-machine h3").textContent =
+      editing ? `Update '${editing}'` : "Save as a machine";
     document.getElementById("machine-body").innerHTML = `
       ${this.field("Name",
         `<input type="text" id="mp-name" value="${this.escape(p.name)}"
            placeholder="e.g. S780 with the 40 ft draper">`,
-        "Saving under an existing name replaces that machine.")}
+        editing ? `Under another name this is saved as a new machine; '${this.escape(editing)}' stays.`
+          : "Saving under another machine's name asks before replacing it.")}
       <div class="row tight">
         ${this.field("Kind", this.selectInput("mp-kind", this.state.machines.kinds, p.kind))}
         ${this.field("Monitor", this.selectInput("mp-monitor", brands, p.monitor))}
       </div>
       <div class="row tight">
         ${this.field(`Implement width (${lengthUnit})`,
-          `<input type="number" id="mp-width" value="${shown("length", p.implement_width_m || null)}"
+          `<input type="number" id="mp-width" value="${width}"
              step="any" min="0" placeholder="header, boom or drill">`)}
         ${this.field("Flow delay (s)", this.numberInput("mp-delay", p.flow_delay_s, "0.5", "0"),
           "Combines only; 0 for anything else.")}
       </div>
       <div class="row tight">
         ${this.field(`Speed from (${speedUnit})`,
-          `<input type="number" id="mp-speed-min" value="${shown("speed", p.speed_min_kmh)}"
+          `<input type="number" id="mp-speed-min" value="${low}"
              step="any" min="0" placeholder="typical for the kind">`)}
         ${this.field(`to (${speedUnit})`,
-          `<input type="number" id="mp-speed-max" value="${shown("speed", p.speed_max_kmh)}"
+          `<input type="number" id="mp-speed-max" value="${high}"
              step="any" min="0" placeholder="typical for the kind">`)}
         ${this.field("Passes per strip", this.numberInput("mp-passes", p.passes_per_strip, "1", "1"))}
       </div>
@@ -3148,6 +3287,9 @@ Object.assign(App, {
     const profile = { ...result.profile, name: this.machineNameWithWidth(result.profile) };
     // Passes per strip are a decision, not something a file records.
     if (passes) profile.passes_per_strip = passes;
+    // Suggesting into a machine being updated fills in its numbers, not a
+    // new name: the file says what the machine is like, not what it is called.
+    if (this.state.machineDialog?.editing) profile.name = this.value("mp-name");
     this.renderMachineDialog(profile);
     document.getElementById("mp-problems").innerHTML = result.problems.length
       ? `<div class="note warning">${result.problems.map((s) => this.escape(s)).join("<br>")}</div>`
@@ -3158,41 +3300,64 @@ Object.assign(App, {
   },
 
   async saveMachine() {
-    const scope = this.state.machineDialog?.scope;
-    const metric = (kind, id) => {
-      const value = this.number(id, null);
-      return value == null ? null : this.machineMetric(kind, value);
-    };
+    const { scope, editing } = this.state.machineDialog || {};
+    const name = (this.value("mp-name") || "").trim();
+
+    // Checked here first, in the units on the screen: the server refuses an
+    // inverted range too, but in km/h, quoting numbers nobody typed.
+    const low = this.number("mp-speed-min", null);
+    const high = this.number("mp-speed-max", null);
+    if (low != null && high != null && low >= high) {
+      this.toast("Check the speed range", "The minimum speed must be below the maximum " +
+        `(got ${low} and ${high} ${Units.label.speed()}).`, "warn");
+      return;
+    }
+
     const body = {
-      name: (this.value("mp-name") || "").trim(),
+      name,
       kind: this.value("mp-kind"),
       monitor: this.value("mp-monitor"),
       // A missing width goes as 0 so the server refuses it with its own words
       // rather than inventing a header.
-      implement_width_m: metric("length", "mp-width") ?? 0,
+      implement_width_m: this.machineFieldMetric("length", "mp-width") ?? 0,
       flow_delay_s: this.number("mp-delay", 0),
       passes_per_strip: this.number("mp-passes", 2),
       // Left empty, the speeds come back as the typical range for the kind.
-      speed_min_kmh: metric("speed", "mp-speed-min"),
-      speed_max_kmh: metric("speed", "mp-speed-max"),
+      speed_min_kmh: this.machineFieldMetric("speed", "mp-speed-min"),
+      speed_max_kmh: this.machineFieldMetric("speed", "mp-speed-max"),
       notes: this.value("mp-notes") || "",
+      // Updating the machine that was picked is what the dialog opened for
+      // and asks nothing; any other saved name is replaced only once the
+      // person says so, below.
+      replace: !!editing && this.machineKey(name) === this.machineKey(editing),
     };
 
-    // A 400 lists every problem at once; busy() shows it verbatim.
-    const listing = await this.busy(document.getElementById("dlg-machine"), () =>
-      this.api("/api/profiles", { method: "POST", body }));
+    // A 400 lists every problem at once; busy() shows it verbatim. A 409 is
+    // a question, with the saved machine's name in it.
+    const listing = await this.busy(document.getElementById("dlg-machine"), async () => {
+      try {
+        return await this.api("/api/profiles", { method: "POST", body });
+      } catch (err) {
+        if (err.status !== 409) throw err;
+        if (!window.confirm(`${err.message}\n\nReplace that machine with what the form shows?`)) {
+          return null;
+        }
+        return this.api("/api/profiles", { method: "POST", body: { ...body, replace: true } });
+      }
+    });
     if (!listing) return;
 
     document.getElementById("dlg-machine").close();
     this.setMachines(listing);
-    const saved = this.machineNamed(body.name);
-    const select = document.getElementById(`machine-${scope}`);
+    const saved = this.machineNamed(name);
     let filled = "";
-    if (saved && select) {
-      select.value = saved.name;
+    if (saved && document.getElementById(`machine-${scope}`)) {
+      this.state.machinePicked = { ...(this.state.machinePicked || {}), [scope]: saved.name };
+      this.drawMachinePicker(scope);
       filled = " " + this.machineScope(scope).fill(saved);
     }
-    this.toast("Machine saved", `'${saved?.name || body.name}' is ready on every tab.${filled}`);
+    this.toast(editing ? "Machine updated" : "Machine saved",
+      `'${saved?.name || name}' is ready on every tab.${filled}`);
   },
 
   async deleteMachine(scope) {
@@ -3206,6 +3371,11 @@ Object.assign(App, {
     const listing = await this.busy(document.getElementById(`machine-${scope}`).parentElement,
       () => this.api(`/api/profiles/${encodeURIComponent(name)}`, { method: "DELETE" }));
     if (!listing) return;
+    // Forgotten on every tab, not just this one: a machine saved later under
+    // the same name is a different machine and is not picked by itself.
+    for (const [tab, picked] of Object.entries(this.state.machinePicked || {})) {
+      if (this.machineKey(picked) === this.machineKey(name)) this.state.machinePicked[tab] = "";
+    }
     this.setMachines(listing);
     this.toast("Machine deleted", `'${name}' is gone from the list.`);
   },
@@ -3414,8 +3584,26 @@ Object.assign(App, {
       "Anything not saved to a project file is lost. Continue?");
   },
 
-  async openProject(path) {
-    if (!this.confirmReplace("Opening a project")) return;
+  /* A look at the file before anything is given up for it: what it holds
+   * and when it was saved, or why it cannot be opened. Without it a folder,
+   * or a ZIP of monitor data, went through "closes the N datasets" and only
+   * then failed — the work was still there, but the question should never
+   * have been asked. The server answers a refusal in words, not with an
+   * error status: it is an answer, shown here. Null when refused. */
+  async peekProject(path) {
+    const peek = await this.api(`/api/session/peek?path=${encodeURIComponent(path)}`)
+      .catch((err) => ({ ok: false, reason: err.message }));
+    if (peek.ok) return peek;
+    this.toast("Not a project to open", peek.reason, "warn");
+    return null;
+  },
+
+  async openProject(path, peek = null) {
+    peek = peek || await this.peekProject(path);
+    if (!peek) return;
+    const saved = peek.saved_at ? `, saved ${this.when(peek.saved_at)}` : "";
+    if (!this.confirmReplace(
+      `Opening '${peek.project || peek.name}' (${peek.datasets} dataset(s)${saved})`)) return;
     const result = await this.busy(document.querySelector("aside.left"), () =>
       this.api("/api/session/open", { method: "POST", body: { path } }));
     if (!result) return;
@@ -3474,6 +3662,10 @@ Object.assign(App, {
   async sessionReplaced(result) {
     this.resetSessionState();
     this.state.projectFile = result.file;
+    // The trial layout is in the file with everything else: the Trial
+    // layout tab puts it back on the map when it renders, and Export
+    // offers it as the prescription again.
+    this.state.design = result.design?.result || null;
     this.renderProjectFile();
     await this.refreshDatasets();
     await this.refreshProject();
@@ -3562,8 +3754,30 @@ Object.assign(App, {
         "length_unit", "speed_unit", "currency", "crop"].map((k) => [k, prefs[k]])),
       title: this.state.project?.name || null,
     };
-    const result = await this.busy(button, () =>
-      this.api("/api/report", { method: "POST", body }));
+    const result = await this.busy(button, async () => {
+      try {
+        return await this.api("/api/report", { method: "POST", body });
+      } catch (err) {
+        if (err.status !== 404) throw err;
+        // The dataset the button named is no longer in the session: removed
+        // from elsewhere — the MCP server, another tab — since this panel was
+        // drawn. The list is the truth: refreshing it prunes the cached
+        // result that carried the old id, and redrawing the tab rebuilds the
+        // panel from what is still loaded. For a cleaning report that is the
+        // original, which keeps its own copy and prints from that; when the
+        // selected dataset itself is gone there is nothing to redraw for.
+        const wasSelected = datasetId === this.state.selectedId;
+        if (wasSelected) this.clearSelection();
+        await this.refreshDatasets();
+        this.renderTab();
+        this.toast(wasSelected ? "That dataset is gone" : "The clean copy is gone",
+          "It was removed from the session after this panel was drawn. The list " +
+          "has been refreshed" + (wasSelected ? "; pick a dataset to go on."
+            : " and the report redrawn from the original's own copy; press Print again."),
+          "warn");
+        return null;
+      }
+    });
     if (!result) return;
 
     // The file is served as an attachment, so the new tab is the download.

@@ -1,11 +1,11 @@
 """Saving a session to a project file and reopening it.
 
 A session is hours of work: files opened, units declared, cleaning run and
-judged, roles assigned, prices typed in. Closing the app used to lose all of
-it, and re-importing the raw files does not bring it back — the cleaning
-report, the removal reasons, the roles and the reviewed ticks exist only in
-memory. The project file captures that whole state so the work can be picked
-up where it was left.
+judged, roles assigned, prices typed in, a trial laid out. Closing the app
+used to lose all of it, and re-importing the raw files does not bring it
+back — the cleaning report, the removal reasons, the roles, the reviewed
+ticks and the strip layout exist only in memory. The project file captures
+that whole state so the work can be picked up where it was left.
 
 The file is one ZIP with the extension ``.agrosuite``: a ``manifest.json``
 describing the session and one parquet file per dataset. Parquet rather than
@@ -355,6 +355,10 @@ def read_manifest(path: str | Path) -> dict[str, Any]:
     """
     path = Path(path)
     name = path.name
+    if path.is_dir():
+        raise IsADirectoryError(
+            f"That is a folder; choose the {EXTENSION} file inside it: {path}"
+        )
     if not path.is_file():
         raise FileNotFoundError(f"File not found: {path}")
     if not zipfile.is_zipfile(path):
@@ -452,6 +456,9 @@ def load_session(state: session_mod.Session, path: str | Path) -> dict[str, Any]
         "format": manifest["format"],
         "project": state.project["name"],
         "datasets": [entry.summary() for entry in entries],
+        # Handed back with the datasets so the interface can put the strips
+        # back on the map without a second request.
+        "design": state.project.get("design"),
     }
 
 

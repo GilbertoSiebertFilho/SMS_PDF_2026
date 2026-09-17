@@ -141,9 +141,8 @@ def synthetic_harvest(
         "truth_kg_ha": df["truth_kg_ha"].to_numpy(),
     }).sort_values("timestamp").reset_index(drop=True)
 
-    # The magnitudes are corn's: ten tonnes a hectare, and the trial built on
-    # top responds to nitrogen up to 240 kg/ha. Declared as canola, the first
-    # look rightly called the demo's units wrong, and the app's own check
+    # The magnitudes are corn's: ten tonnes a hectare. Declared as canola, the
+    # first look rightly called the demo's units wrong, and the app's own check
     # contradicting its own sample data was the first thing a new user saw.
     meta = DatasetMeta(
         name="Demo field",
@@ -168,6 +167,11 @@ def synthetic_trial(seed: int = 3, rates: tuple[float, ...] = (0, 60, 120, 180, 
 
     The response is quadratic with a plateau and differs between two fertility
     zones, which is exactly what a DIFM analysis should be able to separate.
+
+    The crop is canola, the one the app opens on: this demo is the first thing
+    a new user loads, with the Canadian defaults in place, and a trial drawn at
+    corn's ten tonnes a hectare would read as 200 bu/ac of canola — which the
+    first look rightly refuses to believe.
     """
     rng = np.random.default_rng(seed)
     # Each trial strip is 3 passes wide — any narrower and there is no usable
@@ -184,8 +188,8 @@ def synthetic_trial(seed: int = 3, rates: tuple[float, ...] = (0, 60, 120, 180, 
     x_rel = (x - x.min()) / max(float(np.ptp(x)), 1.0)
     strip = np.clip(np.floor(x_rel * n_strips).astype(int), 0, n_strips - 1)
 
-    # Sorteia a ordem das doses dentro de cada bloco, como num experimento
-    # em blocos casualizados.
+    # The order of the rates is drawn within each block, as in a randomized
+    # block experiment.
     assignment = np.zeros(n_strips, dtype=int)
     for block in range(n_blocks):
         assignment[block * len(rates):(block + 1) * len(rates)] = rng.permutation(len(rates))
@@ -195,13 +199,15 @@ def synthetic_trial(seed: int = 3, rates: tuple[float, ...] = (0, 60, 120, 180, 
     y_rel = (y - y.min()) / max(float(np.ptp(y)), 1.0)
     zone = (y_rel > 0.5).astype(int)  # zone 1 = the more fertile one
 
-    # Quadratic response: higher plateau and lower optimum in the fertile zone.
-    base = np.where(zone == 1, 9_800.0, 7_600.0)
-    gain = np.where(zone == 1, 26.0, 34.0)
-    curve = np.where(zone == 1, -0.062, -0.070)
-    yield_kg = base + gain * rate + curve * rate**2 + rng.normal(0, 380.0, len(df))
+    # Quadratic response at canola's scale — a bare check strip near 1.5 t/ha,
+    # a well-fed one near 3.5 — with a higher plateau and a lower optimum in
+    # the fertile zone.
+    base = np.where(zone == 1, 2_000.0, 1_400.0)
+    gain = np.where(zone == 1, 12.0, 14.0)
+    curve = np.where(zone == 1, -0.0207, -0.0217)
+    yield_kg = base + gain * rate + curve * rate**2 + rng.normal(0, 110.0, len(df))
 
-    df["value"] = np.clip(yield_kg, 1_000.0, None)
+    df["value"] = np.clip(yield_kg, 300.0, None)
     df["applied_rate"] = rate.astype(float)
     df["trial_id"] = strip
     df["zone"] = zone
@@ -209,6 +215,7 @@ def synthetic_trial(seed: int = 3, rates: tuple[float, ...] = (0, 60, 120, 180, 
     ds.df = df
 
     ds.meta.name = "DIFM demo trial"
+    ds.meta.crop = "canola"
     ds.meta.notes = ["Synthetic strip trial with a known quadratic response."]
     ds.meta.extra["rates"] = list(rates)
     return ds

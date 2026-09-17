@@ -51,9 +51,10 @@ def test_the_page_posts_what_the_route_reads():
     block = _block("importFiles")
     assert '"/api/import/files"' in block, "the page never calls the tree import"
     # One 'files' part and one 'paths' field per entry, in the same order:
-    # the route pairs them by position.
-    params = inspect.signature(folder_import.import_files).parameters
-    assert {"files", "paths"} <= set(params)
+    # the route pairs them by position. It reads the form itself, so the
+    # field names live in its source rather than in its signature.
+    route = inspect.getsource(folder_import.import_files)
+    assert 'form.getlist("files")' in route and 'form.getlist("paths")' in route
     files_at = block.index('form.append("files"')
     paths_at = block.index('form.append("paths"')
     assert files_at < paths_at
@@ -88,6 +89,9 @@ def test_the_cap_and_the_busy_state():
     block = _block("importFiles")
     cap_at = block.index("maxFiles")
     assert "2000" in block and "2 * 1024 ** 3" in block
+    # The server parses up to this many files; a drop the page lets through
+    # must not be uploaded whole and then refused at the parser.
+    assert f"maxFiles = {folder_import.MAX_FILES}," in block
     assert cap_at < block.index('"/api/import/files"'), "the cap comes before the upload"
     assert 'this.busy(document.getElementById("app")' in block
     # After a 200: the list, the first dataset selected, the skips shown.

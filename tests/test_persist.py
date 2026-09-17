@@ -354,12 +354,16 @@ def test_save_open_and_new_through_the_endpoints(server, tmp_path):
     again = persist_routes.save_session(persist_routes.SaveRequest())
     assert again["path"] == saved["path"]
 
-    # A chosen path gets the extension (and needs no name); a folder gets a
-    # file named after the project.
-    elsewhere = persist_routes.save_session(persist_routes.SaveRequest(path=str(tmp_path / "copy")))
+    # A path ending in .agrosuite is the file (and needs no name); anything
+    # else is a folder — there yet or not — with a file named after the
+    # project inside it.
+    elsewhere = persist_routes.save_session(
+        persist_routes.SaveRequest(path=str(tmp_path / "copy.agrosuite")))
     assert elsewhere["path"] == str(tmp_path / "copy.agrosuite")
     in_folder = persist_routes.save_session(persist_routes.SaveRequest(path=str(tmp_path)))
     assert Path(in_folder["path"]) == tmp_path / "Quarter- NW 14-32-W2.agrosuite"
+    new_folder = persist_routes.save_session(persist_routes.SaveRequest(path=str(tmp_path / "copy")))
+    assert Path(new_folder["path"]) == tmp_path / "copy" / "Quarter- NW 14-32-W2.agrosuite"
 
     # Saving over any other existing file is a decision, not a default.
     with pytest.raises(HTTPException) as conflict:
@@ -367,9 +371,6 @@ def test_save_open_and_new_through_the_endpoints(server, tmp_path):
     assert conflict.value.status_code == 409
     replaced = persist_routes.save_session(persist_routes.SaveRequest(overwrite=True))
     assert replaced["path"] == saved["path"]
-    with pytest.raises(HTTPException) as missing_folder:
-        persist_routes.save_session(persist_routes.SaveRequest(path=str(tmp_path / "nope" / "x.agrosuite")))
-    assert "Folder not found" in missing_folder.value.detail
 
     persist_routes.new_session()
     assert state.list() == []
@@ -388,6 +389,11 @@ def test_save_open_and_new_through_the_endpoints(server, tmp_path):
     with pytest.raises(HTTPException) as not_found:
         persist_routes.open_session(persist_routes.OpenRequest(path=str(tmp_path / "gone.agrosuite")))
     assert not_found.value.status_code == 404
+    # A folder exists; "not found" would send the person looking for it.
+    with pytest.raises(HTTPException) as folder:
+        persist_routes.open_session(persist_routes.OpenRequest(path=str(tmp_path)))
+    assert folder.value.status_code == 400 and "That is a folder" in folder.value.detail
+    assert ".agrosuite file inside it" in folder.value.detail
 
     bogus = tmp_path / "bogus.agrosuite"
     bogus.write_bytes(b"not a zip")
@@ -471,7 +477,7 @@ def test_resaving_the_open_file_asks_nothing_whatever_the_name(server, tmp_path)
 
     # A file saved under a name of its own is reported as such: the dialog
     # proposes the full path, so re-saving it is still one press of Save.
-    custom = _save(name="Field A", path=str(tmp_path / "custom_name"))
+    custom = _save(name="Field A", path=str(tmp_path / "custom_name.agrosuite"))
     assert custom["file"]["name"] == "custom_name"
     assert custom["file"]["named_after_project"] is False
     assert _save(name="Field A", path=custom["path"])["path"] == custom["path"]
@@ -503,24 +509,25 @@ def test_a_refused_save_renames_nothing(server, tmp_path):
     server._register(synthetic_harvest(), "Harvest with defects (demo)", "demo")
     state.project["name"] = "Before"
 
-    with pytest.raises(HTTPException) as missing:
-        _save(name="Renamed but failed", path="/nonexistent_dir_xyz/sub")
-    assert "Folder not found" in missing.value.detail
+    with pytest.raises(HTTPException) as relative:
+        _save(name="Renamed but failed", path="somewhere/sub")
+    assert "relative path" in relative.value.detail
     assert state.project["name"] == "Before"
 
     blocker = tmp_path / "notes.txt"
     blocker.write_text("a file where a folder is needed", encoding="utf-8")
-    with pytest.raises(HTTPException) as unwritable:
+    with pytest.raises(HTTPException) as in_the_way:
         _save(name="Renamed but failed", path=str(blocker / "x.agrosuite"))
-    assert unwritable.value.status_code == 400 and "Could not write" in unwritable.value.detail
+    assert in_the_way.value.status_code == 400 and "is a file, not a folder" in in_the_way.value.detail
     assert state.project["name"] == "Before"
 
     saved = _save(name="  After  ", path=str(tmp_path))
     assert state.project["name"] == "After"
     assert persist.read_manifest(saved["path"])["project"]["name"] == "After"
-    # No name: the project keeps its own.
-    _save(path=str(tmp_path / "again"))
+    # No name: the project keeps its own, and names the file.
+    again = _save(path=str(tmp_path / "again"))
     assert state.project["name"] == "After"
+    assert Path(again["path"]) == tmp_path / "again" / "After.agrosuite"
 
 
 def test_an_unwritable_home_does_not_fail_the_save_or_the_open(server, tmp_path, monkeypatch):
@@ -574,20 +581,153 @@ def test_a_manifest_with_bad_ids_is_refused_before_the_session_is_touched(tmp_pa
     assert other.project["name"] == "Still here"
 
 
-def test_a_path_ending_in_a_separator_is_a_folder(server, tmp_path):
-    """'/x/nofolder/' means the folder nofolder, not a file called nofolder
-    in /x — and a folder that is not there is reported, not invented."""
-    from fastapi import HTTPException
-
+def test_the_extension_decides_between_file_and_folder(server, tmp_path):
+    """'/x/nofolder' means the folder nofolder — with or without a trailing
+    separator, there yet or not — never a file called nofolder.agrosuite in
+    /x under a name nobody chose. Only a path ending in .agrosuite is the
+    file, and its folder is made too."""
     server._register(synthetic_harvest(), "Harvest with defects (demo)", "demo")
-    with pytest.raises(HTTPException) as missing:
-        _save(name="x", path=f"{tmp_path / 'nofolder'}/")
-    assert "Folder not found" in missing.value.detail and "nofolder" in missing.value.detail
+
+    with_separator = _save(name="x", path=f"{tmp_path / 'nofolder'}/")
+    assert Path(with_separator["path"]) == tmp_path / "nofolder" / "x.agrosuite"
+    without = _save(name="x", path=str(tmp_path / "other"))
+    assert Path(without["path"]) == tmp_path / "other" / "x.agrosuite"
+    assert not (tmp_path / "other.agrosuite").exists()
     assert not (tmp_path / "nofolder.agrosuite").exists()
-    assert not list(tmp_path.glob("*.agrosuite"))
+
+    nested = _save(name="x", path=str(tmp_path / "deep" / "er" / "north.AGROSUITE"))
+    assert Path(nested["path"]) == tmp_path / "deep" / "er" / "north.AGROSUITE"
+    assert (tmp_path / "deep" / "er").is_dir()
 
     saved = _save(name="x", path=f"{tmp_path}/")
     assert Path(saved["path"]) == tmp_path / "x.agrosuite"
+
+
+def test_relative_and_blocked_save_paths_are_refused(server, tmp_path, monkeypatch):
+    """A relative path would land beside wherever the app was started from;
+    a file where the folder should be cannot be made into one. Both are
+    refused in words, and nothing appears anywhere."""
+    from fastapi import HTTPException
+
+    monkeypatch.chdir(tmp_path)
+    server._register(synthetic_harvest(), "Harvest with defects (demo)", "demo")
+    for relative in ("projects", "./north.agrosuite", "projects\\north.agrosuite", '"north"'):
+        with pytest.raises(HTTPException) as refused:
+            _save(name="x", path=relative)
+        assert refused.value.status_code == 400, relative
+        assert "relative path" in refused.value.detail and "full path" in refused.value.detail
+    assert not list(tmp_path.rglob("*.agrosuite")) and not (tmp_path / "projects").exists()
+    # '~' is expanded before the check: it is a full path to the person.
+    home = tmp_path / "home"
+    monkeypatch.setenv("HOME", str(home))
+    at_home = _save(name="x", path="~/projects")
+    assert Path(at_home["path"]) == home / "projects" / "x.agrosuite"
+
+    blocker = tmp_path / "notes.txt"
+    blocker.write_text("in the way", encoding="utf-8")
+    with pytest.raises(HTTPException) as as_folder:
+        _save(name="x", path=str(blocker))
+    assert "is a file, not a folder" in as_folder.value.detail
+    assert ".agrosuite" in as_folder.value.detail
+    with pytest.raises(HTTPException) as under_file:
+        _save(name="x", path=str(blocker / "deeper"))
+    assert under_file.value.status_code == 400
+    assert blocker.read_text(encoding="utf-8") == "in the way"
+
+
+# ==========================================================================
+# Looking at a file before opening it
+# ==========================================================================
+
+def test_peek_describes_a_file_without_loading_it(server, tmp_path):
+    """The interface asks 'close the N datasets?' only for a file that will
+    then open. A folder — what the browser puts in the box on a click — a
+    missing file or a ZIP of monitor data get a reason instead, and the
+    session that is open is not touched either way."""
+    state = server.state
+    harvest = server._register(synthetic_harvest(), "Harvest with defects (demo)", "demo")
+    saved = _save(name="North", path=str(tmp_path))
+    server._register(synthetic_harvest(seed=1), "Second", "demo")
+    ids_before = [item["id"] for item in state.list()]
+
+    good = persist_routes.peek_session(f'"{tmp_path}/./North.agrosuite"')
+    assert good["ok"] is True
+    assert good["name"] == "North" and good["project"] == "North"
+    assert good["datasets"] == 1 and good["saved_at"] == saved["saved_at"]
+    assert good["path"] == saved["path"]
+
+    folder = persist_routes.peek_session(str(tmp_path))
+    assert folder["ok"] is False
+    assert "That is a folder" in folder["reason"] and ".agrosuite file inside it" in folder["reason"]
+
+    missing = persist_routes.peek_session(str(tmp_path / "gone.agrosuite"))
+    assert missing["ok"] is False and "File not found" in missing["reason"]
+
+    text = tmp_path / "notes.agrosuite"
+    text.write_text("not a zip", encoding="utf-8")
+    assert "not a ZIP" in persist_routes.peek_session(str(text))["reason"]
+    data = tmp_path / "monitor.zip"
+    with zipfile.ZipFile(data, "w") as zf:
+        zf.writestr("yield.csv", "lon,lat\n1,2\n")
+    assert "no manifest" in persist_routes.peek_session(str(data))["reason"]
+
+    # Nothing was opened: both datasets are still there, and the recent list
+    # and the open file are as the save left them.
+    assert [item["id"] for item in state.list()] == ids_before
+    assert harvest["id"] in ids_before
+    assert persist_routes.recent_sessions()["current"]["path"] == saved["path"]
+    assert server.app.url_path_for("peek_session") == "/api/session/peek"
+
+
+# ==========================================================================
+# The trial layout is part of the project
+# ==========================================================================
+
+FIELD = [(-105.8340, 50.4520), (-105.8229, 50.4520), (-105.8229, 50.4592), (-105.8340, 50.4592)]
+
+
+def test_the_trial_layout_round_trips_with_the_project(server, tmp_path):
+    """The export offers the layout as the prescription; a file that lost it
+    would hand back a session with the trial to lay out again — and the
+    dialog promises the whole session."""
+    from agrosuite.difm.design import design_strips
+
+    state = server.state
+    server._register(synthetic_harvest(), "Harvest with defects (demo)", "demo")
+    assert state.project["design"] is None
+
+    request = server.DesignRequest(boundary=[list(p) for p in FIELD], rates=[0, 50, 100, 150],
+                                   implement_width_m=18.29, blocks=3, buffer_m=20, seed=3)
+    result = server.design(request)
+    stored = state.project["design"]
+    assert stored["result"] == result
+    assert stored["request"] == request.model_dump() and stored["dataset_id"] is None
+    assert stored["created_at"]
+    # The same layout, made the same way, is what the file must give back.
+    assert result["features"] == design_strips(FIELD, rates=[0, 50, 100, 150], implement_width_m=18.29,
+                                               blocks=3, buffer_m=20, seed=3)["features"]
+
+    saved = _save(name="Trial", path=str(tmp_path))
+    manifest = persist.read_manifest(saved["path"])
+    assert manifest["project"]["design"]["result"]["summary"] == result["summary"]
+
+    persist_routes.new_session()
+    assert state.project["design"] is None
+    opened = persist_routes.open_session(persist_routes.OpenRequest(path=saved["path"]))
+    assert state.project["design"] == stored
+    # Handed back with the datasets, so the interface can draw the strips.
+    assert opened["design"] == stored
+    assert opened["design"]["result"]["features"]["features"][0]["properties"]["rate"] in (0, 50, 100, 150)
+
+    # A file from before the layout was kept, or one without a layout, opens
+    # with none — not with the layout of the project that was open before.
+    server.design(request)
+    fresh = session_mod.Session()
+    fresh.add(synthetic_harvest(), "x", "demo")
+    without = tmp_path / "without.agrosuite"
+    persist.save_session(fresh, without, SAVED_AT)
+    assert persist_routes.open_session(persist_routes.OpenRequest(path=str(without)))["design"] is None
+    assert state.project["design"] is None
 
 
 def test_paths_are_reported_resolved(server, tmp_path):

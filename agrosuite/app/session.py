@@ -71,6 +71,11 @@ def default_project() -> dict[str, Any]:
         "prices": {},       # crop_price, input_cost, currency, crop
         "reviewed": set(),  # dataset ids the user has confirmed
         "exported": False,
+        # The trial layout last generated: {result, request, dataset_id,
+        # created_at}, or None. It is project state, not a passing result —
+        # the export tab offers it as the prescription — so it is saved with
+        # the project and comes back when the file is reopened.
+        "design": None,
     }
 
 

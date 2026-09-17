@@ -165,14 +165,18 @@ Trial layout, the target monitor on Export — in whatever units you chose.
 **Save as machine…** reads the current settings back into a short form;
 **Suggest from this file** prefills it from the selected dataset (median
 swath, 2nd–98th percentile speed, the monitor that wrote the file). Nothing
-is saved until you press Save, and a profile that cannot work is refused
-with the reasons listed, all at once.
+is saved until you press Save, a name already in the list is replaced only
+after asking, and a profile that cannot work is refused with the reasons
+listed, all at once. With a machine picked, the same button reads **Update
+machine…** and opens on that machine, so a header swapped mid-season is
+corrected in place rather than retyped.
 
 Profiles outlive the session: they live in `~/.agrosuite/profiles.json`
 (set `AGROSUITE_HOME` to keep them elsewhere, e.g. on a shared drive), as
 plain indented JSON in metric units, so the file can be read, edited or
 copied to another computer with a text editor. A file the app cannot read is
-refused, not overwritten.
+refused, not overwritten; a profile typed into it that the app would refuse
+to save is listed as *needs attention* and not applied until it is fixed.
 
 ## Check before you take it out
 

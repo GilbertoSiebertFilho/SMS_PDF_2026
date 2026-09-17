@@ -94,7 +94,7 @@
       </div>
     </aside>
 
-    <!-- --------------------------------------------------- centro (mapa) -->
+    <!-- --------------------------------------------------- centre (map) -->
     <main class="center">
       <div class="map-toolbar">
         <label class="inline">
@@ -128,7 +128,7 @@
   </div>
 </div>
 
-<!-- ----------------------------------------------------------- diálogos -->
+<!-- ------------------------------------------------------------ dialogs -->
 
 <dialog id="dlg-path">
   <div class="head">
@@ -170,12 +170,14 @@
     </label>
     <label class="field">
       <span>Save to (optional)</span>
-      <input type="text" id="save-path" placeholder="A folder, or the full path of the file">
+      <input type="text" id="save-path" placeholder="A folder, or a file path ending in .agrosuite">
     </label>
     <p class="hint tight">
-      A folder gets a file named after the project; a file path is used as it is.
-      Left empty, the file is written to the session folder, which goes when the
-      app closes — keep it through the download link that follows.
+      A full path, from the drive or the root. Ending in .agrosuite it is the file;
+      anything else is a folder — created if it is not there yet — holding a file
+      named after the project. Left empty, the file is written to the session
+      folder, which goes when the app closes — keep it through the download link
+      that follows.
     </p>
   </div>
   <div class="foot">

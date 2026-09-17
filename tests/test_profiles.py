@@ -276,9 +276,15 @@ def test_api_round_trip(api, home):
     assert record["monitor_label"] == "John Deere"
     assert record["implement_width_m"] == pytest.approx(18.288)
 
-    replaced = routes.save_profile(routes.ProfileRequest(
-        name="my combine", implement_width_m=12.192, speed_min_kmh=3, speed_max_kmh=8,
-    ))
+    # The same machine, spelt differently: replaced only once that is agreed.
+    again = dict(name="my combine", implement_width_m=12.192, speed_min_kmh=3, speed_max_kmh=8)
+    with pytest.raises(HTTPException) as info:
+        routes.save_profile(routes.ProfileRequest(**again))
+    assert info.value.status_code == 409
+    assert "'My combine' already exists" in info.value.detail
+    assert routes.list_profiles()["profiles"][0]["implement_width_m"] == pytest.approx(18.288)
+
+    replaced = routes.save_profile(routes.ProfileRequest(**again, replace=True))
     assert len(replaced["profiles"]) == 1
     assert replaced["profiles"][0]["implement_width_m"] == pytest.approx(12.192)
 

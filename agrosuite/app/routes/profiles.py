@@ -36,6 +36,9 @@ class ProfileRequest(BaseModel):
     speed_min_kmh: float | None = None
     speed_max_kmh: float | None = None
     notes: str = ""
+    #: A profile already saved under this name is replaced only when this is
+    #: set; otherwise the save is refused with a 409 so the interface can ask.
+    replace: bool = False
 
 
 class SuggestRequest(BaseModel):
@@ -67,13 +70,22 @@ def list_profiles() -> dict[str, Any]:
 
 @router.post("")
 def save_profile(request: ProfileRequest) -> dict[str, Any]:
-    """Create or replace the profile with this name, and return the list."""
+    """Create the profile, or replace the one with this name once agreed.
+
+    Like a project file, an existing name answers 409 until the request
+    says ``replace``: a machine entered months ago is not overwritten by a
+    name typed the same way twice.
+    """
     from agrosuite.app import server as server_mod
 
     data = request.model_dump()
+    replace = data.pop("replace")
     defaults = profiles_mod.DEFAULT_SPEED_KMH.get(
         str(data.get("kind") or "").strip().lower(), profiles_mod.DEFAULT_SPEED_KMH["other"]
     )
+    # Which speeds the default filled: a refusal should say "the typical
+    # maximum for a combine" rather than quote a number nobody typed.
+    defaulted = {key for key in ("speed_min_kmh", "speed_max_kmh") if data[key] is None}
     if data["speed_min_kmh"] is None:
         data["speed_min_kmh"] = defaults[0]
     if data["speed_max_kmh"] is None:
@@ -82,11 +94,13 @@ def save_profile(request: ProfileRequest) -> dict[str, Any]:
     # What is wrong with the profile is the user's to fix (400); trouble with
     # the file on disk is the machine's (500). Both arrive as ValueError.
     try:
-        profile = profiles_mod.MachineProfile.from_dict(data).validate()
+        profile = profiles_mod.MachineProfile.from_dict(data).validate(defaulted=defaulted)
     except ValueError as exc:
         raise server_mod._fail(str(exc))
     try:
-        profiles_mod.save_profile(profile)
+        profiles_mod.save_profile(profile, replace=replace)
+    except profiles_mod.ProfileExists as exc:
+        raise server_mod._fail(str(exc), 409)
     except ValueError as exc:
         raise server_mod._fail(str(exc), 500)
     return _listing()

@@ -46,7 +46,8 @@ def test_the_page_posts_only_fields_the_route_accepts():
     """A key the route ignores would be a silently dropped setting."""
     body = _block("saveMachine")
     body = body[body.index("const body = {"):body.index("};", body.index("const body = {"))]
-    posted = set(re.findall(r"^\s+(\w+):", body, flags=re.MULTILINE))
+    # `name,` is the shorthand for `name: name`.
+    posted = set(re.findall(r"^\s+(\w+)(?::|,\s*$)", body, flags=re.MULTILINE))
     accepted = set(profiles_routes.ProfileRequest.model_fields)
     assert posted == accepted, f"posted {sorted(posted)} vs accepted {sorted(accepted)}"
 
@@ -81,8 +82,9 @@ def test_units_cross_the_wire_in_metric():
     """Feet and mph are shown, never sent: every physical field is converted."""
     scope = _block("machineScope") + _block("saveMachine") + _block("renderMachineDialog")
     # Both readers go through the one conversion, so they cannot drift apart.
-    assert "this.machineMetric(" in _block("machineScope")
-    assert "this.machineMetric(" in _block("saveMachine")
+    assert "this.machineFieldMetric(" in _block("machineScope")
+    assert "this.machineFieldMetric(" in _block("saveMachine")
+    assert "this.machineMetric(" in _block("machineFieldMetric")
     assert "Units.toInternal[kind]" in _block("machineMetric")
     assert "Units.convert[kind]" in scope
     assert "toInternal.length" not in APP_JS[APP_JS.index("Machine profiles"):].replace(
