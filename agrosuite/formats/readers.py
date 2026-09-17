@@ -180,9 +180,19 @@ def _guess_operation(df: pd.DataFrame, path: Path, brand: str) -> str:
         return "prescription"
     if any(k in cols for k in ("yield", "yld", "dry_yield", "moisture_pct", "flow_kgs")):
         return "harvest"
-    # A log carrying both a target rate **and** a measurement is an application
-    # record: the target came from the map and the value is what the machine put out.
     if sch.TARGET_RATE in cols and sch.VALUE in cols:
+        # A target rate and a measurement that are the *same numbers* means
+        # there was never a measurement: the main variable was filled in from
+        # the target because nothing else was there. That is a plan, not a log
+        # of what the machine did.
+        target = pd.to_numeric(df[sch.TARGET_RATE], errors="coerce")
+        value = pd.to_numeric(df[sch.VALUE], errors="coerce")
+        if target.notna().any() and np.allclose(
+            target.fillna(0).to_numpy(), value.fillna(0).to_numpy(), equal_nan=True
+        ):
+            return "prescription"
+        # Otherwise the target came from the map and the value is what actually
+        # went out — an as-applied record.
         return "application"
     if any(k in text for k in ("harvest", "colheita", "yield", "rendimento")):
         return "harvest"
@@ -234,6 +244,10 @@ def _build_dataset(
             "brand_confidence": confidence,
             "column_mapping": mapping,
             "original_columns": original_columns,
+            # The manufacturer's usual export unit is the strongest single hint
+            # when the file's magnitude does not match the assumed unit.
+            "brand_default_rate_unit": brand.default_units.get("yield")
+            or brand.default_units.get("rate"),
         },
     )
     return Dataset(df, meta, geometry=geometry)

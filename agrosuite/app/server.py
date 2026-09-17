@@ -34,6 +34,10 @@ from ..formats import augmenta as augmenta_mod
 from ..formats import brands as brands_mod
 from ..formats import isoxml as isoxml_mod
 from ..core import guidance as guidance_mod
+from ..core import preflight as preflight_mod
+from ..core import workflow as workflow_mod
+from ..difm import join as join_mod
+from ..formats import usb as usb_mod
 from ..formats import johndeere as jd_mod
 from ..formats import packages as packages_mod
 from ..formats import validate as validate_mod
@@ -98,6 +102,42 @@ class DesignRequest(BaseModel):
     angle_deg: float | None = None
     buffer_m: float = 0.0
     seed: int = 0
+
+
+class RoleRequest(BaseModel):
+    """Assigning a dataset its role inside the project."""
+
+    dataset_id: str
+    role: str
+
+
+class PricesRequest(BaseModel):
+    """Prices, in the internal units: currency per kg of crop and of input."""
+
+    crop_price: float = 0.0
+    input_cost: float = 0.0
+    currency: str = "CAD"
+    crop: str | None = None
+
+
+class ProjectRequest(BaseModel):
+    name: str | None = None
+    goal: str | None = None
+
+
+class JoinRequest(BaseModel):
+    """Joining the project's layers onto a shared grid."""
+
+    cell_m: float | None = None
+    min_points_per_cell: int = 1
+    min_purity: float = 0.8
+    carry: list[str] = Field(default_factory=list)
+
+
+class UsbRequest(BaseModel):
+    folder: str
+    drive: str
+    replace: list[str] = Field(default_factory=list)
 
 
 class GuidanceRequest(BaseModel):
@@ -185,7 +225,40 @@ def _register(
         apply_source_units(dataset, source_units, crop)
     dataset.ensure_derived()
     entry = state.add(dataset, label=label, origin=origin, parent_id=parent_id)
-    return entry.summary()
+
+    # The preliminary pass runs on import, not on request: the user should not
+    # have to ask whether the file they just opened is usable.
+    try:
+        report = preflight_mod.run(dataset)
+    except Exception as exc:  # a failed check must not block the import
+        report = {
+            "verdict": "warning",
+            "summary": f"The preliminary check could not run: {exc}",
+            "findings": [], "info": {}, "suggested_role": "other",
+            "role_label": "Other", "next_step": {"step": "review", "label": "Review the file",
+                                                 "why": "The automatic check failed."},
+        }
+    entry.reports["preflight"] = report
+
+    # A derived dataset — converted units, a cleaned copy, a join — takes over
+    # its parent's role in the project. Leaving the role on the original would
+    # put two versions of the same layer into the analysis, and the stale one
+    # is exactly the version the conversion was meant to replace.
+    inherited = state.project["roles"].pop(parent_id, None) if parent_id else None
+    if inherited:
+        try:
+            state.get(parent_id).role = None
+        except KeyError:
+            pass
+        if parent_id in state.project["reviewed"]:
+            state.project["reviewed"].discard(parent_id)
+            state.project["reviewed"].add(entry.id)
+    entry.role = inherited or report.get("suggested_role")
+    state.project["roles"][entry.id] = entry.role
+
+    summary = entry.summary()
+    summary["preflight"] = report
+    return summary
 
 
 # ==========================================================================
@@ -219,7 +292,204 @@ def redeclare_units(dataset_id: str, request: UnitsRequest) -> dict[str, Any]:
             "or those columns do not exist in this dataset."
         )
     summary = _register(converted, f"{entry.label} · converted", "units", entry.id)
+    # Declaring a file's units *is* reviewing it: the user looked at what came
+    # in and stated what it means. Making them tick a second box would be
+    # asking the same question twice.
+    state.project["reviewed"].add(summary["id"])
     return {"dataset": summary, "conversions": applied}
+
+
+@app.get("/api/workflow")
+def workflow_catalog() -> dict[str, Any]:
+    """The stages and goals, for the interface to draw the flow."""
+    return workflow_mod.describe()
+
+
+def _project_state() -> dict[str, Any]:
+    """Where the project stands, what it is missing and what to do next."""
+    project = state.project
+    entries = {e["id"]: e for e in state.list()}
+
+    layers = []
+    roles: set[str] = set()
+    for dataset_id, role in project["roles"].items():
+        entry = entries.get(dataset_id)
+        if entry is None:
+            continue
+        layers.append({
+            "dataset_id": dataset_id,
+            "label": entry["label"],
+            "role": role,
+            "role_label": preflight_mod.ROLES.get(role, role),
+            "rows": entry["rows"],
+            "origin": entry["origin"],
+            "reviewed": dataset_id in project["reviewed"],
+        })
+        if role:
+            roles.add(role)
+
+    prices = project["prices"]
+    has_prices = bool(prices.get("crop_price"))
+
+    # A zone column is anything categorical the yield layer carries beyond the
+    # canonical ones — that is what lets the analysis split the field.
+    has_zone = False
+    for dataset_id, role in project["roles"].items():
+        if role != "yield":
+            continue
+        try:
+            dataset = state.get(dataset_id).dataset
+        except KeyError:
+            continue
+        for column in dataset.df.columns:
+            if column in sch.LABELS or column in ("x", "y"):
+                continue
+            if dataset.df[column].nunique(dropna=True) <= 12:
+                has_zone = True
+                break
+
+    has_geometry = any(
+        state.get(d).dataset.geometry is not None
+        for d in project["roles"] if d in {e["id"] for e in state.list()}
+    ) if project["roles"] else False
+
+    goal = project["goal"]
+    evaluation = workflow_mod.evaluate(
+        goal, roles, has_prices=has_prices,
+        has_geometry=has_geometry, has_zone=has_zone,
+    )
+
+    cleaned = any(e["origin"] == "clean" for e in entries.values())
+    analysed = any(
+        "difm" in state.get(e["id"]).reports or "augmenta" in state.get(e["id"]).reports
+        for e in entries.values()
+    )
+    reviewed = bool(layers) and all(layer["reviewed"] for layer in layers)
+    stage = workflow_mod.stage_of(
+        len(layers), reviewed, cleaned, analysed, project["exported"]
+    )
+
+    return {
+        "name": project["name"],
+        "goal": goal,
+        "stage": stage,
+        "stage_label": workflow_mod.STAGE_LABELS[stage],
+        "layers": layers,
+        "roles_present": sorted(roles),
+        "prices": prices,
+        "evaluation": evaluation,
+        "next_action": workflow_mod.next_action(stage, goal, evaluation),
+        "role_options": preflight_mod.ROLES,
+    }
+
+
+@app.get("/api/project")
+def get_project() -> dict[str, Any]:
+    return _project_state()
+
+
+@app.post("/api/project")
+def update_project(request: ProjectRequest) -> dict[str, Any]:
+    if request.name is not None:
+        state.project["name"] = request.name
+    if request.goal is not None:
+        if request.goal not in workflow_mod.GOALS:
+            raise _fail(f"Unknown goal: '{request.goal}'.")
+        state.project["goal"] = request.goal
+    return _project_state()
+
+
+@app.post("/api/project/role")
+def set_role(request: RoleRequest) -> dict[str, Any]:
+    """Set what a dataset is for, and mark it reviewed."""
+    try:
+        entry = state.get(request.dataset_id)
+    except KeyError as exc:
+        raise _fail(str(exc), 404)
+    if request.role not in preflight_mod.ROLES:
+        raise _fail(
+            f"Unknown role: '{request.role}'. "
+            f"Valid roles: {', '.join(preflight_mod.ROLES)}."
+        )
+    entry.role = request.role
+    state.project["roles"][request.dataset_id] = request.role
+    state.project["reviewed"].add(request.dataset_id)
+    return _project_state()
+
+
+@app.post("/api/project/prices")
+def set_prices(request: PricesRequest) -> dict[str, Any]:
+    state.project["prices"] = {
+        "crop_price": request.crop_price,
+        "input_cost": request.input_cost,
+        "currency": request.currency,
+        "crop": request.crop,
+    }
+    return _project_state()
+
+
+@app.post("/api/project/join")
+def join_project(request: JoinRequest) -> dict[str, Any]:
+    """Join the project's layers onto a shared grid, ready for analysis."""
+    layers: dict[str, Any] = {}
+    for dataset_id, role in state.project["roles"].items():
+        if role not in join_mod.ROLE_COLUMNS:
+            continue
+        try:
+            layers[role] = state.get(dataset_id).dataset
+        except KeyError:
+            continue
+
+    if "yield" not in layers:
+        raise _fail(
+            "No layer is marked as Yield. Set the harvest file's role before joining."
+        )
+
+    cell_m = request.cell_m or join_mod.suggest_cell_size(layers)
+    try:
+        joined, report = join_mod.join_layers(
+            layers, cell_m=cell_m,
+            min_points_per_cell=request.min_points_per_cell,
+            min_purity=request.min_purity,
+            carry=request.carry or None,
+        )
+    except ValueError as exc:
+        raise _fail(str(exc))
+
+    summary = _register(joined, f"{state.project['name']} · joined", "join")
+    # The joined table is the analysis input, not one of the layers.
+    state.project["roles"].pop(summary["id"], None)
+    state.get(summary["id"]).role = None
+    state.get(summary["id"]).reports["join"] = report
+    return {"dataset": summary, "report": report, "cell_m": cell_m}
+
+
+@app.get("/api/usb")
+def usb_drives() -> dict[str, Any]:
+    """Drives the app could copy a package to."""
+    return {"drives": usb_mod.list_drives()}
+
+
+@app.post("/api/usb/plan")
+def usb_plan(request: UsbRequest) -> dict[str, Any]:
+    """Say what copying would replace, before anything is written."""
+    try:
+        return usb_mod.plan_write(Path(request.folder), request.drive)
+    except ValueError as exc:
+        raise _fail(str(exc))
+
+
+@app.post("/api/usb/write")
+def usb_write(request: UsbRequest) -> dict[str, Any]:
+    """Copy the package to the drive root."""
+    try:
+        result = usb_mod.write_to_drive(
+            Path(request.folder), request.drive, replace=request.replace
+        )
+    except ValueError as exc:
+        raise _fail(str(exc))
+    state.project["exported"] = True
+    return result
 
 
 @app.get("/api/catalog")
@@ -251,6 +521,8 @@ def catalog() -> dict[str, Any]:
         "import_extensions": sorted(registry.ALL_IMPORT_EXT),
         "columns": sch.LABELS,
         "monitors": packages_mod.profile_catalog(),
+        "roles": preflight_mod.ROLES,
+        "workflow": workflow_mod.describe(),
         "artifact_labels": packages_mod.ARTIFACT_LABELS,
         "units": units_mod.unit_catalog(),
         "unit_columns": {k: v for k, v in __import__(
@@ -394,6 +666,10 @@ def get_dataset(dataset_id: str) -> dict[str, Any]:
     data = entry.summary()
     data["preview"] = session_mod.preview_table(entry.dataset)
     data["reports"] = {k: True for k in entry.reports}
+    # The preliminary report travels with the dataset so the interface can show
+    # it without a second round trip; the heavier reports stay behind their own
+    # endpoints.
+    data["reports_data"] = {"preflight": entry.reports.get("preflight")}
     return data
 
 

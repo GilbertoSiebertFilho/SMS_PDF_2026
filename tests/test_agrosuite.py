@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 import pytest
@@ -485,3 +486,272 @@ def test_card_with_only_proprietary_files_explains_the_way_out(tmp_path):
     (card / "SETUP" / "Setup.jdf").write_bytes(b"JDF" + bytes(64))
     with pytest.raises(ValueError, match="shapefile instead of GreenStar"):
         registry.read_any(tmp_path)
+
+
+# ==========================================================================
+# Preliminary analysis
+# ==========================================================================
+
+def test_preflight_catches_undeclared_imperial_units(sample_data):
+    """A bu/ac file imported as kg/ha has to be caught, not quietly accepted.
+
+    This is the error with the worst consequences in the whole app: every
+    number downstream inherits a factor of fifty, and nothing else looks wrong.
+    """
+    from agrosuite.core import preflight
+
+    dataset = registry.read_any(sample_data["john_deere_shp"])
+    dataset.ensure_derived()
+    report = preflight.run(dataset)
+
+    assert report["verdict"] == "alert"
+    unit_finding = next(f for f in report["findings"] if f["title"] == "Units look wrong")
+    assert "bu/ac" in unit_finding["detail"]
+    assert report["next_step"]["step"] == "units"
+
+
+def test_preflight_accepts_a_metric_file(sample_data):
+    from agrosuite.core import preflight
+
+    dataset = registry.read_any(sample_data["isoxml"])
+    dataset.ensure_derived()
+    report = preflight.run(dataset)
+    assert report["verdict"] == "ok"
+    assert report["suggested_role"] == "as_applied"
+
+
+def test_preflight_warns_when_only_width_looks_imperial(sample_data):
+    """A rate is plausible at both 96 kg/ha and 96 lb/ac.
+
+    The value alone cannot settle it, so the check has to lean on the speed and
+    the width, which a monitor writes in the same system as the rate.
+    """
+    from agrosuite.core import preflight
+
+    dataset = registry.read_any(sample_data["raven_csv"])
+    dataset.ensure_derived()
+    report = preflight.run(dataset)
+    assert any(f["title"] == "Possibly imperial units" for f in report["findings"])
+
+
+def test_preflight_reads_the_crop_from_the_file(sample_data):
+    from agrosuite.core import preflight
+
+    dataset = registry.read_any(sample_data["john_deere_shp"])
+    dataset.ensure_derived()
+    report = preflight.run(dataset)
+    assert report["info"]["crop_detected"] == "canola"
+
+
+# ==========================================================================
+# Treatment levels
+# ==========================================================================
+
+@pytest.mark.parametrize("noise", [0.0, 0.01, 0.03, 0.05])
+def test_rate_levels_recovers_the_design(noise):
+    """Machine execution error must not turn five rates into twelve."""
+    rng = np.random.default_rng(4)
+    nominal = np.repeat([0.0, 60, 120, 180, 240], 1200)
+    observed = nominal + rng.normal(0, noise * np.maximum(nominal, 20))
+    _, levels = difm_analysis.rate_levels(observed)
+    assert len(levels) == 5
+    assert levels == pytest.approx([0, 60, 120, 180, 240], abs=max(3.0, 240 * noise))
+
+
+def test_rate_levels_does_not_invent_structure():
+    """A genuinely continuous rate map has no treatments to find."""
+    rng = np.random.default_rng(4)
+    _, levels = difm_analysis.rate_levels(rng.uniform(50, 250, 3000))
+    assert len(levels) == 12  # falls back to binning, which preserves order
+
+
+def test_rate_levels_handles_a_single_rate():
+    _, levels = difm_analysis.rate_levels(np.full(500, 90.0))
+    assert levels == [90.0]
+
+
+# ==========================================================================
+# Joining layers
+# ==========================================================================
+
+@pytest.fixture(scope="session")
+def difm_files(tmp_path_factory) -> dict[str, Path]:
+    return fx.difm_project(tmp_path_factory.mktemp("difm"))
+
+
+def _load_project(difm_files) -> dict[str, Any]:
+    """Load the three files the way the app does, declaring imperial units."""
+    from agrosuite.core.dataset import apply_source_units
+
+    imperial = {
+        sch.SPEED: "mph", sch.SWATH: "ft",
+        sch.TARGET_RATE: "lb/ac", sch.APPLIED_RATE: "lb/ac",
+    }
+    layers = {}
+    for role, path, value_unit in [
+        ("plan", difm_files["plan"], "lb/ac"),
+        ("as_applied", difm_files["as_applied"], "lb/ac"),
+        ("yield", difm_files["yield"], "bu/ac"),
+    ]:
+        dataset = registry.read_any(path)
+        apply_source_units(dataset, {**imperial, sch.VALUE: value_unit}, "canola")
+        dataset.ensure_derived()
+        layers[role] = dataset
+    return layers
+
+
+def test_the_three_files_get_the_right_roles(difm_files):
+    """A plan, an as-applied log and a yield map must not be confused.
+
+    A plan carries only a target; an as-applied log carries what actually went
+    out. Reading one as the other changes which numbers the response is fitted
+    against.
+    """
+    from agrosuite.core import preflight
+
+    expected = {"plan": "plan", "as_applied": "as_applied", "yield": "yield"}
+    for role, path in difm_files.items():
+        dataset = registry.read_any(path)
+        dataset.ensure_derived()
+        assert preflight.run(dataset)["suggested_role"] == expected[role]
+
+
+def test_join_keeps_the_trial_rates_intact(difm_files):
+    """Cells straddling two strips must not average into a rate nobody applied."""
+    from agrosuite.difm.join import join_layers
+
+    layers = _load_project(difm_files)
+    joined, report = join_layers(layers, cell_m=20, carry=["Zone"])
+
+    rates = sorted(joined.df[sch.APPLIED_RATE].round(0).unique())
+    assert len(rates) == 5
+    assert rates == pytest.approx([0, 45, 90, 135, 180], abs=3)
+    assert report["carried"] == ["Zone"]
+
+
+def test_join_reports_how_far_the_machine_drifted(difm_files):
+    from agrosuite.difm.join import join_layers
+
+    layers = _load_project(difm_files)
+    _, report = join_layers(layers, cell_m=20)
+    assert "plan_vs_applied" in report
+    assert report["plan_vs_applied"]["median_relative_pct"] is not None
+
+
+def test_join_refuses_without_a_yield_layer(difm_files):
+    from agrosuite.difm.join import join_layers
+
+    layers = _load_project(difm_files)
+    with pytest.raises(ValueError, match="needs a yield layer"):
+        join_layers({"as_applied": layers["as_applied"]})
+
+
+def test_join_refuses_without_a_rate(difm_files):
+    from agrosuite.difm.join import join_layers
+
+    layers = _load_project(difm_files)
+    with pytest.raises(ValueError, match="rate that was applied"):
+        join_layers({"yield": layers["yield"]})
+
+
+def test_joined_layers_recover_the_zone_optima(difm_files):
+    """The whole point of the exercise: three files in, two optima out.
+
+    The trial's true economic optima, at these prices, are about 181 kg/ha in
+    the poorer zone and 170 in the richer one.
+    """
+    from agrosuite.difm.join import join_layers
+
+    layers = _load_project(difm_files)
+    joined, _ = join_layers(layers, cell_m=20, carry=["Zone"])
+
+    crop_price = 16.50 / 22.6796      # C$ per kg of canola
+    input_cost = 0.62 / 0.45359237    # C$ per kg of N
+    report = difm_analysis.analyze(
+        joined, crop_price=crop_price, input_cost=input_cost,
+        cell_m=20, edge_margin_m=0, zone_column="Zone",
+    )
+    optima = {z["zone"]: z["optimum_rate"] for z in report["zones"]["by_zone"]
+              if "optimum_rate" in z}
+    assert len(optima) == 2
+    for value in optima.values():
+        assert 140 <= value <= 200
+    for zone in report["zones"]["by_zone"]:
+        assert zone["r2"] > 0.85
+
+
+# ==========================================================================
+# Workflow
+# ==========================================================================
+
+def test_workflow_names_what_is_missing():
+    from agrosuite.core import workflow
+
+    evaluation = workflow.evaluate("difm", {"yield"}, has_prices=False)
+    assert not evaluation["ready"]
+    missing = {r["key"] for r in evaluation["missing"]}
+    assert missing == {"rate", "prices"}
+
+
+def test_workflow_accepts_a_plan_when_there_is_no_as_applied():
+    from agrosuite.core import workflow
+
+    evaluation = workflow.evaluate("difm", {"yield", "plan"}, has_prices=True)
+    assert evaluation["ready"]
+
+
+def test_workflow_next_action_follows_the_order():
+    from agrosuite.core import workflow
+
+    ready = workflow.evaluate("difm", {"yield", "as_applied"}, has_prices=True)
+    assert workflow.next_action("review", "difm", ready)["step"] == "review"
+    assert workflow.next_action("clean", "difm", ready)["step"] == "clean"
+    assert workflow.next_action("analyse", "difm", ready)["step"] == "analyse"
+
+    incomplete = workflow.evaluate("difm", {"yield"}, has_prices=False)
+    assert workflow.next_action("clean", "difm", incomplete)["step"] == "load"
+
+
+# ==========================================================================
+# Writing to a USB drive
+# ==========================================================================
+
+def test_usb_never_overwrites_without_permission(tmp_path):
+    """A stick carries other jobs. Wiping them because the app assumed it was
+    scratch space would be unforgivable."""
+    from agrosuite.formats import usb
+
+    stick = tmp_path / "stick"
+    (stick / "TASKDATA").mkdir(parents=True)
+    (stick / "TASKDATA" / "last_year.xml").write_text("old")
+    (stick / "photos").mkdir()
+    (stick / "photos" / "a.jpg").write_bytes(b"0" * 10)
+
+    package = tmp_path / "package"
+    (package / "TASKDATA").mkdir(parents=True)
+    (package / "TASKDATA" / "TASKDATA.XML").write_text("new")
+    (package / "README.txt").write_text("how to load it")
+
+    plan = usb.plan_write(package, stick)
+    assert plan["needs_confirmation"]
+    assert [c["name"] for c in plan["conflicts"]] == ["TASKDATA"]
+
+    result = usb.write_to_drive(package, stick)
+    assert result["copied"] == ["README.txt"]
+    assert [s["name"] for s in result["skipped"]] == ["TASKDATA"]
+    assert (stick / "TASKDATA" / "last_year.xml").exists()
+
+    result = usb.write_to_drive(package, stick, replace=["TASKDATA"])
+    assert result["copied"] == ["TASKDATA"]
+    assert (stick / "TASKDATA" / "TASKDATA.XML").exists()
+    assert not (stick / "TASKDATA" / "last_year.xml").exists()
+    assert (stick / "photos" / "a.jpg").exists(), "unrelated files must survive"
+
+
+def test_usb_refuses_a_missing_drive(tmp_path):
+    from agrosuite.formats import usb
+
+    package = tmp_path / "package"
+    package.mkdir()
+    with pytest.raises(ValueError, match="Drive not found"):
+        usb.plan_write(package, str(tmp_path / "no-such-drive"))

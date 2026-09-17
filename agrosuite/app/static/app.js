@@ -74,7 +74,7 @@ const App = {
     this.bindImport();
     this.bindDialogs();
     this.renderTab();
-    this.refreshDatasets();
+    this.refreshDatasets().then(() => this.refreshProject());
   },
 
   bindTopbar() {
@@ -139,6 +139,7 @@ const App = {
     if (!payload) return;
     this.state.datasets = payload.datasets;
     this.renderDatasetList();
+    this.refreshProject();
   },
 
   renderDatasetList() {
@@ -315,6 +316,7 @@ Object.assign(App, {
     const confidence = meta.extra?.brand_confidence;
 
     panel.innerHTML = `
+      ${this.preflightPanel(d.reports_data?.preflight)}
       <div class="panel">
         <h3>Source</h3>
         <div class="stat-grid">
@@ -373,6 +375,11 @@ Object.assign(App, {
 
     this.renderPreview(document.getElementById("preview"), d.preview);
 
+    document.getElementById("btn-preflight-next")?.addEventListener("click", () => {
+      const step = d.reports_data?.preflight?.next_step?.step;
+      if (step === "units") this.openImportUnitsDialog();
+      else this.goToStep(step || "clean");
+    });
     document.getElementById("btn-declare-units")
       ?.addEventListener("click", () => this.openImportUnitsDialog());
     document.getElementById("btn-augmenta")
@@ -387,6 +394,45 @@ Object.assign(App, {
       await this.refreshDatasets();
       this.renderTab();
     });
+  },
+
+  /* The preliminary pass, shown the moment a file opens rather than on
+   * request: the user should not have to ask whether what they just loaded is
+   * usable. Alerts come first because they block everything downstream. */
+  preflightPanel(report) {
+    if (!report) return "";
+    const noteClass = { ok: "ok", warning: "warning", alert: "alert" }[report.verdict] || "";
+    const icon = { ok: "✓", warning: "!", alert: "✕" };
+    const order = { alert: 0, warning: 1, ok: 2 };
+    const findings = [...report.findings].sort(
+      (a, b) => order[a.level] - order[b.level]);
+
+    return `
+      <div class="panel">
+        <h3>First look at this file</h3>
+        <div class="note ${noteClass}">${this.escape(report.summary)}</div>
+        <div style="margin-top:8px">
+          ${findings.map((f) => `
+            <div class="req ${f.level === "ok" ? "done" : "todo"}" style="align-items:flex-start">
+              <span class="mark" style="color:${
+                f.level === "ok" ? "var(--ok)"
+                : f.level === "warning" ? "var(--warn)" : "var(--danger)"
+              }">${icon[f.level]}</span>
+              <span class="txt">
+                <b>${this.escape(f.title)}</b>
+                <br><span class="d">${this.escape(f.detail)}</span>
+                ${f.action ? `<br><span class="d" style="color:var(--text)">${
+                  this.escape(f.action)}</span>` : ""}
+              </span>
+            </div>`).join("")}
+        </div>
+        <div class="row tight" style="margin-top:10px">
+          <button class="${report.verdict === "alert" ? "primary" : ""}" id="btn-preflight-next">
+            ${this.escape(report.next_step.label)}
+          </button>
+        </div>
+        <p class="hint tight">${this.escape(report.next_step.why)}</p>
+      </div>`;
   },
 
   /* John Deere card inventory: what can be read and what is proprietary.
@@ -808,6 +854,14 @@ Object.assign(App, {
     const symbol = Units.currencySymbol();
     const lengthUnit = Units.label.length();
 
+    // Prices are set once on the project and reused here, so the same numbers
+    // drive the panel on the left and the analysis on the right.
+    const prices = this.state.project?.prices || {};
+    const projectCrop = prices.crop_price
+      ? Number(Units.priceFromInternal(prices.crop_price, yieldUnit).toFixed(2)) : 0;
+    const projectInput = prices.input_cost
+      ? Number(Units.priceFromInternal(prices.input_cost, inputUnit).toFixed(2)) : 0;
+
     panel.innerHTML = `
       <div class="panel">
         <h3>Trial</h3>
@@ -823,9 +877,9 @@ Object.assign(App, {
       <div class="panel">
         <h3>Prices</h3>
         ${this.field(`Crop price (${symbol}/${yieldNum})`,
-          this.numberInput("difm-price", 0, "0.01", "0"))}
+          this.numberInput("difm-price", projectCrop, "0.01", "0"))}
         ${this.field(`Input cost (${symbol}/${inputNum})`,
-          this.numberInput("difm-cost", 0, "0.01", "0"),
+          this.numberInput("difm-cost", projectInput, "0.01", "0"),
           "The optimum rate is where the next unit of input stops paying for itself.")}
       </div>
 
@@ -1465,6 +1519,7 @@ Object.assign(App, {
       this.api("/api/export/package", { method: "POST", body }));
     if (!result) return;
     this.renderPackageReport(result);
+    this.bindUsbPanel(result.folder);
     this.toast("Package built", `${result.contents.length} item(s) for the ${result.monitor_label}.`);
   },
 
@@ -1495,6 +1550,7 @@ Object.assign(App, {
           `<div class="note warning" style="margin-top:6px">${this.escape(s)}</div>`).join("")}
       </div>
       ${this.verificationPanel(result.verification)}
+      ${this.usbPanel(result)}
       <div class="panel">
         <h3>How to load it</h3>
         ${result.instructions.map((step, i) =>
@@ -1502,6 +1558,98 @@ Object.assign(App, {
         <p class="hint tight" style="margin-top:8px">The <b>README.txt</b> inside the
         package repeats these instructions, to read in the cab.</p>
       </div>`;
+  },
+
+  /* Copying to the stick is the last step of every job, and the step where
+   * the mistakes happen — the folder ends up one level deep, or last season's
+   * prescription is still sitting there. */
+  usbPanel(result) {
+    return `
+      <div class="panel">
+        <h3>Write to a USB drive</h3>
+        <div class="row tight">
+          <select id="usb-drive"><option value="">— refresh to list drives —</option></select>
+          <button class="small" id="btn-usb-refresh" style="flex:none">Refresh</button>
+        </div>
+        <div id="usb-detail"></div>
+        <button class="wide" id="btn-usb-write" style="margin-top:8px" disabled>
+          Copy the package to the drive
+        </button>
+        <p class="hint tight">The package goes to the root of the drive, which is where
+        the terminal looks. Anything already there is left alone unless you say
+        otherwise.</p>
+      </div>`;
+  },
+
+  bindUsbPanel(folder) {
+    const select = document.getElementById("usb-drive");
+    const detail = document.getElementById("usb-detail");
+    const writeButton = document.getElementById("btn-usb-write");
+    if (!select) return;
+
+    const refresh = async () => {
+      const payload = await this.api("/api/usb").catch(() => null);
+      const drives = payload?.drives || [];
+      select.innerHTML = drives.length
+        ? drives.map((d) => `<option value="${this.escape(d.path)}">${
+            this.escape(d.label)} — ${this.escape(d.path)}${
+            d.removable ? "" : " (fixed disk)"}</option>`).join("")
+        : '<option value="">no drive found</option>';
+      select.dispatchEvent(new Event("change"));
+    };
+
+    const preview = async () => {
+      const drive = select.value;
+      if (!drive) { detail.innerHTML = ""; writeButton.disabled = true; return; }
+      const plan = await this.api("/api/usb/plan", {
+        method: "POST", body: { folder, drive },
+      }).catch(() => null);
+      if (!plan) { detail.innerHTML = ""; writeButton.disabled = true; return; }
+
+      this.state.usbPlan = plan;
+      writeButton.disabled = !plan.fits;
+      detail.innerHTML = `
+        <p class="hint tight">${plan.total_mb} MB to copy${
+          plan.free_mb != null ? `, ${Units.num(plan.free_mb, 0)} MB free` : ""}.</p>
+        ${plan.conflicts.length ? `
+          <div class="note warning">
+            Already on this drive: ${plan.conflicts.map((c) =>
+              `<b>${this.escape(c.name)}</b>`).join(", ")}.
+            <label class="inline" style="margin-top:6px">
+              <input type="checkbox" id="usb-replace">
+              <span>Replace ${plan.conflicts.length === 1 ? "it" : "them"}</span>
+            </label>
+          </div>` : ""}
+        ${!plan.fits ? '<div class="note alert">Not enough room on the drive.</div>' : ""}`;
+    };
+
+    document.getElementById("btn-usb-refresh").addEventListener("click", refresh);
+    select.addEventListener("change", preview);
+    writeButton.addEventListener("click", async () => {
+      const plan = this.state.usbPlan;
+      const replaceAll = this.checked("usb-replace");
+      if (plan?.conflicts.length && !replaceAll) {
+        this.toast("Already on the drive",
+          "Tick the replace box, or the existing folders stay as they are.", "warn");
+      }
+      const result = await this.busy(document.getElementById("export-report"), () =>
+        this.api("/api/usb/write", {
+          method: "POST",
+          body: {
+            folder, drive: select.value,
+            replace: replaceAll ? plan.conflicts.map((c) => c.name) : [],
+          },
+        }));
+      if (!result) return;
+      detail.innerHTML += `<div class="note ok" style="margin-top:8px">${
+        this.escape(result.message)}${result.skipped.length
+          ? `<br>Left alone: ${result.skipped.map((s) =>
+              this.escape(s.name)).join(", ")}.` : ""}</div>`;
+      this.toast("Copied to the drive", result.message);
+      this.refreshProject();
+    });
+
+    refresh();
   },
 
   /* Verification runs over the files already written. Red is a real blocker;
@@ -1900,3 +2048,200 @@ Object.assign(App, {
 });
 
 document.addEventListener("DOMContentLoaded", () => App.init());
+
+/* ======================================================================
+ * The guided workflow
+ *
+ * Five stages, always visible, with what is missing and the single next
+ * thing to do. The stage is derived on the server from what has actually
+ * happened, so it can never disagree with the state of the session.
+ * ==================================================================== */
+
+Object.assign(App, {
+  async refreshProject() {
+    const project = await this.api("/api/project").catch(() => null);
+    if (!project) return;
+    this.state.project = project;
+    this.renderStageStrip(project);
+    this.renderProjectPanel(project);
+  },
+
+  renderStageStrip(project) {
+    const strip = document.getElementById("stage-strip");
+    if (!strip) return;
+    const stages = this.state.catalog.workflow.stages;
+    const currentIndex = stages.findIndex((s) => s.key === project.stage);
+    strip.hidden = false;
+
+    strip.innerHTML = stages.map((stage, index) => {
+      const state = index < currentIndex ? "done" : index === currentIndex ? "current" : "";
+      const mark = index < currentIndex ? "✓" : String(index + 1);
+      return `<div class="stage ${state}" title="${this.escape(stage.description)}">
+        <span class="dot">${mark}</span><span>${this.escape(stage.label)}</span>
+      </div>`;
+    }).join("") + `
+      <div class="next">
+        <span class="what">Next: ${this.escape(project.next_action.label)}</span>
+        <button class="small" id="btn-next-action">Go</button>
+      </div>`;
+
+    document.getElementById("btn-next-action").addEventListener("click",
+      () => this.goToStep(project.next_action.step));
+    document.getElementById("btn-next-action").title = project.next_action.why;
+  },
+
+  /* Each workflow step maps to the tab that carries it out. */
+  goToStep(step) {
+    const tab = {
+      load: "dados", review: "dados", units: "dados", columns: "dados",
+      clean: "limpeza", analyse: "difm", augmenta: "dados", export: "exportar",
+    }[step] || "dados";
+    this.state.tab = tab;
+    for (const b of document.querySelectorAll("#steps button")) {
+      b.setAttribute("aria-selected", String(b.dataset.tab === tab));
+    }
+    this.renderTab();
+  },
+
+  renderProjectPanel(project) {
+    const box = document.getElementById("project-panel");
+    if (!box) return;
+    const goals = this.state.catalog.workflow.goals;
+    const evaluation = project.evaluation;
+
+    const layers = project.layers.length ? project.layers.map((layer) => `
+      <div class="layer-row">
+        <span class="name" title="${this.escape(layer.label)}">${this.escape(layer.label)}</span>
+        <select data-role-for="${layer.dataset_id}">
+          ${Object.entries(project.role_options).map(([key, label]) =>
+            `<option value="${key}"${key === layer.role ? " selected" : ""}>${
+              this.escape(label)}</option>`).join("")}
+        </select>
+      </div>`).join("")
+      : '<div class="empty" style="padding:12px">No file has a role yet.</div>';
+
+    const requirement = (r) => `
+      <div class="req ${r.satisfied ? "done" : "todo"}">
+        <span class="mark">${r.satisfied ? "✓" : "○"}</span>
+        <span class="txt"><b>${this.escape(r.label)}</b>
+          ${r.satisfied ? "" : `<br><span class="d">${this.escape(r.detail)}</span>`}</span>
+      </div>`;
+
+    box.innerHTML = `
+      ${this.field("Goal", this.selectInput("project-goal",
+        Object.entries(goals).map(([k, v]) => [k, v.label]), project.goal))}
+      <h4 style="margin:10px 0 6px">Files and their roles</h4>
+      ${layers}
+      ${project.goal === "difm" ? this.priceFields(project) : ""}
+      <h4 style="margin:12px 0 4px">What this needs</h4>
+      ${evaluation.requirements.map(requirement).join("")}
+      ${evaluation.optional.length ? `<details class="fold" style="margin-top:8px">
+        <summary>Optional, but worth having</summary>
+        <div class="inner">${evaluation.optional.map(requirement).join("")}</div>
+      </details>` : ""}
+      ${evaluation.ready && project.roles_present.length > 1 ? `
+        <button class="wide" id="btn-join-layers" style="margin-top:10px">
+          Join the layers for analysis
+        </button>
+        <p class="hint tight">One file per layer, three passes over the same ground.
+        The join puts them on a shared grid so the response can be measured.</p>` : ""}`;
+
+    for (const id of ["price-crop", "price-value", "price-cost"]) {
+      document.getElementById(id)?.addEventListener("change", () => this.savePrices());
+    }
+
+    document.getElementById("project-goal").addEventListener("change", async (event) => {
+      await this.api("/api/project", { method: "POST", body: { goal: event.target.value } });
+      this.refreshProject();
+      this.renderTab();
+    });
+    for (const select of box.querySelectorAll("[data-role-for]")) {
+      select.addEventListener("change", async (event) => {
+        await this.busy(box, () => this.api("/api/project/role", {
+          method: "POST",
+          body: { dataset_id: event.target.dataset.roleFor, role: event.target.value },
+        }));
+        await this.refreshDatasets();
+        this.refreshProject();
+      });
+    }
+    document.getElementById("btn-join-layers")?.addEventListener("click", () => this.joinLayers());
+  },
+
+  /* Prices belong to the project, not to one analysis: the same crop price
+   * decides the optimum, the profit curve and the value of the whole trial. */
+  priceFields(project) {
+    const prices = project.prices || {};
+    const yieldUnit = Units.label.yield();
+    const inputUnit = Units.label.inputRate();
+    const symbol = Units.currencySymbol();
+    const crop = prices.crop || Units.get().crop;
+
+    // Stored per internal unit (per kg); shown per selling unit (per bushel,
+    // per pound), which is how prices are actually quoted.
+    const shownCrop = prices.crop_price
+      ? Units.priceFromInternal(prices.crop_price, yieldUnit) : "";
+    const shownInput = prices.input_cost
+      ? Units.priceFromInternal(prices.input_cost, inputUnit) : "";
+
+    return `
+      <h4 style="margin:12px 0 6px">Prices</h4>
+      ${this.field("Crop", this.selectInput("price-crop",
+        this.state.units.crops.map((c) => [c.key, c.label]), crop))}
+      <div class="row tight">
+        ${this.field(`${symbol}/${Units.rateNumerator(yieldUnit)}`,
+          `<input type="number" id="price-value" step="0.01" min="0"
+             value="${shownCrop === "" ? "" : Number(shownCrop).toFixed(2)}"
+             placeholder="crop">`)}
+        ${this.field(`${symbol}/${Units.rateNumerator(inputUnit)}`,
+          `<input type="number" id="price-cost" step="0.01" min="0"
+             value="${shownInput === "" ? "" : Number(shownInput).toFixed(2)}"
+             placeholder="input">`)}
+      </div>`;
+  },
+
+  async savePrices() {
+    const crop = this.value("price-crop");
+    if (crop) Units.set("crop", crop);
+    const body = {
+      crop_price: Units.priceToInternal(this.number("price-value", 0), Units.label.yield()),
+      input_cost: Units.priceToInternal(this.number("price-cost", 0), Units.label.inputRate()),
+      currency: Units.get().currency,
+      crop,
+    };
+    await this.api("/api/project/prices", { method: "POST", body }).catch(() => null);
+    this.refreshProject();
+  },
+
+  async joinLayers() {
+    /* The zone column is whatever the yield layer carries beyond the canonical
+     * columns — it is what lets the analysis split the field instead of
+     * pooling two different responses into one curve. */
+    const carry = [];
+    const yieldLayer = this.state.project?.layers.find((l) => l.role === "yield");
+    if (yieldLayer) {
+      const detail = await this.api(`/api/datasets/${yieldLayer.dataset_id}`).catch(() => null);
+      for (const column of detail?.columns || []) {
+        if (this.state.catalog.columns[column] || ["x", "y"].includes(column)) continue;
+        carry.push(column);
+      }
+    }
+
+    const result = await this.busy(document.querySelector("aside.left"), () =>
+      this.api("/api/project/join", { method: "POST", body: { carry, min_purity: 0.8 } }));
+    if (!result) return;
+
+    await this.refreshDatasets();
+    await this.selectDataset(result.dataset.id);
+    this.refreshProject();
+    this.state.joinReport = result.report;
+
+    const lengthUnit = Units.label.length();
+    this.toast(
+      "Layers joined",
+      `${result.report.cells} cells at ${Units.num(Units.convert.length(result.cell_m), 0)} ` +
+      `${lengthUnit}. ${result.report.notes[0] || ""}`,
+    );
+    this.goToStep("analyse");
+  },
+});

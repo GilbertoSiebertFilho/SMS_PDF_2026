@@ -25,13 +25,25 @@ from ..core.dataset import Dataset
 from . import response as response_mod
 
 
-def rate_levels(rates: np.ndarray, max_levels: int = 12) -> tuple[np.ndarray, list[float]]:
+def rate_levels(
+    rates: np.ndarray,
+    max_levels: int = 12,
+    valley_fraction: float = 0.02,
+) -> tuple[np.ndarray, list[float]]:
     """Reduce the observed rates to the trial's treatment levels.
 
     A strip trial has a handful of planned rates, but the machine log records
-    small wobbles around each one. Grouping by the raw value would create
-    dozens of one-point "rates"; grouping by level gives back the experiment's
-    real design.
+    small wobbles around each one, and an as-applied layer aggregated per cell
+    wobbles further. Grouping by the raw value would create dozens of one-point
+    "rates"; grouping by level gives back the experiment's real design.
+
+    The levels are found from the **density** of values along the rate axis,
+    not from the gaps between neighbouring ones. Nothing was applied between
+    60 and 120 kg/ha, so the histogram there is empty even though the extreme
+    tails of the two treatments may nearly touch. Looking at counts survives
+    that; looking at gaps does not, because a single stray reading in the
+    valley closes it. Equal-count binning is worse still: it ignores the
+    valleys altogether and puts cuts inside treatments.
 
     Returns
     -------
@@ -43,20 +55,76 @@ def rate_levels(rates: np.ndarray, max_levels: int = 12) -> tuple[np.ndarray, li
     if finite.size == 0:
         return rates, []
 
-    rounded = np.round(finite, 1)
-    unique = np.unique(rounded)
+    unique = np.unique(np.round(finite, 3))
+    if unique.size == 1:
+        return np.where(np.isfinite(rates), unique[0], np.nan), [float(unique[0])]
+
     if unique.size <= max_levels:
+        # Few distinct values: they are the levels, exactly as logged.
         levels = unique
     else:
-        # Many distinct rates: group by quantiles, preserving the order.
-        edges = np.quantile(finite, np.linspace(0, 1, max_levels + 1))
-        edges = np.unique(edges)
-        centers = (edges[:-1] + edges[1:]) / 2.0
-        levels = centers
+        levels = _density_levels(finite, max_levels, valley_fraction)
+        if levels is None:
+            # No treatment structure to find — a genuinely continuous rate, as
+            # in a map that varies smoothly. Equal-count bins at least preserve
+            # the ordering so a response can still be fitted.
+            edges = np.unique(np.quantile(finite, np.linspace(0, 1, max_levels + 1)))
+            levels = (edges[:-1] + edges[1:]) / 2.0
 
     assigned = levels[np.argmin(np.abs(rates[:, None] - levels[None, :]), axis=1)]
     assigned = np.where(np.isfinite(rates), assigned, np.nan)
     return assigned, [float(v) for v in levels]
+
+
+def _density_levels(
+    values: np.ndarray,
+    max_levels: int,
+    valley_fraction: float,
+    min_mass_fraction: float = 0.03,
+) -> np.ndarray | None:
+    """Find treatment levels as the peaks of the rate histogram.
+
+    ``min_mass_fraction`` is what separates a treatment from a tail. Every
+    planned rate in a trial carries a meaningful share of the records — a
+    fifth of them in a five-rate design. A group holding half a percent is the
+    far tail of a neighbouring treatment that happened to dip below the valley
+    floor and come back; folding it into its neighbour is right, and leaving it
+    as its own "rate" would invent a treatment nobody applied.
+
+    Returns ``None`` when the values show no separated groups, which is the
+    signal to fall back to binning.
+    """
+    bins = max(60, min(400, values.size // 20))
+    counts, edges = np.histogram(values, bins=bins)
+
+    # A bin counts as empty when it holds a negligible share of the busiest
+    # bin. An absolute zero is too strict: one stray reading would bridge two
+    # treatments that are otherwise cleanly separated.
+    floor = max(1.0, counts.max() * valley_fraction)
+    occupied = counts > floor
+    if not occupied.any():
+        return None
+
+    # Split the occupied bins into runs; each run is one treatment.
+    boundaries = np.flatnonzero(np.diff(occupied.astype(np.int8)) != 0) + 1
+    runs = [r for r in np.split(np.arange(bins), boundaries) if occupied[r[0]]]
+    if len(runs) < 2:
+        return None
+
+    minimum_mass = values.size * min_mass_fraction
+    centres = []
+    for run in runs:
+        mass = float(counts[run].sum())
+        if mass < minimum_mass:
+            continue
+        low, high = edges[run[0]], edges[run[-1] + 1]
+        inside = values[(values >= low) & (values <= high)]
+        if inside.size:
+            centres.append(float(np.median(inside)))
+
+    if not (2 <= len(centres) <= max_levels):
+        return None
+    return np.array(sorted(centres))
 
 
 def aggregate_cells(
@@ -188,6 +256,7 @@ def analyze(
     zone_column: str | None = None,
     models: list[str] | None = None,
     rate_max: float | None = None,
+    min_points: int | None = None,
 ) -> dict[str, Any]:
     """Run the full DIFM analysis and return the report.
 
@@ -214,9 +283,17 @@ def analyze(
         )
 
     group_columns = (zone_column,) if zone_column and zone_column in df.columns else ()
+
+    # A dataset produced by joining layers is already one record per cell, so
+    # demanding several records per cell would throw all of it away. Anything
+    # coming straight off a monitor still needs the usual minimum.
+    if min_points is None:
+        min_points = 1 if dataset.meta.extra.get("join_report") else 3
+
     cells = aggregate_cells(
         trimmed, cell_m=cell_m, rate_column=rate_column,
         value_column=value_column, group_columns=group_columns,
+        min_points=min_points,
     )
     notes.append(f"{len(cells)} cells used to fit the curve.")
 
@@ -272,6 +349,7 @@ def analyze(
             "cell_m": cell_m,
             "edge_margin_m": edge_margin_m,
             "edge_records_dropped": dropped,
+            "min_points_per_cell": min_points,
         },
         "rates_tested": sorted({round(float(r), 1) for r in np.unique(rates)}),
         "chosen_model": best.to_dict(),

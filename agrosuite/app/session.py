@@ -41,6 +41,7 @@ class Entry:
     origin: str = "import"
     parent_id: str | None = None
     reports: dict[str, Any] = field(default_factory=dict)
+    role: str | None = None
 
     def summary(self) -> dict[str, Any]:
         data = self.dataset.summary()
@@ -49,6 +50,7 @@ class Entry:
             "label": self.label,
             "origin": self.origin,
             "parent_id": self.parent_id,
+            "role": self.role,
             "has_clean_report": "clean" in self.reports,
             "has_difm_report": "difm" in self.reports,
         })
@@ -62,6 +64,16 @@ class Session:
         self._entries: dict[str, Entry] = {}
         self._files: dict[str, Path] = {}
         self._lock = threading.Lock()
+        # One project per session: the set of files describing one field and
+        # season, plus the prices that turn yield into money.
+        self.project: dict[str, Any] = {
+            "name": "Untitled project",
+            "goal": "difm",
+            "roles": {},        # dataset_id -> role
+            "prices": {},       # crop_price, input_cost, currency, crop
+            "reviewed": set(),  # dataset ids the user has confirmed
+            "exported": False,
+        }
         self.workdir = Path(tempfile.mkdtemp(prefix="agrosuite_"))
         self.uploads = self.workdir / "uploads"
         self.exports = self.workdir / "exports"
@@ -96,6 +108,8 @@ class Session:
     def remove(self, dataset_id: str) -> None:
         with self._lock:
             self._entries.pop(dataset_id, None)
+            self.project["roles"].pop(dataset_id, None)
+            self.project["reviewed"].discard(dataset_id)
 
     def list(self) -> list[dict[str, Any]]:
         return [entry.summary() for entry in self._entries.values()]

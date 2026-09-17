@@ -453,3 +453,86 @@ if __name__ == "__main__":
     proprietary_binaries(target / "proprietarios")
     for key, path in paths.items():
         print(f"{key:20s} {path}")
+
+
+# ==========================================================================
+# A three-file DIFM project
+# ==========================================================================
+
+def difm_project(out: Path) -> dict[str, Path]:
+    """Write a trial as the three separate files it really arrives in.
+
+    A DIFM trial never comes as one file. The plan leaves the office software,
+    the as-applied log comes off the air drill, and the yield map comes off the
+    combine months later — three passes over the same ground, logged by three
+    machines at three densities. The samples here reproduce that: different
+    point counts, positions that do not coincide, and a few percent of
+    execution error between the plan and what actually went out.
+    """
+    out = Path(out)
+    out.mkdir(parents=True, exist_ok=True)
+    rng = np.random.default_rng(23)
+
+    df = _track(n_passes=45, points_per_pass=200, swath_m=18.29, step_m=4.0)
+
+    # --- the trial design: 5 rates, 3 passes per strip, randomized in blocks
+    rates = np.array([0.0, 45.0, 90.0, 135.0, 180.0])
+    passes_per_strip, n_blocks = 3, 3
+    n_strips = len(rates) * n_blocks
+    strip = np.clip(
+        (df["x"] / (passes_per_strip * 18.29)).astype(int), 0, n_strips - 1
+    )
+    assignment = np.concatenate([rng.permutation(len(rates)) for _ in range(n_blocks)])
+    planned = rates[assignment[np.clip(strip, 0, len(assignment) - 1)]]
+
+    # --- two fertility zones, with different responses to nitrogen
+    zone = (df["y"] > df["y"].median()).astype(int)
+    base = np.where(zone == 1, 2_900.0, 2_200.0)
+    gain = np.where(zone == 1, 9.0, 12.0)
+    curve = np.where(zone == 1, -0.021, -0.028)
+    yield_kg = base + gain * planned + curve * planned**2 + rng.normal(0, 130, len(df))
+
+    # --- 1. the plan, as a coarse prescription grid
+    plan_idx = np.arange(0, len(df), 8)
+    pd.DataFrame({
+        "Longitude": df["lon"].iloc[plan_idx].round(8),
+        "Latitude": df["lat"].iloc[plan_idx].round(8),
+        "Target Rate": (planned[plan_idx] * KG_HA_TO_LB_AC).round(1),
+        "Product": "Urea 46-0-0",
+    }).to_csv(out / "1_plan_N_rates.csv", index=False)
+
+    # --- 2. the as-applied log, denser, with execution error
+    applied_idx = np.arange(0, len(df), 2)
+    applied = planned[applied_idx] * rng.normal(1.0, 0.025, len(applied_idx))
+    pd.DataFrame({
+        "Longitude": (df["lon"].iloc[applied_idx] + rng.normal(0, 2e-6, len(applied_idx))).round(8),
+        "Latitude": (df["lat"].iloc[applied_idx] + rng.normal(0, 2e-6, len(applied_idx))).round(8),
+        "DateTime": df["t"].iloc[applied_idx].dt.strftime("%Y-%m-%d %H:%M:%S"),
+        "Ground Speed (mph)": (df["speed_kmh"].iloc[applied_idx] * KMH_TO_MPH).round(2),
+        "Working Width (ft)": (df["swath_m"].iloc[applied_idx] * M_TO_FT).round(1),
+        "Tank 1 Rate": (applied * KG_HA_TO_LB_AC).round(1),
+    }).to_csv(out / "2_as_applied_N.csv", index=False)
+
+    # --- 3. the yield map, densest of the three
+    _to_shapefile(
+        df.assign(
+            yld=yield_kg / (BU_KG["canola"] / 0.40468564224),
+            spd=df["speed_kmh"] * KMH_TO_MPH,
+            swth=df["swath_m"] * M_TO_FT,
+            moist=df["moisture"],
+            zone=zone,
+            crop="Canola",
+            time=df["t"].dt.strftime("%Y-%m-%d %H:%M:%S"),
+        ),
+        out / "3_yield_canola.shp",
+        {
+            "VRYIELDVOL": "yld", "Moisture": "moist", "Speed": "spd",
+            "SwathWidth": "swth", "Time": "time", "Crop": "crop", "Zone": "zone",
+        },
+    )
+
+    return {
+        "plan": out / "1_plan_N_rates.csv",
+        "as_applied": out / "2_as_applied_N.csv",
+        "yield": out / "3_yield_canola.shp",
+    }
