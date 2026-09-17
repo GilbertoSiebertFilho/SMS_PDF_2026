@@ -13,6 +13,12 @@ The app also saves by itself, into the projects folder
 reopen, which puts the last project back before anyone asks, and the view
 state, which is what makes the reopened session look like the one that was
 left rather than a list of layers on an empty map.
+
+Every route here that hands a project file to the auto-saver claims it
+first (:mod:`agrosuite.app.projectlock`), and every route that gives one up
+lets it go. A second app — the launcher takes the next free port, so
+double-clicking it twice gives two — therefore never reopens the project
+the first one is writing: it starts empty and says so.
 """
 
 from __future__ import annotations
@@ -27,6 +33,7 @@ from pydantic import BaseModel
 
 from .. import autosave as autosave_mod
 from .. import persist as persist_mod
+from .. import projectlock as lock_mod
 from .. import session as session_mod
 from .. import settings as settings_mod
 
@@ -140,6 +147,12 @@ def _add_to_recent(path: Path, saved_at: str | None) -> str | None:
     return None
 
 
+def _joined(*parts: str | None) -> str | None:
+    """The warnings that apply, in one string, or None when none do."""
+    said = [part for part in parts if part]
+    return "\n".join(said) if said else None
+
+
 def _file_payload(state: session_mod.Session) -> dict[str, Any] | None:
     """The open file as the interface shows it, in one shape for every reply."""
     current = state.project_file
@@ -186,9 +199,21 @@ def save_session(request: SaveRequest) -> dict[str, Any]:
     # separator or a symlinked folder would make one file look like two.
     target = target.resolve()
 
+    # A file another window is auto-saving into is not refused here — a save
+    # the person asked for by name is their decision — but it is never a
+    # silent one: what lands there can be replaced by that window seconds
+    # later, and the way out is a name of its own.
+    taken = lock_mod.holder_of(target)
+    contested = (
+        f"'{target.stem}' is open in another AgroSuite window, which keeps writing that "
+        "file: what is saved here can be replaced by it within seconds. Save under "
+        "another name, or close the other window first."
+    ) if taken is not None and taken.live and not taken.is_me() else None
+
     if target.exists() and not request.overwrite and not _is_current(state, target):
         raise server_mod._fail(
-            f"'{target}' already exists. Choose another name, or confirm replacing it.",
+            f"'{target}' already exists. Choose another name, or confirm replacing it."
+            + (f" {contested}" if contested else ""),
             409,
         )
 
@@ -222,7 +247,7 @@ def save_session(request: SaveRequest) -> dict[str, Any]:
         "saved_at": saved_at,
         "size_bytes": result["size_bytes"],
         "file": _file_payload(state),
-        "warning": _add_to_recent(target, saved_at),
+        "warning": _joined(_add_to_recent(target, saved_at), contested),
     }
 
 
@@ -288,7 +313,7 @@ def _open(path: Path, remember: bool) -> dict[str, Any]:
         raise server_mod._fail(f"Could not open '{path.name}': {exc}")
 
     state.project_file = {"path": path, "saved_at": result["saved_at"], "token": None}
-    _adopt_for_autosave(state, path)
+    locked = _adopt_for_autosave(state, path)
     # A project that has just been opened is a session the auto-saver has
     # never written. If it came from the projects folder that write goes
     # straight back to the same file; if it came from a USB stick or a
@@ -303,11 +328,16 @@ def _open(path: Path, remember: bool) -> dict[str, Any]:
         "design": result["design"],
         "view": result["view"],
         "file": _file_payload(state),
-        "warning": _add_to_recent(path, result["saved_at"]) if remember else None,
+        "warning": _joined(_add_to_recent(path, result["saved_at"]) if remember else None,
+                           locked),
+        # Open, readable, editable — and not auto-saved, because the window
+        # that has it is still writing it. Named on its own so the interface
+        # can put it in the status line as well as in the toast.
+        "locked": locked,
     }
 
 
-def _adopt_for_autosave(state: session_mod.Session, path: Path) -> None:
+def _adopt_for_autosave(state: session_mod.Session, path: Path) -> str | None:
     """Let the auto-saver carry on with the file that was just opened.
 
     A project opened out of the projects folder keeps writing to itself —
@@ -316,12 +346,31 @@ def _adopt_for_autosave(state: session_mod.Session, path: Path) -> None:
     auto-save into somebody's Downloads folder, or onto a USB stick that
     will be pulled out, is not what the folder they chose is for, so the
     auto-saver gives it a file of its own on the next change.
+
+    Adopting a file means writing to it, so it is claimed here. Returns the
+    sentence to show when another window already has it: the project still
+    opens — reading it harms nobody — but this window will not save into it,
+    and the person has to be told that before they work in it for an hour.
     """
     try:
         folder = settings_mod.read().projects_dir
-        state.autosave_path = path if path.parent == folder.resolve() else None
+        inside = path.parent == folder.resolve()
     except OSError:
+        inside = False
+
+    if not inside:
+        # Whatever was held belonged to the session that has just been
+        # replaced; this one keeps its work somewhere else.
+        lock_mod.release()
         state.autosave_path = None
+        return None
+    try:
+        lock_mod.hold(path, state.project["name"])
+    except lock_mod.Busy as busy:
+        state.autosave_path = None
+        return busy.holder.sentence()
+    state.autosave_path = path
+    return None
 
 
 @router.post("/open")
@@ -432,11 +481,18 @@ def latest_session() -> dict[str, Any]:
     state = server_mod.state
     config = settings_mod.read()
     candidate = autosave_mod.latest_project(config.projects_dir)
+    holder = lock_mod.holder_of(candidate["path"]) if candidate else None
+    locked = bool(holder and holder.live and not holder.is_me())
     return {
         "available": candidate is not None,
-        "resumable": bool(candidate and config.autosave and not state.list()),
+        # A project open in another window is not resumable here, and saying
+        # so is the whole point of the key: the interface names it rather
+        # than showing an empty app with no explanation.
+        "resumable": bool(candidate and config.autosave and not state.list() and not locked),
         "folder": str(config.projects_dir),
         "project": candidate,
+        "locked": locked,
+        "lock": holder.payload() if locked and holder else None,
     }
 
 
@@ -478,8 +534,32 @@ def resume_latest() -> dict[str, Any] | None:
 
     path = Path(candidate["path"])
     try:
+        lock_mod.hold(path, candidate["project"])
+    except lock_mod.Busy as busy:
+        # The other window is writing this project right now. Reopening it
+        # here would give two apps one file and the slower one's afternoon
+        # to the rolling backup, so this one starts empty — usable, saving
+        # under a name of its own as soon as there is anything to save.
+        state.resumed = {
+            "ok": False,
+            "locked": True,
+            "name": path.stem,
+            "path": str(path),
+            "project": candidate["project"],
+            "lock": busy.holder.payload(),
+            "reason": (
+                f"{busy.holder.sentence()} This window has started empty, and that "
+                "project was not touched."
+            ),
+        }
+        return state.resumed
+
+    try:
         result = persist_mod.load_session(state, path)
     except Exception as exc:
+        # Claimed and not opened: the file is nobody's here, and holding it
+        # would keep the other window out of a project this one never had.
+        lock_mod.release()
         state.resumed = {"ok": False, "name": path.stem, "path": str(path), "reason": (
             f"'{path.name}' could not be reopened: {exc} The app has started empty; "
             "the file was not changed, and 'Open project' will say more about it."
@@ -526,4 +606,8 @@ def new_session() -> dict[str, Any]:
     state = server_mod.state
     state.clear()
     state.project = session_mod.default_project()
+    # The file that was being written is no longer this session's, so the
+    # claim on it goes too: the other window — or the next launch — can pick
+    # that project up straight away rather than waiting out a heartbeat.
+    lock_mod.release()
     return {"ok": True}

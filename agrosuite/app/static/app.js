@@ -6020,6 +6020,11 @@ Object.assign(App, {
   autosaveLine(status) {
     if (!status.enabled) return "Off — keep this session with 'Save project'.";
     if (status.state === "failed") return status.message;
+    // Open twice: the other window has that project and keeps writing it,
+    // so nothing here goes into it. Said in the line as well as in the
+    // start-up toast, because the toast goes and the question — "why does
+    // it not say Saved?" — comes back an hour later.
+    if (status.state === "locked") return status.message;
     if (status.state === "saving") return "Saving…";
     if (status.saved_at) return `Saved ${this.clock(status.saved_at)}`;
     if (status.path) return `In ${status.path.split(/[\\/]/).pop()} — saved on the next change.`;
@@ -6039,6 +6044,14 @@ Object.assign(App, {
    * and the way out is one click here rather than a question asked at every
    * start-up — which is the same question, answered the same way, every day. */
   announceResume(resumed) {
+    if (resumed.locked) {
+      // Not a failure: the project is safe, in the window that has it. This
+      // one is empty and ready to work — under another name, which is the
+      // offer the toast carries.
+      this.toast(`'${resumed.project}' is open in another window`, resumed.reason, "warn",
+        { label: "Start a new project here", run: () => this.newProject(false) });
+      return;
+    }
     if (!resumed.ok) {
       this.toast("Could not pick up where you left off", resumed.reason, "warn");
       return;

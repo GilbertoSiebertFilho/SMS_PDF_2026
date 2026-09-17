@@ -31,7 +31,13 @@ be the thing that loses their work, so:
   auto-save made over a mistake is one file rename away from being undone;
 * a write that fails — a full disk, a USB stick pulled out, a folder gone
   read-only — is reported once, quietly, with the reason and what to do, and
-  is retried when something changes rather than every half second.
+  is retried when something changes rather than every half second;
+* a project another running app is writing is not written here at all. The
+  launcher takes the next free port, so the app can be open twice, and two
+  windows auto-saving one file would leave the loser's afternoon in a single
+  rolling backup. The file is claimed while it is being written to (see
+  :mod:`agrosuite.app.projectlock`); the second window starts empty, says
+  which project is open elsewhere, and saves under a name of its own.
 
 **Where it runs.** In the process that serves the app, and only there: the
 launcher sets :data:`ENV_FLAG`, and an app object merely imported — by a
@@ -50,6 +56,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from . import persist as persist_mod
+from . import projectlock as lock_mod
 from . import session as session_mod
 from . import settings as settings_mod
 
@@ -125,14 +132,24 @@ def free_name(folder: Path, name: str, keep: Path | None = None) -> Path:
     file of the same name would write a session with one dataset in it over
     a season's work. ``keep`` is the file this session already writes, which
     is not somebody else's and is reused rather than stepped around.
+
+    A name another running app has claimed is taken too, even before that
+    app has written its first byte: two windows started within a second of
+    each other both want "Untitled project", and the file not existing yet
+    is precisely the moment the collision is invisible.
     """
+    def taken(candidate: Path) -> bool:
+        if keep is not None and candidate == keep:
+            return False
+        return candidate.exists() or lock_mod.busy(candidate)
+
     candidate = folder / name
-    if not candidate.exists() or (keep is not None and candidate == keep):
+    if not taken(candidate):
         return candidate
     stem = name[: -len(persist_mod.EXTENSION)] if name.endswith(persist_mod.EXTENSION) else name
     for suffix in range(2, 1000):
         candidate = folder / f"{stem} {suffix}{persist_mod.EXTENSION}"
-        if not candidate.exists() or (keep is not None and candidate == keep):
+        if not taken(candidate):
             return candidate
     # A thousand projects of one name is not a case worth a better answer
     # than a name nobody else can have.
@@ -176,30 +193,57 @@ def move_project(source: Path, target: Path) -> Path:
 
 
 def target_for(state: session_mod.Session, folder: Path) -> Path:
-    """The file this session auto-saves to, moved if it has to be.
+    """The file this session auto-saves to, claimed, and moved if it has to be.
 
     The name follows the project's: renaming the project in the panel
     renames the file, and the old one is moved rather than left behind.
+
+    Claiming happens here because this is the one place that decides which
+    file the session writes to, and the claim has to be in hand *before* the
+    file is moved: a project renamed onto a name another window is already
+    writing would be the collision this whole mechanism exists to prevent.
+    Raises :class:`projectlock.Busy` when that file belongs to another
+    running app, which the writer reports rather than writing anyway.
     """
     wanted = f"{persist_mod.slugify(state.project['name'])}{persist_mod.EXTENSION}"
     current = state.autosave_path
+    name = state.project["name"]
+
+    if current is not None and lock_mod.busy(current):
+        # The claim on the file this session was writing has gone to another
+        # window — a machine asleep for longer than the heartbeat lasts is
+        # how that happens, and it is the one case where holding a claim is
+        # not proof of still having it. The session does not write into
+        # their file and does not move it either: it takes a file of its
+        # own, below, with everything it holds in it.
+        current = None
+        state.autosave_path = None
+
     if current is not None and current.parent == folder and current.name == wanted:
+        lock_mod.hold(current, name)
         return current
 
     target = free_name(folder, wanted, keep=current)
+    lock_mod.hold(target, name)
     if current is None:
         return target
 
     moved = move_project(current, target)
-    if moved != current:
-        if (state.project_file or {}).get("path") == current:
-            # The panel names this same file; it followed the project rather
-            # than being left pointing at a name that no longer exists.
-            state.project_file["path"] = moved
-        try:
-            persist_mod.forget_recent(current)
-        except OSError:
-            pass
+    if moved == current:
+        # The move could not be made and the session stays on the file it
+        # has, so the claim goes back to it: the new name is not this app's
+        # to hold when nothing of this project is in it.
+        lock_mod.hold(current, name)
+        return moved
+
+    if (state.project_file or {}).get("path") == current:
+        # The panel names this same file; it followed the project rather
+        # than being left pointing at a name that no longer exists.
+        state.project_file["path"] = moved
+    try:
+        persist_mod.forget_recent(current)
+    except OSError:
+        pass
     return moved
 
 
@@ -354,9 +398,18 @@ class AutoSaver:
         if not config.autosave:
             # Off means off: nothing is written, nothing is moved, and the
             # revision is left alone so that turning it back on saves what
-            # was done in the meantime.
+            # was done in the meantime. The claim goes as well — an app that
+            # writes nothing has no business holding a file against the
+            # window beside it.
+            lock_mod.release()
             self._set(state="off")
             return
+
+        # The claim this app holds says "still here" from this tick, which
+        # runs anyway, rather than from a timer of its own: two timers
+        # doing one job is two things to stop on the way out. It writes at
+        # most every few seconds; the rest of the ticks cost a comparison.
+        lock_mod.beat()
 
         revision = state.revision
         if revision == self._handled:
@@ -384,6 +437,17 @@ class AutoSaver:
             target = target_for(state, folder)
             saved_at = datetime.now().astimezone().isoformat(timespec="seconds")
             save_with_backup(state, target, saved_at)
+        except lock_mod.Busy as busy:
+            # Another window took the file between the last save and this
+            # one — a rename onto its project, or the two apps starting
+            # together. Nothing is written into it, and the revision counts
+            # as handled so the panel says this once rather than every half
+            # second. The next change looks again, and by then the name is
+            # usually free or a free one is chosen beside it.
+            self._handled = revision
+            self._set(state="locked", path=None, saved_at=None,
+                      message=busy.holder.sentence())
+            return
         except Exception as exc:
             if state.revision != revision:
                 # The session moved while the file was being written, which
@@ -450,12 +514,18 @@ def start(session_of: Callable[[], session_mod.Session]) -> AutoSaver | None:
 
 
 def stop() -> None:
-    """Stop the writer and write the session one last time."""
+    """Stop the writer, write the session one last time, and let the file go.
+
+    The claim is released after the last write, not before it: the file is
+    this app's until the last byte of it is written. A clean shutdown
+    therefore leaves nothing beside the project, and the next launch — this
+    one or the other window — picks it up without waiting for anything.
+    """
     global _saver
-    if _saver is None:
-        return
     saver, _saver = _saver, None
-    saver.stop()
+    if saver is not None:
+        saver.stop()
+    lock_mod.release()
 
 
 def current() -> AutoSaver | None:
@@ -481,7 +551,12 @@ def relocate(state: session_mod.Session) -> dict[str, Any]:
     if source.parent == folder:
         return {"moved": False}
 
-    target = target_for(state, folder)
+    try:
+        target = target_for(state, folder)
+    except lock_mod.Busy as busy:
+        # The new folder holds that project, open in another window. The
+        # file stays where it is rather than being written into theirs.
+        return {"moved": False, "problem": busy.holder.sentence()}
     if target == source:
         # target_for hands the old path back when the move could not be
         # made: the file is still where it was, which is the answer that
@@ -514,6 +589,10 @@ def status(state: session_mod.Session) -> dict[str, Any]:
         "path": str(state.autosave_path) if state.autosave_path else None,
         "saved_at": None,
         "message": config.warning,
+        # Who has the project this app would otherwise have picked up, while
+        # they still have it. None the rest of the time, which is almost
+        # always: one window is the ordinary case.
+        "lock": None,
     }
     if saver is not None:
         reported = saver.status()
@@ -533,5 +612,20 @@ def status(state: session_mod.Session) -> dict[str, Any]:
             "path": str(state.autosave_path) if on_this else None,
             "saved_at": reported["saved_at"] if on_this else None,
             "message": reported["message"] or payload["message"],
+        })
+
+    # A project open in another window outranks "idle": the line's job at
+    # that moment is to say why nothing is being saved here, and it says it
+    # only while this session has no file of its own — once this window is
+    # writing its own project, "Saved 12:07" is the true answer and the
+    # other window is no longer any of its business.
+    refused = lock_mod.refusal()
+    if config.autosave and refused is not None and state.autosave_path is None:
+        payload.update({
+            "state": "locked",
+            "path": None,
+            "saved_at": None,
+            "lock": refused.payload(),
+            "message": refused.sentence(),
         })
     return payload

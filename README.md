@@ -314,6 +314,11 @@ Nothing is lost on the way:
   what it takes to undo an auto-save made over a mistake;
 - an empty session is never written over a project that holds data, so
   starting a new project cannot empty the file you just closed;
+- one project is written by one window: start the app twice — the launcher
+  takes the next free port, so it does start — and the second window opens
+  empty, says which project the first one has open and keeps what you do
+  there under a name of its own, while a claim left behind by a crash frees
+  itself within a minute with no file to delete by hand;
 - rename the project and the file is renamed with it; change the folder and
   the project moves there rather than leaving a copy behind under the old
   name;

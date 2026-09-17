@@ -16,6 +16,7 @@ from fastapi import APIRouter
 from pydantic import BaseModel
 
 from .. import autosave as autosave_mod
+from .. import projectlock as lock_mod
 from .. import settings as settings_mod
 
 router = APIRouter(prefix="/api/settings", tags=["settings"])
@@ -81,6 +82,12 @@ def put_settings(request: SettingsRequest) -> dict[str, Any]:
         config = settings_mod.write(projects_dir=folder, autosave=request.autosave)
     except ValueError as exc:
         raise server_mod._fail(str(exc), 500)
+
+    if request.autosave is False:
+        # Nothing is written from here on, so the claim on the project goes
+        # at once rather than a minute later when its heartbeat runs out:
+        # the window beside this one can have the file back immediately.
+        lock_mod.release()
 
     # The project already written moves to the new folder, rather than being
     # left behind under the old one as a copy that will quietly go stale.
