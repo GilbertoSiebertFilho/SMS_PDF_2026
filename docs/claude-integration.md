@@ -57,16 +57,34 @@ own workspace.
 | `set_role`, `set_prices` | Say what a file is for; set crop price and input cost |
 | `clean_dataset` | Runs the cleaning and returns the report |
 | `join_layers` | Puts plan, as-applied and yield on a shared grid |
-| `analyse_difm` | Fits the response and finds the economic optimum |
+| `analyse_economics` | Fits the yield response to rate and finds the economic optimum |
+| `analyse_terrain` | Reads the relief of a field and describes it in sentences |
+| `terrain_zones` | Turns that relief into a zone layer the export tools take |
 | `design_trial` | Lays out a randomized block strip trial |
 | `list_usb_drives`, `plan_usb_write`, `write_to_usb` | Copying to a stick |
 | `validate_package` | Checks a package against the known causes of rejection |
 
+## Asking about the relief
+
+The altitude a monitor logs on every point is enough to read the relief of
+the field, and `analyse_terrain` answers in sentences rather than tables:
+
+> Analyse the relief of the yield map and tell me where water is going to sit.
+
+It reports the character of the field, how much it falls and in which
+direction, the hills and the low ground with where they are and how big they
+are, the closed depressions with the volume each one holds, the share above
+10 % slope and the likely wet ground — each number with its unit. Then
+`terrain_zones` cuts that relief into zones by landform, slope class,
+elevation band or wetness, and hands back an ordinary dataset id, which is
+what the export tools take. [terrain.md](terrain.md) has the whole surface.
+
 ## Units, when asking
 
 The tools speak the app's internal units: **kg/ha** for rates and yields,
-**metres** for distances, **price per kilogram**. Claude converts on the way
-in, but it helps to state what your numbers are in.
+**metres** for distances and every height, depth and cell size the terrain
+tools take, **price per kilogram**. Claude converts on the way in, but it
+helps to state what your numbers are in.
 
 Prices convert like this:
 

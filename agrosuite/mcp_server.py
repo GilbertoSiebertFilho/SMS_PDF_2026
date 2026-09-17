@@ -42,6 +42,11 @@ SERVER_VERSION = "1.0.0"
 PORTS = range(8765, 8775)
 TIMEOUT_S = 120
 
+#: Slope at and above which the terrain summary calls ground steep, the
+#: same threshold the analysis itself quotes: where erosion on bare soil
+#: and machine stability both become a concern.
+STEEP_PCT = 10.0
+
 
 # ==========================================================================
 # Talking to the app
@@ -249,10 +254,10 @@ def tool_join_layers(cell_m: float = 0, carry: list[str] | None = None) -> Any:
     }
 
 
-def tool_analyse_difm(dataset_id: str, crop_price_per_kg: float,
-                      input_cost_per_kg: float, rate_column: str = "applied_rate",
-                      value_column: str = "value", zone_column: str = "",
-                      cell_m: float = 20.0, edge_margin_m: float = 6.0) -> Any:
+def tool_analyse_economics(dataset_id: str, crop_price_per_kg: float,
+                           input_cost_per_kg: float, rate_column: str = "applied_rate",
+                           value_column: str = "value", zone_column: str = "",
+                           cell_m: float = 20.0, edge_margin_m: float = 6.0) -> Any:
     report = APP.call("POST", f"/api/datasets/{dataset_id}/difm", {
         "rate_column": rate_column, "value_column": value_column,
         "zone_column": zone_column or None,
@@ -272,6 +277,155 @@ def tool_analyse_difm(dataset_id: str, crop_price_per_kg: float,
         out["by_zone"] = report["zones"]["by_zone"]
         out["uniform_vs_variable"] = report["zones"]["comparison"]
     return out
+
+
+def tool_analyse_terrain(dataset_id: str, cell_m: float | None = None,
+                         smooth_m: float | None = None,
+                         contour_interval_m: float | None = None,
+                         min_feature_height_m: float | None = None) -> Any:
+    # Every option defaults to None rather than 0, because 0 is a real
+    # request for two of them — 0 m of smoothing reads the raw surface —
+    # and a 0 sentinel would quietly turn that back into "choose from the
+    # data". Only what the caller set is sent; the app resolves the rest.
+    body: dict[str, Any] = {"dataset_id": dataset_id}
+    for name, value in (
+        ("cell_m", cell_m), ("smooth_m", smooth_m),
+        ("contour_interval_m", contour_interval_m),
+        ("min_feature_height_m", min_feature_height_m),
+    ):
+        if value is not None:
+            body[name] = value
+    # A file with no usable elevation comes back as the analyser's own
+    # sentence, which already names what to open instead; it travels to the
+    # caller unchanged, like every other error here, rather than being
+    # wrapped in a summary of nothing.
+    summary = APP.call("POST", "/api/terrain/analyze", body)["summary"]
+    return _terrain_text(summary)
+
+
+def _terrain_text(summary: dict[str, Any]) -> str:
+    """The terrain summary as the paragraphs a person would read out.
+
+    The JSON summary is a dozen nested tables, several of them histograms;
+    handed over raw it would be relayed as a paraphrase, and a height whose
+    unit was guessed is worse than no height. So every number is written
+    here with its unit — metres, hectares, percent, cubic metres — and the
+    findings, which are already the sentences a farmer acts on, travel
+    verbatim.
+    """
+    grid = summary["grid"]
+    elevation = summary["elevation"]
+    slope = summary["slope"]
+    trend = summary["trend"]
+    features = summary["features"]
+    wetness = summary["wetness"]
+
+    lines = [
+        f"{summary['character']['label'].capitalize()} field of "
+        f"{grid['area_ha']:.1f} ha with {elevation['relief_m']:.1f} m of total relief "
+        f"(the fall in metres from its highest ground, {elevation['max_m']:.1f} m, to "
+        f"its lowest, {elevation['min_m']:.1f} m). {summary['character']['why']}",
+    ]
+    if elevation["level"]:
+        lines.append(
+            f"Nothing in this field rises or falls by more than the "
+            f"{elevation['relief_floor_m']:.2f} m of measurement noise, so it is "
+            "reported as level: no contours, drainage lines, wet ground or features "
+            "are drawn, because every one of them would be drawn from the noise."
+        )
+
+    if trend["drop_m"] >= 0.1:
+        lines.append(
+            f"Trend: the field falls {trend['drop_m']:.1f} m towards the "
+            f"{trend['direction_label']} ({trend['direction_deg']:.0f} degrees "
+            f"clockwise from north), an average gradient of "
+            f"{trend['gradient_pct']:.1f} %."
+        )
+    else:
+        lines.append("Trend: no consistent fall across the field.")
+
+    lines.append(_terrain_features(features))
+
+    steep_pct = sum(c["pct"] for c in slope["classes"] if (c["from_pct"] or 0.0) >= STEEP_PCT)
+    steep_ha = sum(c["area_ha"] for c in slope["classes"] if (c["from_pct"] or 0.0) >= STEEP_PCT)
+    lines.append(
+        f"Steep ground: {steep_pct:.1f} % of the field ({steep_ha:.1f} ha) is above "
+        f"{STEEP_PCT:g} % slope; the slope averages {slope['mean_pct']:.1f} % and "
+        f"reaches {slope['max_pct']:.1f} % at its steepest.\n"
+        f"Likely wet: {wetness['wet_area_ha']:.1f} ha, {wetness['wet_pct']:.0f} % of the "
+        "field. (Every share is read inside the field's outermost ring of cells, whose "
+        "slope leans on copied values; the ring is still drawn on the map layers.)"
+    )
+
+    lines.append("Findings:\n" + "\n".join(
+        f"  [{f['level']}] {f['text']}" for f in summary["findings"]
+    ))
+    return "\n\n".join(lines)
+
+
+def _terrain_features(features: dict[str, Any]) -> str:
+    """Hills, low ground and closed depressions, each with where it is."""
+    blocks = []
+    hills = features.get("hills") or []
+    if hills:
+        blocks.append("Hills (height in metres above the ground around them):\n" + "\n".join(
+            f"  {h['label']} in the {h['position']}: {h['height_m']:.1f} m over "
+            f"{h['area_ha']:.1f} ha, summit at {h['summit_m']:.1f} m."
+            for h in hills
+        ))
+    lows = features.get("lows") or []
+    if lows:
+        blocks.append("Low ground (depth in metres below the ground around it):\n" + "\n".join(
+            f"  {l['label']} in the {l['position']}: {l['depth_m']:.1f} m below over "
+            f"{l['area_ha']:.1f} ha, bottom at {l['bottom_m']:.1f} m"
+            + ("; part of it is closed, so water ponds there." if l["closed"]
+               else "; it drains out, so water runs through rather than standing.")
+            for l in lows
+        ))
+    depressions = features.get("depressions") or []
+    if depressions:
+        blocks.append(
+            "Closed depressions (water ponds here until it spills):\n" + "\n".join(
+                f"  {d['label']} in the {d['position']}: {d['area_ha']:.1f} ha, up to "
+                f"{d['max_depth_m']:.2f} m deep, holding {d['volume_m3']:,.0f} cubic metres "
+                f"before it spills at {d['spill_m']:.1f} m."
+                for d in depressions
+            )
+        )
+    unlisted = int(features.get("depressions_unlisted") or 0)
+    if unlisted:
+        blocks.append(
+            f"{unlisted} shallower "
+            + ("hollow was" if unlisted == 1 else "hollows were")
+            + " within the measurement noise (under "
+            f"{float(features['depression_floor_m']):.2f} m deep) and not listed; the "
+            "ponding-depth layer still shows them."
+        )
+    if not blocks:
+        return "No hill, low or closed depression stands out from the surrounding ground."
+    return "\n".join(blocks)
+
+
+def tool_terrain_zones(dataset_id: str, by: str = "landform",
+                       kind: str = "points") -> Any:
+    result = APP.call("POST", f"/api/terrain/{dataset_id}/zones",
+                      {"by": by, "kind": kind})
+    dataset = result["dataset"]
+    return {
+        "dataset_id": dataset["id"],
+        "label": dataset["label"],
+        "rows": dataset["rows"],
+        "geometry": dataset["meta"]["geometry_type"],
+        "zones": [
+            f"{code}: {text}"
+            for code, text in sorted(result["zone_labels"].items(), key=lambda kv: int(kv[0]))
+        ],
+        "next_step": (
+            "The zones are a new dataset in the session like any other: give it a "
+            "role with set_role if it is to go to the monitor, then export it and "
+            "copy it with plan_usb_write and write_to_usb."
+        ),
+    }
 
 
 def tool_design_trial(rates_kg_ha: list[float], boundary_dataset_id: str = "",
@@ -464,12 +618,18 @@ TOOLS: list[dict[str, Any]] = [
         },
     },
     {
-        "name": "analyse_difm",
+        "name": "analyse_economics",
         "description": (
-            "Fit the yield response to rate and find the economic optimum. "
-            "Prices are per kilogram. Rates in the result are kg/ha."
+            "Fit a yield response curve to the rates that were actually applied "
+            "and report the economic optimum rate — the point where the next "
+            "unit of input stops paying for itself — with the yield and the "
+            "margin expected there, the agronomic maximum, which model was "
+            "chosen and how well it fits, and the mean yield of every rate that "
+            "was applied. Given a zone column it fits one curve per zone and "
+            "compares a variable-rate map against the best single rate. Prices "
+            "are per kilogram; rates in the result are kg/ha."
         ),
-        "handler": tool_analyse_difm,
+        "handler": tool_analyse_economics,
         "schema": {
             "type": "object",
             "properties": {
@@ -483,6 +643,64 @@ TOOLS: list[dict[str, Any]] = [
                 "edge_margin_m": {"type": "number"},
             },
             "required": ["dataset_id", "crop_price_per_kg", "input_cost_per_kg"],
+        },
+    },
+    {
+        "name": "analyse_terrain",
+        "description": (
+            "Read the relief of a loaded dataset from its GPS altitude (or from "
+            "a DEM) and describe it in plain sentences: the character of the "
+            "field and its total relief, which way it falls and how steeply, the "
+            "hills, the low ground and the closed depressions with where they "
+            "are, how big they are and how much water a depression holds, the "
+            "share above 10 % slope, the likely wet area, and the findings. "
+            "Every option is in metres; the answer quotes metres, hectares, "
+            "percent and cubic metres."
+        ),
+        "handler": tool_analyse_terrain,
+        "schema": {
+            "type": "object",
+            "properties": {
+                "dataset_id": {"type": "string"},
+                "cell_m": {"type": "number",
+                           "description": "Grid cell size in metres. Left out, the app "
+                                          "takes half the swath width."},
+                "smooth_m": {"type": "number",
+                             "description": "Smoothing scale in metres. Left out, just "
+                                            "enough to take out the measured altitude "
+                                            "noise; 0 reads the raw surface."},
+                "contour_interval_m": {"type": "number",
+                                       "description": "Contour step in metres. Left out, "
+                                                      "chosen from the relief."},
+                "min_feature_height_m": {"type": "number",
+                                         "description": "How far a hill must stand above "
+                                                        "its surroundings, in metres, to "
+                                                        "be reported. Left out, twice the "
+                                                        "measured GPS noise."},
+            },
+            "required": ["dataset_id"],
+        },
+    },
+    {
+        "name": "terrain_zones",
+        "description": (
+            "Turn the relief of an analysed dataset into a zone layer — by "
+            "landform, slope class, elevation band or wetness — as one point "
+            "per grid cell or one polygon per zone. Returns a new dataset id "
+            "the export tools take. Run analyse_terrain on the dataset first."
+        ),
+        "handler": tool_terrain_zones,
+        "schema": {
+            "type": "object",
+            "properties": {
+                "dataset_id": {"type": "string",
+                               "description": "The dataset that was analysed, not the "
+                                              "zones of an earlier run."},
+                "by": {"type": "string",
+                       "enum": ["landform", "slope_class", "elevation_bands", "wetness"]},
+                "kind": {"type": "string", "enum": ["points", "polygons"]},
+            },
+            "required": ["dataset_id", "by"],
         },
     },
     {

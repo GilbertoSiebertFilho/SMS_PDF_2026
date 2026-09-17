@@ -830,7 +830,7 @@ def test_mcp_declares_its_tools():
     listing = mcp_server.handle({"jsonrpc": "2.0", "id": 1, "method": "tools/list"})
     tools = listing["result"]["tools"]
     assert {t["name"] for t in tools} >= {
-        "open_file", "project_status", "clean_dataset", "analyse_difm",
+        "open_file", "project_status", "clean_dataset", "analyse_economics",
         "list_usb_drives", "plan_usb_write", "write_to_usb",
     }
     for tool in tools:
