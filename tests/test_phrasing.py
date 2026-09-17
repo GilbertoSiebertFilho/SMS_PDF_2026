@@ -469,3 +469,68 @@ def test_a_project_opens_in_the_units_of_the_day_it_is_opened(client, tmp_path):
     )
     assert " ac (" in coverage_again["detail"]
     client.put("/api/units/display", json={"units": CANADA})
+
+
+def test_a_raster_layer_s_own_notes_follow_the_reader(tmp_path):
+    """The remarks a reader made about a file move with the unit picker.
+
+    They were the last prose written once and left alone: a raster opened
+    while the screen showed acres kept saying metres after the picker moved,
+    among sentences that had all changed.
+    """
+    import numpy as np
+    import rasterio
+    from fastapi.testclient import TestClient
+    from rasterio.transform import Affine
+
+    from agrosuite.app import server as server_mod
+    from agrosuite.core import units as units_mod
+
+    # Rectangular cells, so the reader has to resample and says so — a
+    # remark that carries a length, which is the point of the test.
+    z = np.fromfunction(lambda r, c: 700.0 + 0.04 * c - 0.02 * r,
+                        (60, 60)).astype("float32")
+    path = tmp_path / "field.tif"
+    with rasterio.open(
+        path, "w", driver="GTiff", height=60, width=60, count=1,
+        dtype="float32", crs="EPSG:32612", nodata=-9999.0,
+        transform=Affine(7.0, 0, 500_000.0, 0, -11.0, 5_700_000.0),
+    ) as handle:
+        handle.write(z, 1)
+
+    client = TestClient(server_mod.app)
+    # The unit set belongs to the reader, not to the project, so starting a
+    # new project deliberately leaves it alone — which means this test has to
+    # put it back itself or every test after it reads in the wrong units.
+    was = dict(server_mod.state.display_units)
+    try:
+        client.post("/api/session/new")
+        client.put("/api/units/display",
+                   json={"units": units_mod.UNIT_PRESETS["canada"]})
+        opened = client.post("/api/import/path", json={"path": str(path)})
+        assert opened.status_code == 200, opened.text
+        dataset_id = opened.json()["id"]
+
+        def notes_now():
+            listing = client.get("/api/datasets").json()["datasets"]
+            row = next(d for d in listing if d["id"] == dataset_id)
+            return row["meta"]["notes"]
+
+        imperial = notes_now()
+        assert imperial, "the reader said something about the raster"
+        assert any(" ft" in note for note in imperial), imperial
+        assert not any(" m " in note or note.endswith(" m") for note in imperial), imperial
+
+        client.put("/api/units/display",
+                   json={"units": units_mod.UNIT_PRESETS["metric"]})
+        metric = notes_now()
+        assert any(" m" in note for note in metric), metric
+        assert not any(" ft" in note for note in metric), metric
+
+        # The same remarks, one for one: only the unit they are written in
+        # changed, never which remarks were made.
+        assert len(metric) == len(imperial)
+        assert metric != imperial
+    finally:
+        client.put("/api/units/display", json={"units": was})
+        client.post("/api/session/new")

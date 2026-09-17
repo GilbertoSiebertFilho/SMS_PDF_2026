@@ -305,7 +305,7 @@ def _register(
     entry.role = inherited or report.get("suggested_role")
     state.project["roles"][entry.id] = entry.role
 
-    summary = entry.summary()
+    summary = entry.summary(state.display_units)
     summary["preflight"] = report
     return summary
 
@@ -842,7 +842,7 @@ def get_dataset(dataset_id: str) -> dict[str, Any]:
         entry = state.get(dataset_id)
     except KeyError as exc:
         raise _fail(str(exc), 404)
-    data = entry.summary()
+    data = entry.summary(state.display_units)
     data["preview"] = session_mod.preview_table(entry.dataset)
     data["reports"] = {k: True for k in entry.reports}
     # The preliminary report travels with the dataset so the interface can show

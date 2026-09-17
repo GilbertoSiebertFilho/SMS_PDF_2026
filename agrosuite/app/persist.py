@@ -455,7 +455,7 @@ def load_session(state: session_mod.Session, path: str | Path) -> dict[str, Any]
         "saved_at": manifest.get("saved_at"),
         "format": manifest["format"],
         "project": state.project["name"],
-        "datasets": [entry.summary() for entry in entries],
+        "datasets": [entry.summary(state.display_units) for entry in entries],
         # Handed back with the datasets so the interface can put the strips
         # back on the map without a second request.
         "design": state.project.get("design"),

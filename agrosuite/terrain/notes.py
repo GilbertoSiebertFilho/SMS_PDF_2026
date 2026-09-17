@@ -251,3 +251,33 @@ def _raster_resampled(item: dict[str, Any], say: Phrase) -> str:
         f"Resampled from {say.length(item['cell_in_m'], 2)} to "
         f"{say.length(item['cell_m'])} cells."
     )
+
+
+@_writes("dem_points")
+def _dem_points(item: dict[str, Any], say: Phrase) -> str:
+    """How much of a raster reached the map, and why that is not a loss.
+
+    Nothing here converts — the quantities are counts of cells — but the
+    note is kept as a fact like every other so a layer's remarks are one
+    kind of thing, written in one place, rather than a list of sentences
+    with one stranger in it.
+    """
+    stride = int(item.get("stride") or 1)
+    shown = say.number(item["shown"])
+    total = say.number(item["cells"])
+    if stride <= 1:
+        return f"One point per raster cell ({total} cells)."
+    return (
+        f"Every {_ordinal(stride)} cell in each direction is shown as a point "
+        f"({shown} of {total} cells); the terrain analyser reads the raster "
+        f"itself at full resolution."
+    )
+
+
+def _ordinal(n: int) -> str:
+    """'2nd', '3rd', '11th' — the word the note needs for a stride."""
+    if 10 <= n % 100 <= 20:
+        suffix = "th"
+    else:
+        suffix = {1: "st", 2: "nd", 3: "rd"}.get(n % 10, "th")
+    return f"{n}{suffix}"

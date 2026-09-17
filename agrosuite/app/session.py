@@ -69,8 +69,22 @@ class Entry:
     reports: dict[str, Any] = field(default_factory=dict)
     role: str | None = None
 
-    def summary(self) -> dict[str, Any]:
+    def summary(self, units: dict[str, Any] | None = None) -> dict[str, Any]:
+        """The layer as the interface reads it, its remarks in ``units``.
+
+        A reader's remarks about a file — what the raster was resampled to,
+        how wide the passes were, what was assumed — are prose with numbers
+        written into them, and they were written once, when the file was
+        opened. ``units`` writes them again from the facts kept beside
+        them, so moving the unit picker moves a layer's notes along with
+        every other sentence on screen. ``None`` leaves them as the reader
+        wrote them, which is what a caller outside the app wants.
+        """
         data = self.dataset.summary()
+        if units is not None:
+            restated = self._notes_in(units)
+            if restated is not None:
+                data["meta"] = {**data["meta"], "notes": restated}
         data.update({
             "id": self.id,
             "label": self.label,
@@ -81,6 +95,23 @@ class Entry:
             "has_difm_report": "difm" in self.reports,
         })
         return data
+
+    def _notes_in(self, units: dict[str, Any]) -> list[str] | None:
+        """The remarks written again, or ``None`` when there is nothing to
+        write again: a layer whose reader kept no facts keeps its
+        sentences, because half-restated notes would read worse than
+        consistent stale ones."""
+        facts = (self.dataset.meta.extra or {}).get("note_facts")
+        if not facts:
+            return None
+        from agrosuite.terrain import notes as notes_mod
+
+        try:
+            return notes_mod.render(facts, units)
+        except Exception:
+            # A fact this version cannot write — a project from a later
+            # build — is not worth failing a listing over.
+            return None
 
 
 def default_project() -> dict[str, Any]:
@@ -177,7 +208,7 @@ class Session:
         # its answer must not make the iteration itself fail.
         with self._lock:
             entries = list(self._entries.values())
-        return [entry.summary() for entry in entries]
+        return [entry.summary(self.display_units) for entry in entries]
 
     def clear(self) -> None:
         # Whatever replaces the datasets — a new project, a reopened file —

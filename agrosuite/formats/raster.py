@@ -819,15 +819,24 @@ def dataset_from_dem(
 
     dem_path = str(info.get("path") or "")
     brand = brands_mod.get_brand("generic")
-    notes = list(info.get("notes") or [])
-    if stride > 1:
-        notes.append(
-            f"Every {_ordinal(stride)} cell in each direction is shown as a point "
-            f"({_thousands(len(df))} of {_thousands(total_valid)} cells); the terrain "
-            "analyser reads the raster itself at full resolution."
-        )
-    else:
-        notes.append(f"One point per DEM cell ({_thousands(total_valid)} cells).")
+
+    # The remarks travel as the facts they state, not as finished sentences:
+    # a layer opened while the screen was in acres is still on screen when
+    # the picker moves to hectares, and its notes have to move with it. The
+    # sentences below are the metric rendering, which is what a caller
+    # outside the app (a test, the CLI) gets; the session writes them again
+    # in the unit set on screen every time it hands the layer over.
+    from agrosuite.terrain import notes as notes_mod
+
+    note_facts = list(info.get("note_facts") or [])
+    if not note_facts and info.get("notes"):
+        # A raster read by an older path gave sentences and no facts; keep
+        # them rather than dropping what the reader found.
+        note_facts = [notes_mod.plain(str(n)) for n in info["notes"]]
+    note_facts.append(notes_mod.fact(
+        "dem_points", stride=int(stride), shown=len(df), cells=total_valid,
+    ))
+    notes = notes_mod.render(note_facts)
 
     meta = DatasetMeta(
         name=meta_name or (Path(dem_path).stem if dem_path else "elevation"),
@@ -850,9 +859,9 @@ def dataset_from_dem(
             "dem_crs": grid.crs,
             "dem_area_ha": float(grid.area_ha()),
             "dem_stride": int(stride),
-            # The notes are already on ``meta.notes`` as sentences; the
-            # facts behind them belong to the analysis that says them
-            # again, not to the layer's own record of the raster.
+            # The facts behind ``meta.notes``, so the layer's own remarks
+            # can be written again in whatever units the reader is in.
+            "note_facts": note_facts,
             "dem_info": {k: v for k, v in info.items()
                          if k not in ("notes", "note_facts")},
         },
