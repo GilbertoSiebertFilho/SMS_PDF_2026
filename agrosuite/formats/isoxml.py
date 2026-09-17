@@ -501,7 +501,7 @@ def write_prescription(
     cell_lat: float,
     rate_kind: str = "mass",
     task_name: str = "Prescricao",
-    field_name: str = "Talhao",
+    field_name: str = "Field",
     product_name: str = "Produto",
     customer_name: str = "AgroSuite",
     farm_name: str = "Fazenda",
@@ -644,7 +644,7 @@ def _ring_element(parent: ET.Element, ring, line_type: int, point_type: int) -> 
 
 def write_field_setup(
     out_dir: Path,
-    field_name: str = "Talhao",
+    field_name: str = "Field",
     boundary: list[tuple[float, float]] | None = None,
     inner_rings: list[list[tuple[float, float]]] | None = None,
     headland: list[tuple[float, float]] | None = None,

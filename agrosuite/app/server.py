@@ -213,6 +213,24 @@ def _fail(message: str, status: int = 400) -> HTTPException:
     return HTTPException(status_code=status, detail=message)
 
 
+def _refuse_elevation(entry, step: str) -> None:
+    """Steps built for machine tracks stop at an elevation layer.
+
+    The cleaning filters judge speed, swath overlap and pass ends, and the
+    DIFM fit wants a rate against a yield. The cells of a DEM, or the zones
+    the terrain analyser derives from one, carry none of that; left alone,
+    the default cleaning preset would run over the raster's scan order and
+    register a 'clean' copy of a relief with a few cells taken out as
+    outliers. Refusing names the step that does apply.
+    """
+    if entry.dataset.meta.operation == "elevation":
+        raise _fail(
+            f"'{entry.label}' is an elevation layer, and {step} is for machine tracks "
+            "(yield, as-applied, planting). Analyse its relief instead: the Terrain "
+            "step, or POST /api/terrain/analyze."
+        )
+
+
 @app.exception_handler(Exception)
 async def unhandled(request, exc: Exception):  # pragma: no cover - safety net
     """Turn unexpected failures into a readable message rather than a silent 500."""
@@ -812,6 +830,7 @@ def clean_dataset(dataset_id: str, request: CleanRequest) -> dict[str, Any]:
         entry = state.get(dataset_id)
     except KeyError as exc:
         raise _fail(str(exc), 404)
+    _refuse_elevation(entry, "cleaning")
 
     if request.steps:
         config = {"corrections": request.corrections, "steps": request.steps}
@@ -858,6 +877,7 @@ def difm(dataset_id: str, request: DifmRequest) -> dict[str, Any]:
         entry = state.get(dataset_id)
     except KeyError as exc:
         raise _fail(str(exc), 404)
+    _refuse_elevation(entry, "the DIFM analysis")
     try:
         report = difm_analysis.analyze(
             entry.dataset,
@@ -1073,7 +1093,7 @@ def export_package(request: PackageRequest) -> dict[str, Any]:
             notes.append(note)
 
     index = len(list(state.exports.iterdir())) + 1
-    out_dir = state.exports / f"pacote_{profile.key}_{index}"
+    out_dir = state.exports / f"package_{profile.key}_{index}"
 
     try:
         result = writers.build_package(
@@ -1116,7 +1136,7 @@ def export_package(request: PackageRequest) -> dict[str, Any]:
     return {
         **result,
         "verification": verification,
-        "observacoes": notes,
+        "notes": notes,
         "bundle": {
             "entries": bundle_info["entries"],
             "download_url": f"/api/download/{token}",
@@ -1145,6 +1165,32 @@ def _resolve_boundary(
 
 #: Unit group matching each ISOXML rate kind.
 RATE_KIND_GROUP = {"mass": "rate_mass", "volume": "rate_volume", "count": "rate_count"}
+
+#: Every unit a dataset's value may carry and still be a rate the export
+#: converts: the keys of the mass, volume and count rate groups.
+RATE_UNIT_KEYS = frozenset(
+    entry["key"]
+    for group in ("rate_mass", "rate_volume", "rate_count")
+    for entry in units_mod.UNIT_GROUPS[group]["units"]
+)
+
+
+def _value_is_rate(dataset) -> bool:
+    """Whether the dataset's value columns hold a rate the export may scale.
+
+    The unit picker of the Export tab is a rate unit, and dividing by its
+    factor only makes sense on a yield or an applied rate. A monitor log's
+    reader leaves ``meta.value_unit`` blank, and its value is the internal
+    kg/ha; a reader that names another unit — a DEM's metres, or the zone
+    codes of the terrain analyser, whose 1, 2, 3 were coming out as 0.9,
+    1.8, 2.7 lb/ac — is saying the value is not a rate, and so is the
+    elevation operation.
+    """
+    meta = dataset.meta
+    if meta.operation == "elevation":
+        return False
+    unit = (meta.value_unit or "").strip()
+    return not unit or unit in RATE_UNIT_KEYS
 
 
 def _convert_features_rate(
@@ -1252,15 +1298,24 @@ def export(request: ExportRequest) -> dict[str, Any]:
             export_dataset = entry.dataset
             group = RATE_KIND_GROUP.get(request.rate_kind, "rate_mass")
             internal = units_mod.UNIT_GROUPS[group]["internal"]
-            if request.rate_unit and request.rate_unit != internal:
+            if (
+                request.rate_unit and request.rate_unit != internal
+                and _value_is_rate(entry.dataset)
+            ):
                 factor = units_mod.unit_factor(group, request.rate_unit, request.crop)
                 export_dataset = entry.dataset.copy()
-                for column in (sch.VALUE, sch.TARGET_RATE, sch.APPLIED_RATE):
-                    if column in export_dataset.df.columns:
-                        export_dataset.df[column] = export_dataset.df[column] / factor
-                notes.append(
-                    f"Rate columns converted from {internal} to {request.rate_unit}."
-                )
+                converted = [
+                    column for column in (sch.VALUE, sch.TARGET_RATE, sch.APPLIED_RATE)
+                    if column in export_dataset.df.columns
+                ]
+                for column in converted:
+                    export_dataset.df[column] = export_dataset.df[column] / factor
+                # The note reports what was done, not what was asked: a
+                # dataset with no rate column is written as it is.
+                if converted:
+                    notes.append(
+                        f"Rate columns converted from {internal} to {request.rate_unit}."
+                    )
             for fmt in request.formats:
                 if fmt == "shapefile":
                     info = writers.write_vector(

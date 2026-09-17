@@ -31,6 +31,7 @@ OPERATIONS = (
     "guidance",      # guidance lines
     "vigor",         # vegetation index / Augmenta
     "soil",          # soil sampling
+    "elevation",     # elevation raster (DEM), for the terrain analyser
     "unknown",
 )
 
@@ -43,6 +44,7 @@ OPERATION_LABELS = {
     "guidance": "Guidance lines",
     "vigor": "Vigour / vegetation index",
     "soil": "Soil sampling",
+    "elevation": "Elevation (DEM)",
     "unknown": "Not identified",
 }
 
@@ -55,7 +57,7 @@ class DatasetMeta:
     source_path: str = ""
     source_format: str = "unknown"
     brand: str = "unknown"
-    brand_label: str = "Desconhecido"
+    brand_label: str = "Unknown"
     operation: str = "unknown"
     crop: str | None = None
     field_name: str | None = None
@@ -139,7 +141,15 @@ class Dataset:
         Many monitor CSVs carry only position and value. Without speed and
         swath width no serious cleaning filter works, so those quantities are
         reconstructed from the track itself.
+
+        An elevation layer — the cells of a DEM, or the zones the terrain
+        analyser derives from one — is not a track. A distance, heading and
+        pass number worked out from the order of its rows would be numbers
+        about nothing, and they would travel into every export and monitor
+        package made from it, so none is added.
         """
+        if self.meta.operation == "elevation":
+            return
         self.sort_by_time()
         n = len(self.df)
         if n == 0:
@@ -303,13 +313,51 @@ class Dataset:
         }
 
     def area_ha(self) -> float:
-        """Worked area estimated by summing the swaths (width x advance)."""
+        """Worked area estimated by summing the swaths (width x advance).
+
+        A polygon layer — a boundary, a prescription, the zones of the
+        terrain analyser — has no swath either: its area is the ground its
+        polygons cover, measured in the metric CRS. An elevation raster's
+        area is the ground its cells cover, which the reader recorded in
+        ``meta.extra['dem_area_ha']``, and the zone points of the terrain
+        analyser are one per grid cell, so their count times the cell area
+        (``meta.extra['zones_cell_m']``) is the field. The dataset summary,
+        the project panel and the preflight all have to quote the one
+        figure rather than a 0 next to a 60.
+        """
+        if self.geometry is not None and self.meta.geometry_type == "polygon":
+            return self._polygon_area_ha()
+        if self.meta.operation == "elevation":
+            extra = self.meta.extra or {}
+            if extra.get("dem_area_ha"):
+                return float(extra["dem_area_ha"])
+            cell = float(extra.get("zones_cell_m") or 0.0)
+            return len(self.df) * cell * cell / 10_000.0
         if sch.SWATH not in self.df.columns or sch.DISTANCE not in self.df.columns:
             return 0.0
         swath = self.df[sch.SWATH].to_numpy(dtype="float64", na_value=np.nan)
         dist = self.df[sch.DISTANCE].to_numpy(dtype="float64", na_value=np.nan)
         area = np.nansum(swath * dist)
         return float(area / 10_000.0)
+
+    def _polygon_area_ha(self) -> float:
+        """The polygons' area in hectares, measured in the metric CRS.
+
+        Degrees are not a unit of area, so the geometries go through the
+        dataset's own metric CRS — or, on a dataset never projected, the
+        UTM zone of their extent, the same choice :meth:`project` makes.
+        """
+        import geopandas as gpd
+
+        geoms = [g for g in self.geometry if g is not None and not g.is_empty]
+        if not geoms:
+            return 0.0
+        series = gpd.GeoSeries(geoms, crs=crs_mod.WGS84)
+        target = self.metric_crs
+        if not target:
+            west, south, east, north = series.total_bounds
+            target = crs_mod.pick_metric_crs([west, east], [south, north])
+        return float(series.to_crs(target).area.sum() / 10_000.0)
 
     # ------------------------------------------------------------------
     # Interoperability
@@ -373,6 +421,26 @@ SOURCE_UNIT_COLUMNS = {
 }
 
 
+def _declare_dem_elevation_unit(dataset: "Dataset", unit: str, factor: float) -> None:
+    """Carry a DEM's declared elevation unit to everything that reads it.
+
+    The points of an elevation layer are a sample of the raster's cells,
+    shown on the map through ``value``; the terrain analyser reopens the
+    raster itself. Converting only the ``elev_m`` column would leave the map
+    colours in feet and the analysis reporting feet as metres — 2 296 m
+    for a 700 m field — so the same factor goes to the mirrored value and
+    into ``meta.extra`` for the raster reader. The factor accumulates,
+    because a second declaration on a copy converts the column a second
+    time as well.
+    """
+    extra = dataset.meta.extra
+    if sch.VALUE in dataset.df.columns and dataset.meta.value_label == "Elevation":
+        dataset.df[sch.VALUE] = pd.to_numeric(dataset.df[sch.VALUE], errors="coerce") * factor
+        dataset.meta.source_value_unit = unit
+    extra["elevation_factor"] = float(extra.get("elevation_factor", 1.0)) * float(factor)
+    extra["elevation_unit_in"] = unit
+
+
 def apply_source_units(
     dataset: "Dataset",
     declared: dict[str, str],
@@ -415,6 +483,8 @@ def apply_source_units(
         dataset.df[column] = pd.to_numeric(dataset.df[column], errors="coerce") * factor
         label = sch.LABELS.get(column, column)
         applied.append(f"{label}: converted from {unit} to {internal}.")
+        if column == sch.ELEVATION and dataset.meta.operation == "elevation":
+            _declare_dem_elevation_unit(dataset, unit, factor)
 
     if applied:
         dataset.meta.notes.extend(applied)

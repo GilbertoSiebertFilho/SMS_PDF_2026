@@ -72,14 +72,21 @@ def write_geopackage(
             if str(gdf[column].dtype).startswith("datetime"):
                 gdf[column] = gdf[column].dt.strftime("%Y-%m-%d %H:%M:%S")
 
+        renamed = _distinct_field_names([c for c in gdf.columns if c != gdf.geometry.name])
+        if renamed:
+            gdf = gdf.rename(columns=renamed)
+
         safe = _layer_name(name)
         gdf.to_file(path, layer=safe, driver="GPKG")
-        written.append({
+        record: dict[str, Any] = {
             "layer": safe,
             "features": len(gdf),
             "geometry": str(gdf.geom_type.dropna().iloc[0]) if len(gdf) else "None",
             "crs": gdf.crs.to_string() if gdf.crs else None,
-        })
+        }
+        if renamed:
+            record["renamed"] = renamed
+        written.append(record)
 
     return {"path": str(path), "layers": written}
 
@@ -177,6 +184,30 @@ def export_for_qgis(
             "same layers and is a standard format."
         ),
     }
+
+
+def _distinct_field_names(columns: list[str]) -> dict[str, str]:
+    """Renames that keep every column when GeoPackage folds their case.
+
+    A reader keeps the source column beside the canonical one when both
+    exist — a John Deere export has ``Product`` and the schema's
+    ``product`` — and a DataFrame holds both. A GeoPackage is SQLite, whose
+    column names are case-insensitive, so the second one fails to be added
+    and the whole export stops. The later column takes a numbered suffix,
+    the way a second export folder does, rather than being dropped.
+    """
+    renamed: dict[str, str] = {}
+    taken: set[str] = set()
+    for column in columns:
+        name = str(column)
+        if name.lower() in taken:
+            n = 2
+            while f"{name}_{n}".lower() in taken:
+                n += 1
+            renamed[column] = f"{name}_{n}"
+            name = f"{name}_{n}"
+        taken.add(name.lower())
+    return renamed
 
 
 def _layer_name(raw: str) -> str:

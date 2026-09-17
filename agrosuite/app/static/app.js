@@ -2183,7 +2183,7 @@ Object.assign(App, {
       ${this.field("Yield / rate in the file",
         this.selectInput("iu-rate", options("rate_mass"), ""))}
       ${this.field("Speed in the file", this.selectInput("iu-speed", options("speed"), ""))}
-      ${this.field("Width and distance in the file",
+      ${this.field("Width, distance and altitude in the file",
         this.selectInput("iu-length", options("length"), ""))}
       ${this.field("Crop (for bushels)", this.selectInput("iu-crop",
         this.state.units.crops.map((c) => [c.key, c.label]), Units.get().crop))}`;
@@ -2202,8 +2202,12 @@ Object.assign(App, {
     }
     if (proposed.speed) source_units.speed_kmh = proposed.speed;
     if (proposed.length) {
+      /* A monitor writes every length in the one system it was set to: the
+       * GPS altitude is in feet whenever the width is, and the terrain
+       * analyser reads it as metres unless told otherwise. */
       source_units.swath_m = proposed.length;
       source_units.distance_m = proposed.length;
+      source_units.elev_m = proposed.length;
     }
 
     const result = await this.busy(document.getElementById("right-panel"), () =>
@@ -2230,6 +2234,7 @@ Object.assign(App, {
     if (this.value("iu-length")) {
       source_units.swath_m = this.value("iu-length");
       source_units.distance_m = this.value("iu-length");
+      source_units.elev_m = this.value("iu-length");
     }
     if (!Object.keys(source_units).length) {
       this.toast("Nothing to convert", "Choose at least one unit.", "warn");

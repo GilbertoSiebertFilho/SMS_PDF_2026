@@ -136,7 +136,11 @@ def tool_open_file(path: str, rate_unit: str = "", speed_unit: str = "",
     if speed_unit:
         units["speed_kmh"] = speed_unit
     if length_unit:
-        units["swath_m"] = length_unit
+        # Every length in the file is in the one system the monitor was set
+        # to, the GPS altitude included; declaring only the width would
+        # leave the terrain analyser reading feet as metres.
+        units.update({"swath_m": length_unit, "distance_m": length_unit,
+                      "elev_m": length_unit})
     result = APP.call("POST", "/api/import/path", {
         "path": path, "source_units": units, "crop": crop or None,
     })
@@ -350,7 +354,9 @@ TOOLS: list[dict[str, Any]] = [
                                              "e.g. 'bu/ac' or 'lb/ac'. Leave empty to "
                                              "assume metric."},
                 "speed_unit": {"type": "string", "description": "'mph' or 'km/h'."},
-                "length_unit": {"type": "string", "description": "'ft' or 'm'."},
+                "length_unit": {"type": "string",
+                                "description": "'ft' or 'm': the unit of the swath "
+                                               "width, distance and GPS altitude."},
                 "crop": {"type": "string",
                          "description": "Crop key, needed for bushel units: canola, "
                                         "wheat, barley, oats, peas, corn, soybean."},

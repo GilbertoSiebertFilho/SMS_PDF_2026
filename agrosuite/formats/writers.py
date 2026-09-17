@@ -511,10 +511,10 @@ def build_package(
         target = subfolder(profile.preferred["boundary"])
         collection = _boundary_collection(boundary, field_name)
         if profile.preferred["boundary"] == "geojson":
-            path = target / f"{_slug(field_name)}_contorno.geojson"
+            path = target / f"{_slug(field_name)}_boundary.geojson"
             write_geojson(collection, path)
         else:
-            path = target / f"{_slug(field_name)}_contorno.shp"
+            path = target / f"{_slug(field_name)}_boundary.shp"
             _write_boundary_shapefile(collection, path)
         contents.append({
             "artifact": "boundary",

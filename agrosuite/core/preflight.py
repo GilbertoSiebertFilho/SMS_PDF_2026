@@ -60,6 +60,12 @@ RATE_RANGE_KG_HA = (5.0, 600.0)
 #: Operating speed range in km/h for field work.
 SPEED_RANGE_KMH = (1.0, 30.0)
 
+#: Relief no single field has. An elevation layer spanning more than this is
+#: carrying something that is not a height: a fill value the raster never
+#: declared as nodata (-9999 under a 700 m field reads as 10 700 m of
+#: relief), or heights in a unit other than metres.
+ELEVATION_RANGE_MAX_M = 1000.0
+
 
 @dataclass
 class Finding:
@@ -100,9 +106,54 @@ def _check_coverage(ds) -> tuple[list[Finding], dict[str, Any]]:
         return [_alert("No coordinates", "The file carries no usable position.",
                        "Check whether the export included latitude and longitude.")], info
 
+    # An elevation raster is not a track: its area is the cells it holds, and
+    # the points on the map are a sample of them, not the logging density.
+    if ds.meta.operation == "elevation":
+        extra = ds.meta.extra or {}
+        area_ha = ds.area_ha()  # the raster's footprint, the figure the summary shows
+        info["area_ha"] = round(area_ha, 2)
+        info["rows"] = len(ds)
+        if extra.get("zones_by"):
+            # The zones the terrain analyser cut from a relief: a handful of
+            # polygons, or one point per grid cell, and either way "a raster
+            # of 6 cells" would describe them wrongly.
+            by = str(extra["zones_by"]).replace("_", " ")
+            if "zone" in ds.df.columns:
+                zones = int(pd.to_numeric(ds.df["zone"], errors="coerce").nunique())
+            else:
+                zones = len(extra.get("zone_labels") or {})
+            info["zones"] = zones
+            findings.append(_ok(
+                "Coverage",
+                f"Terrain zones ({by}) with {zones} zone{'s' if zones != 1 else ''} "
+                f"over {area_ha:.1f} ha, derived from the relief of "
+                f"{extra.get('terrain_source') or 'the source'!r}.",
+            ))
+            return findings, info
+        cells = int(extra.get("dem_full_cells") or len(ds))
+        cell = extra.get("dem_cell_m")
+        findings.append(_ok(
+            "Coverage",
+            f"An elevation raster of {_thousands(cells)} cells"
+            + (f" at {cell:g} m" if cell else "")
+            + f", covering {area_ha:.1f} ha; {_thousands(len(ds))} of them are drawn "
+            "on the map.",
+        ))
+        return findings, info
+
     area_ha = ds.area_ha()
     info["area_ha"] = round(area_ha, 2)
     info["rows"] = len(ds)
+
+    # A polygon layer (boundary, prescription) covers its area with a few
+    # shapes, not with records per hectare: a density would call it sparse.
+    if ds.geometry is not None and ds.meta.geometry_type == "polygon":
+        findings.append(_ok(
+            "Coverage",
+            f"{len(ds):,} polygon{'s' if len(ds) != 1 else ''} covering "
+            f"{area_ha:.1f} ha.".replace(",", " "),
+        ))
+        return findings, info
 
     if area_ha > 0:
         density = len(ds) / area_ha
@@ -146,8 +197,8 @@ def _check_time(ds) -> tuple[list[Finding], dict[str, Any]]:
     info: dict[str, Any] = {}
 
     if sch.TIMESTAMP not in ds.df.columns:
-        # A prescription has no timeline: it was never driven.
-        if ds.meta.operation not in ("prescription", "boundary", "guidance"):
+        # A prescription has no timeline: it was never driven. Nor was a DEM.
+        if ds.meta.operation not in ("prescription", "boundary", "guidance", "elevation"):
             findings.append(_warn(
                 "No timestamp",
                 "The file carries no date or time.",
@@ -192,6 +243,34 @@ def _check_columns(ds) -> tuple[list[Finding], dict[str, Any]]:
     present = set(ds.df.columns)
     info = {"present": sorted(present & set(sch.LABELS)), "missing": []}
     findings: list[Finding] = []
+
+    # An elevation raster carries one height per cell and nothing else; the
+    # filters that need speed and swath were never meant for it.
+    if ds.meta.operation == "elevation":
+        findings.append(_ok(
+            "Columns",
+            "An elevation layer: one height per cell, which is all the terrain "
+            "analyser needs to map slope, hills, valleys and where water ponds. "
+            "Speed, swath and yield do not apply.",
+        ))
+        elevation = pd.to_numeric(
+            ds.df.get(sch.ELEVATION, pd.Series(dtype=float)), errors="coerce"
+        ).dropna()
+        if len(elevation):
+            low, high = float(elevation.min()), float(elevation.max())
+            info["elevation_range_m"] = round(high - low, 1)
+            if high - low > ELEVATION_RANGE_MAX_M:
+                findings.append(_warn(
+                    "Elevation range",
+                    f"Heights run from {_thousands(low)} to {_thousands(high)} m, a range "
+                    f"of {_thousands(high - low)} m — more relief than any field has. A "
+                    "fill value the raster never declared as nodata (-9999, -32768) or "
+                    "heights in a unit other than metres usually explain it.",
+                    "Check the raster's nodata value (QGIS: Layer Properties > "
+                    "Transparency) and re-export it, or declare the elevation unit "
+                    "below; the terrain analysis reads these heights as they are.",
+                ))
+        return findings, info
 
     # A plan or a boundary is a map, not a log. It never carries a speed or a
     # swath width, and saying so would be noise dressed up as a warning.
@@ -506,6 +585,7 @@ ROLES = {
     "boundary": "Field boundary",
     "guidance": "Guidance lines",
     "soil": "Soil sampling",
+    "terrain": "Elevation / terrain",
     "other": "Other",
 }
 
@@ -519,6 +599,7 @@ ROLE_BY_OPERATION = {
     "guidance": "guidance",
     "vigor": "vigor",
     "soil": "soil",
+    "elevation": "terrain",
     "unknown": "other",
 }
 
@@ -549,6 +630,13 @@ def suggest_next_step(ds, findings: list[Finding], role: str) -> dict[str, Any]:
             "step": "export",
             "label": "Send it to a monitor",
             "why": "This is setup material: it can go straight to another platform.",
+        }
+    if role == "terrain":
+        return {
+            "step": "terrain",
+            "label": "Analyse the relief",
+            "why": "An elevation layer answers one question — what the relief of the "
+                   "field is — and the terrain analyser is what answers it.",
         }
     if role == "vigor":
         return {

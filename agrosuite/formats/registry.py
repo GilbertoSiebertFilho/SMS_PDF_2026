@@ -18,6 +18,7 @@ from pathlib import Path
 from ..core.dataset import Dataset
 from . import isoxml as isoxml_mod
 from . import johndeere as jd_mod
+from . import raster as raster_mod
 from . import readers
 
 #: Extensions accepted on import, grouped by family.
@@ -25,6 +26,9 @@ VECTOR_EXT = {".shp", ".gpkg", ".geojson", ".json", ".kml", ".kmz", ".gml"}
 TABULAR_EXT = {".csv", ".txt", ".dat", ".log", ".tsv"}
 EXCEL_EXT = {".xlsx", ".xls", ".xlsm"}
 ARCHIVE_EXT = {".zip"}
+#: Elevation rasters (DEM). The only raster the app reads: a GeoTIFF is what
+#: every elevation source exports and what QGIS exchanges.
+RASTER_EXT = {".tif", ".tiff"}
 
 #: Extensions that make up a shapefile, used when extracting from a ZIP.
 SHAPEFILE_SIDECARS = {".shp", ".shx", ".dbf", ".prj", ".cpg", ".sbn", ".sbx", ".qix"}
@@ -35,7 +39,8 @@ SHAPEFILE_SIDECARS = {".shp", ".shx", ".dbf", ".prj", ".cpg", ".sbn", ".sbx", ".
 QGIS_EXT = {".qgs", ".qgz"}
 
 ALL_IMPORT_EXT = (
-    VECTOR_EXT | TABULAR_EXT | EXCEL_EXT | ARCHIVE_EXT | QGIS_EXT | {".xml", ".iso"}
+    VECTOR_EXT | TABULAR_EXT | EXCEL_EXT | ARCHIVE_EXT | RASTER_EXT | QGIS_EXT
+    | {".xml", ".iso"}
 )
 
 
@@ -43,7 +48,7 @@ ALL_IMPORT_EXT = (
 class DetectedSource:
     """Result of inspecting a path."""
 
-    kind: str          # 'shapefile' | 'geojson' | 'csv' | 'excel' | 'kml' | 'isoxml' | 'archive'
+    kind: str          # 'shapefile' | 'geojson' | 'csv' | 'excel' | 'kml' | 'isoxml' | 'archive' | 'raster'
     path: Path
     label: str
     detail: str = ""
@@ -75,8 +80,15 @@ def detect(path: str | Path) -> DetectedSource:
                 "shapefile", shapefiles[0], "Folder holding a shapefile",
                 detail=f"{len(shapefiles)} shapefile(s); using {shapefiles[0].name}",
             )
+        # A zipped DEM lands here: the ZIP was unpacked into a folder.
+        rasters = sorted(p for p in path.iterdir() if p.suffix.lower() in RASTER_EXT)
+        if rasters:
+            return DetectedSource(
+                "raster", rasters[0], "Folder holding a GeoTIFF",
+                detail=f"{len(rasters)} raster(s); using {rasters[0].name}",
+            )
         raise ValueError(
-            f"Folder '{path.name}' holds neither a TASKDATA.XML nor a shapefile."
+            f"Folder '{path.name}' holds neither a TASKDATA.XML, a shapefile nor a GeoTIFF."
         )
 
     suffix = path.suffix.lower()
@@ -94,6 +106,8 @@ def detect(path: str | Path) -> DetectedSource:
         return DetectedSource("csv", path, "Text table (CSV/TXT)")
     if suffix in EXCEL_EXT:
         return DetectedSource("excel", path, "Excel workbook")
+    if suffix in RASTER_EXT:
+        return DetectedSource("raster", path, "Elevation raster (GeoTIFF)")
     if suffix in (".xml", ".iso"):
         if path.name.upper() == "TASKDATA.XML":
             return DetectedSource("isoxml", path, "TASKDATA.XML (ISOXML)")
@@ -171,6 +185,7 @@ def _dispatch(source: DetectedSource, brand_hint: str | None) -> Dataset:
         "kml": readers.read_kml,
         "isoxml": isoxml_mod.read_isoxml,
         "jd_card": read_jd_card,
+        "raster": raster_mod.read_raster,
     }
     reader = readers_by_kind.get(source.kind)
     if reader is None:
@@ -234,9 +249,21 @@ def inspect(path: str | Path) -> dict:
         info["layers"] = jd_mod.readable_layers(inv)
         info["detail"] = inv.summary()
 
+    if source.kind == "raster":
+        try:
+            info["raster"] = raster_mod.describe(source.path)
+            info["detail"] = info["raster"]["summary"]
+        except Exception as exc:
+            info["detail"] = f"Raster unreadable: {exc}"
+
     if source.kind == "isoxml":
         try:
-            catalog = isoxml_mod.parse_taskdata(source.path)
+            # detect() hands back the folder for an ISOXML tree; the parser
+            # wants the TASKDATA.XML inside it, wherever it sits.
+            taskdata = isoxml_mod.find_taskdata(source.path)
+            if taskdata is None:
+                raise ValueError(f"no TASKDATA.XML under '{source.path.name}'")
+            catalog = isoxml_mod.parse_taskdata(taskdata)
             info["isoxml"] = {
                 "version": catalog["version"],
                 "software": catalog["software"],
