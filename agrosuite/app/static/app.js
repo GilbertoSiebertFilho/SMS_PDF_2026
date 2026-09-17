@@ -92,6 +92,10 @@ const App = {
       this.state.catalog = await this.api("/api/catalog");
       this.state.units = this.state.catalog.units;
       Units.init(this.state.units, this.state.units.default_preset);
+      // A reload starts the pickers at the default preset while the server
+      // may still be holding the set from before it; saying so once puts the
+      // sentences and the tables back in step.
+      await this.sendDisplayUnits();
     } catch (err) {
       this.toast("Server unavailable", err.message, "error");
       return;
@@ -170,7 +174,7 @@ const App = {
       this.toast("Units", this.state.units.presets[event.target.value].description);
       this.loadMap();
       this.renderTab();
-      this.refreshTerrainPhrasing();
+      this.refreshPhrasing();
     });
   },
 
@@ -1225,11 +1229,11 @@ Object.assign(App, {
   terrainFindingsPanel(summary) {
     const findings = summary.findings || [];
     const noteClass = { ok: "ok", warning: "warning" };
-    // The sentences carry their own numbers, in metres, hectares and cubic
-    // metres. They are the finding — rewriting them in another unit would
-    // mean re-deciding what they say — so when the screen is in another unit
-    // the panel says which is which rather than mixing the two in silence.
-    const metric = Units.label.length() === "m" && Units.label.area() === "ha";
+    // The sentences carry their own numbers, written by the analyser in the
+    // units on screen: they are the finding, and converting one here would
+    // mean re-deciding what it says. A change of units fetches them again
+    // (see refreshPhrasing), so what is drawn is never a unit behind the
+    // tables beside it.
     return `
       <div class="panel">
         ${this.printableHead("What the relief says", "btn-print-terrain")}
@@ -1237,11 +1241,6 @@ Object.assign(App, {
           <div class="note ${noteClass[f.level] || ""}" style="margin-bottom:6px">
             ${this.escape(f.text)}</div>`).join("")
           : '<div class="empty">The analysis produced no findings.</div>'}
-        ${metric ? "" : `<p class="hint tight">Sentences quoted from the analyser,
-          here and further down, carry metric numbers — metres, hectares, cubic
-          metres. Every table, legend and chart follows the units on screen:
-          ${this.escape(Units.label.length())} and
-          ${this.escape(Units.label.area())}.</p>`}
       </div>`;
   },
 
@@ -1577,28 +1576,62 @@ Object.assign(App, {
 
   /* The third thing a unit change touches, after the map and the panel.
    *
-   * The findings and the profile note carry their numbers inside the
-   * sentence, in the unit set the server was given, so a reader who
-   * switches from acres to hectares needs them written again — a redraw
-   * cannot do it, because converting a sentence would mean re-deciding
-   * what it says. Only the prose: every number in a table, a legend or a
-   * chart is converted here and needs no round trip. */
+   * Every sentence the app shows was written by the server with its
+   * numbers inside it, in the unit set the server was told to write in.
+   * A redraw cannot convert one — converting a sentence would mean
+   * re-deciding what it says — so the server is told the new set and
+   * asked for the same reports again. Only the prose comes back changed:
+   * every number in a table, a legend or a chart is converted here and
+   * needs no round trip, and nothing stored moves at all. */
+  async sendDisplayUnits() {
+    return this.api("/api/units/display", {
+      method: "PUT", body: { units: Units.get() },
+    }).catch(() => null);
+  },
+
+  async refreshPhrasing() {
+    await this.sendDisplayUnits();
+    const id = this.state.selectedId;
+    if (id) {
+      // The cleaning and the economic report are cached here as they came
+      // off the wire; the tab fetches what it is missing, so dropping them
+      // is how they are asked for again.
+      delete this.state.reports[`${id}:clean`];
+      delete this.state.reports[`${id}:difm`];
+      const detail = await this.api(`/api/datasets/${id}`).catch(() => null);
+      // The selection may have moved on while the request was out.
+      if (detail && this.state.selectedId === id && this.state.selected) {
+        Object.assign(this.state.selected, detail);
+      }
+    }
+    await this.refreshTerrainPhrasing();
+    this.renderTab();
+  },
+
   async refreshTerrainPhrasing() {
     const analysis = this.terrainAnalysis();
-    if (!analysis?.yieldRelief) return;
-    const comparison = await this.api(`/api/terrain/${analysis.id}/yield`, {
-      method: "POST",
-      body: {
-        yield_dataset_id: analysis.yieldRelief.values.dataset_id,
-        units: Units.get(),
-      },
-    }).catch(() => null);
-    // The tab may have moved on while the request was out; rewriting the
-    // sentences of an analysis nobody is looking at would be harmless but
-    // redrawing over the one on screen would not.
-    if (!comparison || this.terrainAnalysis() !== analysis) return;
-    analysis.yieldRelief = comparison;
-    if (analysis.profile?.points) await this.runProfile(analysis.profile.points);
+    if (!analysis) return;
+    // The relief's own findings first: the summary is the server's, and
+    // it says the same numbers in whichever units it is asked for.
+    const relief = await this.api(`/api/terrain/${analysis.id}`).catch(() => null);
+    if (relief?.summary && this.terrainAnalysis() === analysis) {
+      analysis.summary = relief.summary;
+    }
+    if (analysis.yieldRelief) {
+      const comparison = await this.api(`/api/terrain/${analysis.id}/yield`, {
+        method: "POST",
+        body: {
+          yield_dataset_id: analysis.yieldRelief.values.dataset_id,
+          units: Units.get(),
+        },
+      }).catch(() => null);
+      // The tab may have moved on while the request was out; rewriting the
+      // sentences of an analysis nobody is looking at would be harmless but
+      // redrawing over the one on screen would not.
+      if (!comparison || this.terrainAnalysis() !== analysis) return;
+      analysis.yieldRelief = comparison;
+      if (analysis.profile?.points) await this.runProfile(analysis.profile.points);
+    }
     if (this.state.tab === "terrain") this.renderTab();
   },
 
@@ -4622,7 +4655,7 @@ Object.assign(App, {
       Units.set("currency", this.value("u-currency"));
       this.loadMap();
       this.renderTab();
-      this.refreshTerrainPhrasing();
+      this.refreshPhrasing();
     };
     for (const id of ["u-yield", "u-input", "u-area", "u-length", "u-speed", "u-mass",
                       "u-crop", "u-currency"]) {

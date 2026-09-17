@@ -21,6 +21,23 @@ Three things it checks that matter most in practice:
 **Does the data look like one field, one job?**
     Two fields merged into one file, a fragment of a pass, or a logging gap
     of several hours all change how the numbers should be read.
+
+Everything it judges, it judges in the internal metric store: a median
+yield is compared against a plausible range in kg/ha whatever the reader
+works in, because that is what the data is held as. What it *says* is
+another matter — a sentence carries its numbers inside it, so the
+reader's unit set travels into the writing of it, through
+:class:`~agrosuite.core.units.Phrase`. :func:`run` takes that unit set;
+``None`` is metric, and the same file re-checked in another one gives
+the same verdict, the same ``info`` and different prose.
+
+The unit findings need care rather than substitution. They are *about*
+units: the number in the file is one thing, what the app is currently
+reading it as is another, and what it would become if the file were
+declared differently is a third. Each is written as the quantity it is,
+in the reader's unit, and the unit names in the claim ("read as bu/ac")
+stay as they are, because they name what the file might be written in,
+not what the screen shows.
 """
 
 from __future__ import annotations
@@ -96,7 +113,7 @@ def _alert(title, detail, action=""):
 # Individual checks
 # ==========================================================================
 
-def _check_coverage(ds) -> tuple[list[Finding], dict[str, Any]]:
+def _check_coverage(ds, say: units_mod.Phrase) -> tuple[list[Finding], dict[str, Any]]:
     """Extent, worked area and point density."""
     findings: list[Finding] = []
     bounds = ds.bounds()
@@ -126,7 +143,7 @@ def _check_coverage(ds) -> tuple[list[Finding], dict[str, Any]]:
             findings.append(_ok(
                 "Coverage",
                 f"Terrain zones ({by}) with {zones} zone{'s' if zones != 1 else ''} "
-                f"over {area_ha:.1f} ha, derived from the relief of "
+                f"over {say.area(area_ha)}, derived from the relief of "
                 f"{extra.get('terrain_source') or 'the source'!r}.",
             ))
             return findings, info
@@ -135,8 +152,8 @@ def _check_coverage(ds) -> tuple[list[Finding], dict[str, Any]]:
         findings.append(_ok(
             "Coverage",
             f"An elevation raster of {_thousands(cells)} cells"
-            + (f" at {cell:g} m" if cell else "")
-            + f", covering {area_ha:.1f} ha; {_thousands(len(ds))} of them are drawn "
+            + (f" at {say.length(cell, None)}" if cell else "")
+            + f", covering {say.area(area_ha)}; {_thousands(len(ds))} of them are drawn "
             "on the map.",
         ))
         return findings, info
@@ -150,8 +167,8 @@ def _check_coverage(ds) -> tuple[list[Finding], dict[str, Any]]:
     if ds.geometry is not None and ds.meta.geometry_type == "polygon":
         findings.append(_ok(
             "Coverage",
-            f"{len(ds):,} polygon{'s' if len(ds) != 1 else ''} covering "
-            f"{area_ha:.1f} ha.".replace(",", " "),
+            f"{_thousands(len(ds))} polygon{'s' if len(ds) != 1 else ''} covering "
+            f"{say.area(area_ha)}.",
         ))
         return findings, info
 
@@ -161,15 +178,15 @@ def _check_coverage(ds) -> tuple[list[Finding], dict[str, Any]]:
         if density < 5:
             findings.append(_warn(
                 "Sparse data",
-                f"{density:.1f} records per hectare. A monitor logging once a second "
-                "normally produces hundreds.",
+                f"{say.per_area(density, 1)}. A monitor logging once a second normally "
+                "produces hundreds.",
                 "It may be an already-aggregated file, or only part of the job.",
             ))
         else:
             findings.append(_ok(
                 "Coverage",
-                f"{len(ds):,} records over {area_ha:.1f} ha "
-                f"({density:.0f} per hectare).".replace(",", " "),
+                f"{_thousands(len(ds))} records over {say.area(area_ha)} "
+                f"({say.per_area(density)}).",
             ))
 
     # A bounding box far larger than the worked area usually means two fields
@@ -184,15 +201,20 @@ def _check_coverage(ds) -> tuple[list[Finding], dict[str, Any]]:
         if box_ha > area_ha * 6 and box_ha > 20:
             findings.append(_warn(
                 "Scattered extent",
-                f"The records span {box_ha:.0f} ha of ground but only cover {area_ha:.0f} ha "
-                "of it.",
+                f"The records span {say.area(box_ha, 0)} of ground but only cover "
+                f"{say.area(area_ha, 0)} of it.",
                 "This often means two fields, or two jobs, ended up in one file.",
             ))
     return findings, info
 
 
-def _check_time(ds) -> tuple[list[Finding], dict[str, Any]]:
-    """Duration, logging interval and gaps."""
+def _check_time(ds, say: units_mod.Phrase) -> tuple[list[Finding], dict[str, Any]]:
+    """Duration, logging interval and gaps.
+
+    Nothing here has a unit to choose: an hour is an hour and a second is
+    a second in every preset, so ``say`` is taken for the common shape of
+    the checks and not used.
+    """
     findings: list[Finding] = []
     info: dict[str, Any] = {}
 
@@ -238,7 +260,7 @@ def _check_time(ds) -> tuple[list[Finding], dict[str, Any]]:
     return findings, info
 
 
-def _check_columns(ds) -> tuple[list[Finding], dict[str, Any]]:
+def _check_columns(ds, say: units_mod.Phrase) -> tuple[list[Finding], dict[str, Any]]:
     """Which canonical columns are present, and what their absence blocks."""
     present = set(ds.df.columns)
     info = {"present": sorted(present & set(sch.LABELS)), "missing": []}
@@ -262,10 +284,10 @@ def _check_columns(ds) -> tuple[list[Finding], dict[str, Any]]:
             if high - low > ELEVATION_RANGE_MAX_M:
                 findings.append(_warn(
                     "Elevation range",
-                    f"Heights run from {_thousands(low)} to {_thousands(high)} m, a range "
-                    f"of {_thousands(high - low)} m — more relief than any field has. A "
-                    "fill value the raster never declared as nodata (-9999, -32768) or "
-                    "heights in a unit other than metres usually explain it.",
+                    f"Heights run from {say.length(low, 0)} to {say.length(high, 0)}, a "
+                    f"range of {say.length(high - low, 0)} — more relief than any field "
+                    "has. A fill value the raster never declared as nodata (-9999, "
+                    "-32768) or heights in a unit other than metres usually explain it.",
                     "Check the raster's nodata value (QGIS: Layer Properties > "
                     "Transparency) and re-export it, or declare the elevation unit "
                     "below; the terrain analysis reads these heights as they are.",
@@ -338,7 +360,9 @@ def _median_positive(series) -> float | None:
     return float(values.median()) if len(values) >= 20 else None
 
 
-def _guess_unit(ds, operation: str, crop: str | None) -> tuple[list[Finding], dict[str, Any]]:
+def _guess_unit(
+    ds, operation: str, crop: str | None, say: units_mod.Phrase
+) -> tuple[list[Finding], dict[str, Any]]:
     """Judge whether the file's values are plausible under the assumed units.
 
     The app stores everything as kg/ha, km/h and metres. If a file was written
@@ -350,6 +374,18 @@ def _guess_unit(ds, operation: str, crop: str | None) -> tuple[list[Finding], di
     Value, speed and width are judged **together**, because a monitor is
     configured as one system. Agreement between three independent quantities
     is far stronger evidence than any one of them alone.
+
+    These are the findings that need writing rather than converting, because
+    they are about units themselves. Three quantities are in play and each is
+    said as what it is: the **number in the file**, which has no unit until
+    someone declares one and is quoted bare; what the app is **currently
+    reading it as**, which is a rate and is shown in the reader's own unit;
+    and what it **would become** if the file were declared otherwise, which
+    is another rate and is shown the same way. Mechanically substituting the
+    unit would turn "read as bu/ac this becomes 1 247 kg/ha" into "read as
+    bu/ac this becomes 55 bu/ac" for a reader in bushels — true, circular and
+    useless. The unit names inside the claim stay literal: they name what the
+    monitor may have written, not what the screen shows.
     """
     findings: list[Finding] = []
     info: dict[str, Any] = {}
@@ -395,9 +431,9 @@ def _guess_unit(ds, operation: str, crop: str | None) -> tuple[list[Finding], di
     if low <= value_median <= high:
         findings.append(_ok(
             "Magnitude",
-            f"Median {label} of {_thousands(value_median)} kg/ha sits inside the "
+            f"The median {label} is {say.rate(value_median, operation)}, inside the "
             f"plausible range for {crop or 'this crop'} "
-            f"({_thousands(low)}–{_thousands(high)}).",
+            f"({say.rate(low, operation)} to {say.rate(high, operation)}).",
         ))
         # A plausible magnitude is not proof. An input rate is plausible at both
         # 96 kg/ha and 96 lb/ac, so when speed and width clearly say imperial,
@@ -408,6 +444,7 @@ def _guess_unit(ds, operation: str, crop: str | None) -> tuple[list[Finding], di
                 evidence.append(f"speed reads {speed_median:.1f}, which suits mph")
             if width_guess == "ft":
                 evidence.append(f"width reads {width_median:.0f}, which suits feet")
+            # The same file read the other way, as the rate it would then be.
             imperial_equivalent = value_median * units_mod.unit_factor(
                 "rate_mass", "lb/ac", crop
             )
@@ -422,9 +459,11 @@ def _guess_unit(ds, operation: str, crop: str | None) -> tuple[list[Finding], di
 
             findings.append(_warn(
                 "Possibly imperial units",
-                f"The {label} magnitude is plausible as kg/ha, but the rest of the file "
-                f"looks imperial: {'; '.join(evidence)}. If the file is in lb/ac, the "
-                f"real {label} is {_thousands(imperial_equivalent)} kg/ha.",
+                f"Read as kg/ha the {label} is plausible, and the app is holding it at "
+                f"{say.rate(value_median, operation)}. But the rest of the file looks "
+                f"imperial: {'; '.join(evidence)}. If the monitor wrote lb/ac, the real "
+                f"{label} is {say.rate(imperial_equivalent, operation)} — a tenth more "
+                "than every number now on screen.",
                 "If the monitor was set to imperial, the button below applies the "
                 "whole set at once.",
             ))
@@ -470,10 +509,11 @@ def _guess_unit(ds, operation: str, crop: str | None) -> tuple[list[Finding], di
             corroboration.append(f"width reads {width_median:.0f}, which suits {width_guess}")
 
         detail = (
-            f"Median {label} of {_thousands(value_median)} is outside the plausible "
-            f"range for {crop or 'this crop'} "
-            f"({_thousands(low)}–{_thousands(high)} kg/ha). Read as {best['unit']} it "
-            f"becomes {_thousands(best['kg_ha'])} kg/ha, which fits."
+            f"The median {label} is {say.rate(value_median, operation)} as the file is "
+            f"being read — outside the plausible range for {crop or 'this crop'} "
+            f"({say.rate(low, operation)} to {say.rate(high, operation)}). The same "
+            f"numbers read as {best['unit']} would put it at "
+            f"{say.rate(best['kg_ha'], operation)}, which fits."
         )
         if corroboration:
             detail += " " + ("The rest of the file agrees: " + "; ".join(corroboration) + ".")
@@ -502,9 +542,9 @@ def _guess_unit(ds, operation: str, crop: str | None) -> tuple[list[Finding], di
     else:
         findings.append(_warn(
             "Unusual magnitude",
-            f"Median {label} of {_thousands(value_median)} kg/ha falls outside the "
-            f"plausible range ({_thousands(low)}–{_thousands(high)}), and no standard "
-            "unit explains it.",
+            f"The median {label} is {say.rate(value_median, operation)}, outside the "
+            f"plausible range ({say.rate(low, operation)} to "
+            f"{say.rate(high, operation)}), and no standard unit explains it.",
             "Check the sensor calibration and which column was taken as the value.",
         ))
     return findings, info
@@ -515,7 +555,7 @@ def _thousands(value: float) -> str:
     return f"{value:,.0f}".replace(",", "\u202f")
 
 
-def _check_quality(ds) -> tuple[list[Finding], dict[str, Any]]:
+def _check_quality(ds, say: units_mod.Phrase) -> tuple[list[Finding], dict[str, Any]]:
     """Defects that cleaning will have to deal with."""
     findings: list[Finding] = []
     info: dict[str, Any] = {}
@@ -566,7 +606,8 @@ def _check_quality(ds) -> tuple[list[Finding], dict[str, Any]]:
                 findings.append(_warn(
                     "Speed out of range",
                     f"{outside / total * 100:.1f}% of the records fall outside "
-                    f"{SPEED_RANGE_KMH[0]:g}–{SPEED_RANGE_KMH[1]:g} km/h.",
+                    f"{say.speed(SPEED_RANGE_KMH[0], None)}–"
+                    f"{say.speed(SPEED_RANGE_KMH[1], None)}.",
                     "Road travel and long stops inside the file.",
                 ))
     return findings, info
@@ -700,17 +741,30 @@ def suggest_next_step(ds, findings: list[Finding], role: str) -> dict[str, Any]:
     }
 
 
-def run(ds) -> dict[str, Any]:
-    """Run the full preliminary pass over a freshly imported dataset."""
+def run(ds, units: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Run the full preliminary pass over a freshly imported dataset.
+
+    ``units`` is the reader's unit set — the shape of
+    ``UNIT_PRESETS['canada']`` — and it reaches the sentences only: every
+    number in ``info``, every threshold every check applies, and the
+    verdict itself are the same whoever is reading. ``None`` is the metric
+    store, which is what a caller that names no units gets.
+
+    Re-running it is how a first look is said again in another unit set:
+    it costs a few passes over the columns (milliseconds on a monitor
+    file) and it re-reads the data rather than the prose, so the sentences
+    can never drift from the numbers they describe.
+    """
+    say = units_mod.Phrase(units, crop=ds.meta.crop)
     findings: list[Finding] = []
     info: dict[str, Any] = {}
 
     for check in (_check_coverage, _check_time, _check_columns, _check_quality):
-        new_findings, new_info = check(ds)
+        new_findings, new_info = check(ds, say)
         findings.extend(new_findings)
         info.update(new_info)
 
-    unit_findings, unit_info = _guess_unit(ds, ds.meta.operation, ds.meta.crop)
+    unit_findings, unit_info = _guess_unit(ds, ds.meta.operation, ds.meta.crop, say)
     findings.extend(unit_findings)
     info.update(unit_info)
 

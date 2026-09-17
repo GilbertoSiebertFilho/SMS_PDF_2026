@@ -38,6 +38,7 @@ from scipy import ndimage
 from scipy.spatial import cKDTree
 
 from ..core import schema as sch
+from ..core.units import Phrase
 
 #: Weight below which a normalized convolution has no valid support.
 _MIN_WEIGHT = 1e-9
@@ -956,6 +957,7 @@ def grid_from_points(
     detrend_passes: bool = True,
     remove_outliers: bool = True,
     max_cells: int = 400_000,
+    units: dict[str, Any] | None = None,
 ) -> tuple[ElevationGrid, dict[str, Any]]:
     """Grid the GPS elevation of a point dataset.
 
@@ -989,6 +991,15 @@ def grid_from_points(
         Drop altitude spikes before gridding.
     max_cells:
         Upper bound on ``rows * cols``; the cell grows until it fits.
+    units:
+        The reader's unit set, which reaches the notes that measure ground
+        — the smoothing scale, the spacing between readings, the width of
+        a strip — so they are written in the unit the reader works in.
+        ``None``, the default, is the metric store. The notes that quote
+        what the file itself declares (a swath column reading 5000, an
+        altitude stepped in whole metres, a fill value of exactly 0 m, a
+        cell size that was asked for) keep the file's own numbers: they
+        say what is written in the file, not how big the ground is.
 
     Returns
     -------
@@ -1042,6 +1053,7 @@ def grid_from_points(
     x = df[sch.X].to_numpy(dtype="float64", na_value=np.nan)
     y = df[sch.Y].to_numpy(dtype="float64", na_value=np.nan)
 
+    say = Phrase(units)
     notes: list[str] = []
     if non_numeric:
         notes.append(
@@ -1285,11 +1297,11 @@ def grid_from_points(
         )
     if smooth > 0 and not (step > 0 and smooth <= QUANTISED_SMOOTH_STEPS * step):
         notes.append(
-            f"The surface was smoothed over {smooth:g} m to take out the "
-            f"{100 * noise:.0f} cm of altitude noise in the readings. Hollows and "
-            f"bumps narrower than about {4 * smooth:g} m read shallower than they "
-            "are, so small potholes hold more water than the figures say; set the "
-            "smoothing to 0 m to read the raw surface."
+            f"The surface was smoothed over {say.length(smooth)} to take out the "
+            f"{say.length(noise, 2)} of altitude noise in the readings. Hollows and "
+            f"bumps narrower than about {say.length(4 * smooth)} read shallower than "
+            "they are, so small potholes hold more water than the figures say; set the "
+            "smoothing to 0 to read the raw surface."
         )
 
     sampled = grid.sample(x, y)
@@ -1301,16 +1313,16 @@ def grid_from_points(
     if spacing > cell:
         extent_ha = max((xmax - xmin) * (ymax - ymin) / 10_000.0, 1e-9)
         notes.append(
-            f"The readings are about {spacing:.0f} m apart, farther than the {cell:g} m "
-            f"cell ({points_used / extent_ha:.0f} per hectare of extent): the relief "
-            "between them is interpolated, not measured."
+            f"The readings are about {say.length(spacing, 0)} apart, farther than the "
+            f"{say.length(cell, 0)} cell ({say.per_area(points_used / extent_ha)} of "
+            "extent): the relief between them is interpolated, not measured."
         )
     width = _strip_width(x, y)
     if width < 1.5 * swath:
         notes.append(
-            f"The readings lie along a strip only about {width + swath:.0f} m wide, one or "
-            "two passes rather than a field. The relief across the strip is not "
-            "measured, so only the profile along it means much."
+            f"The readings lie along a strip only about {say.length(width + swath, 0)} "
+            "wide, one or two passes rather than a field. The relief across the strip is "
+            "not measured, so only the profile along it means much."
         )
     block_note = _block_note(mask, cell, x0, y0)
     if block_note:

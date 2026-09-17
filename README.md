@@ -39,6 +39,15 @@ Internally everything is stored in metric — kg/ha, hectares, metres, km/h.
 Conversion happens only at display and at write time, so switching from acres
 to hectares changes no stored number and requires no reload.
 
+What the app **says** follows the same picker. A sentence carries its
+numbers inside it — "total relief is 34.6 ft over 149.5 ac" — so it cannot
+be converted the way a table is; it is written again, from the same stored
+numbers, in the units in force when you read it. Change the preset and
+every finding on screen is rewritten, including the first look at a file
+imported an hour ago, with nothing re-imported and no number changed. A
+printed report carries the units it was asked for, and a project saved in
+acres opens in hectares if that is what you are working in that day.
+
 Bushel units depend on the crop, because a bushel measures volume: a bushel
 of canola weighs 22.68 kg and one of wheat 27.22 kg. Pick the crop in the
 same panel.

@@ -44,6 +44,8 @@ from ..formats import johndeere as jd_mod
 from ..formats import packages as packages_mod
 from ..formats import validate as validate_mod
 from ..formats import registry, writers
+from ..terrain import analysis as terrain_analysis
+from ..terrain import yieldrelief
 from . import session as session_mod
 
 STATIC_DIR = Path(__file__).parent / "static"
@@ -73,6 +75,18 @@ class UnitsRequest(BaseModel):
 
     source_units: dict[str, str] = Field(default_factory=dict)
     crop: str | None = None
+
+
+class DisplayUnitsRequest(BaseModel):
+    """The unit set the reader is working in, as the pickers hold it.
+
+    It is the shape of ``UNIT_PRESETS['canada']`` plus whatever else the
+    interface keeps beside it (the preset's key, its label); only the
+    quantities are read. Nothing stored changes — this decides which units
+    the app's own sentences are written in.
+    """
+
+    units: dict[str, Any] = Field(default_factory=dict)
 
 
 class CleanRequest(BaseModel):
@@ -264,7 +278,7 @@ def _register(
     # The preliminary pass runs on import, not on request: the user should not
     # have to ask whether the file they just opened is usable.
     try:
-        report = preflight_mod.run(dataset)
+        report = preflight_mod.run(dataset, state.display_units)
     except Exception as exc:  # a failed check must not block the import
         report = {
             "verdict": "warning",
@@ -303,7 +317,33 @@ def _register(
 @app.get("/api/units")
 def units_catalog() -> dict[str, Any]:
     """Catalogue of units and crops for the interface pickers."""
-    return units_mod.unit_catalog()
+    catalog = units_mod.unit_catalog()
+    catalog["display"] = dict(state.display_units)
+    return catalog
+
+
+@app.put("/api/units/display")
+def set_display_units(request: DisplayUnitsRequest) -> dict[str, Any]:
+    """Tell the server which units the reader is working in.
+
+    Everything the app *says* — the first look, the cleaning report, the
+    relief, the notes on a joined layer — is prose with its numbers written
+    into it, and prose cannot be converted after the fact without deciding
+    again what it says. So the interface names the unit set here whenever
+    the preset or one picker changes, and from then on the sentences are
+    written in it. No stored number moves: the answer is the resolved set,
+    and the interface re-reads the reports it is showing.
+
+    An unknown unit is refused by name rather than quietly ignored, because
+    a picker the server did not understand would leave the sentences in one
+    unit and the tables in another — the very thing this fixes.
+    """
+    try:
+        units_mod.Phrase(request.units)
+    except ValueError as exc:
+        raise _fail(str(exc), 400)
+    state.display_units = dict(request.units)
+    return {"units": dict(state.display_units)}
 
 
 @app.post("/api/datasets/{dataset_id}/units")
@@ -518,6 +558,7 @@ def join_project(request: JoinRequest) -> dict[str, Any]:
             min_points_per_cell=request.min_points_per_cell,
             min_purity=request.min_purity,
             carry=request.carry or None,
+            units=state.display_units,
         )
     except ValueError as exc:
         raise _fail(str(exc))
@@ -807,7 +848,7 @@ def get_dataset(dataset_id: str) -> dict[str, Any]:
     # The preliminary report travels with the dataset so the interface can show
     # it without a second round trip; the heavier reports stay behind their own
     # endpoints.
-    data["reports_data"] = {"preflight": entry.reports.get("preflight")}
+    data["reports_data"] = {"preflight": _restated(entry, "preflight")}
     return data
 
 
@@ -845,9 +886,47 @@ def dataset_report(dataset_id: str, kind: str) -> dict[str, Any]:
         entry = state.get(dataset_id)
     except KeyError as exc:
         raise _fail(str(exc), 404)
+    if entry.reports.get(kind) is None:
+        raise _fail(f"This dataset has no '{kind}' report.", 404)
+    return _restated(entry, kind)
+
+
+def _restated(entry, kind: str) -> dict[str, Any] | None:
+    """A stored report with its sentences in the units now on screen.
+
+    A report is stored as it was made: numbers always metric, sentences in
+    whatever unit set was in force when it was made — which is right for
+    the answer that call returned, and stale the moment the picker moves.
+    So every read comes through here, and the sentences are written again
+    from those same numbers in ``state.display_units``. A report made an
+    hour ago in acres reads in hectares the moment the picker changes, and
+    a project saved last season opens in whatever units this session is
+    in. Not one stored number is touched.
+
+    The first look is re-read rather than rewritten: it is a few passes
+    over the columns, it costs milliseconds, and reading the data again
+    is the one way its sentences cannot drift from what they describe.
+    An economic report says nothing with a unit in it — its notes are
+    written free of one on purpose, so the interface can put them beside
+    figures it converts itself — and comes back as it is.
+    """
     report = entry.reports.get(kind)
     if report is None:
-        raise _fail(f"This dataset has no '{kind}' report.", 404)
+        return None
+    units = state.display_units
+    try:
+        if kind == "preflight":
+            return preflight_mod.run(entry.dataset, units)
+        if kind == "terrain":
+            return terrain_analysis.restate(report, units)
+        if kind == "terrain_yield":
+            return {**report, "findings": yieldrelief.findings(report, units)}
+        if kind == "clean":
+            return clean_pipeline.restate(report, units, entry.dataset.meta.operation)
+    except Exception:
+        # A report that cannot be said again is still worth showing as it
+        # was written: the numbers in it are right either way.
+        return report
     return report
 
 
@@ -877,7 +956,8 @@ def clean_dataset(dataset_id: str, request: CleanRequest) -> dict[str, Any]:
         }
 
     try:
-        result = clean_pipeline.run(entry.dataset, config, request.value_column)
+        result = clean_pipeline.run(
+            entry.dataset, config, request.value_column, units=state.display_units)
     except Exception as exc:
         raise _fail(f"Cleaning failed: {exc}")
 
@@ -927,6 +1007,7 @@ def difm(dataset_id: str, request: DifmRequest) -> dict[str, Any]:
             zone_column=request.zone_column,
             models=request.models,
             rate_max=request.rate_max,
+            units=state.display_units,
         )
     except Exception as exc:
         raise _fail(f"The economic analysis failed: {exc}")
@@ -982,6 +1063,7 @@ def design(request: DesignRequest) -> dict[str, Any]:
             angle_deg=request.angle_deg,
             buffer_m=request.buffer_m,
             seed=request.seed,
+            units=state.display_units,
         )
     except Exception as exc:
         raise _fail(str(exc))

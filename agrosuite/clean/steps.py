@@ -20,6 +20,7 @@ import numpy as np
 import pandas as pd
 
 from ..core import schema as sch
+from ..core.units import Phrase
 
 #: Sentinel meaning "no earlier point covered this cell".
 _NO_COVER = np.iinfo(np.int32).max
@@ -57,9 +58,21 @@ class Context:
     neighbourhood — that several steps reuse.
     """
 
-    def __init__(self, df: pd.DataFrame, value_column: str = sch.VALUE) -> None:
+    def __init__(
+        self,
+        df: pd.DataFrame,
+        value_column: str = sch.VALUE,
+        units: dict[str, Any] | None = None,
+        operation: str | None = None,
+    ) -> None:
         self.df = df
         self.value_column = value_column
+        # What each step says about itself is a sentence with a width, a
+        # speed or a rate written into it, so it is written in the unit set
+        # the reader works in; the operation decides whether the main
+        # variable is a yield or an input rate.
+        self.operation = operation
+        self.say = Phrase(units)
         self.n = len(df)
         self.alive = np.ones(self.n, dtype=bool)
         self.reason = np.full(self.n, "", dtype=object)
@@ -205,11 +218,28 @@ class CleaningStep:
     def run(self, ctx: Context) -> StepResult:  # pragma: no cover - interface
         raise NotImplementedError
 
-    def _result(self, removed: int, ctx: Context, detail: str = "", skipped: bool = False):
+    def _result(
+        self, removed: int, ctx: Context, detail: str = "", skipped: bool = False,
+        **measured: Any,
+    ):
+        """The step's result, with the sentence that describes its settings.
+
+        ``measured`` is what the step worked out from the data itself — the
+        full swath it estimated, the cell it covered the field with — and it
+        is kept beside the settings rather than only inside the sentence, so
+        that :func:`detail_for` can write the sentence again for a reader in
+        another unit set without running the filter a second time. A step
+        that did not run says why in ``detail`` instead, and that sentence
+        has no numbers in it.
+        """
+        params = {**self.params, **measured}
+        if not skipped and not detail:
+            detail = detail_for(
+                {"key": self.key, "params": params}, ctx.say, ctx.operation)
         return StepResult(
             key=self.key, label=self.label, removed=removed,
             remaining=int(ctx.alive.sum()), detail=detail, skipped=skipped,
-            params=dict(self.params),
+            params=params,
         )
 
 
@@ -283,10 +313,7 @@ class SpeedRangeFilter(CleaningStep):
         hi = float(self.params.get("max") or 1e9)
         remove = np.isfinite(speed) & ((speed < lo) | (speed > hi))
         remove |= ~np.isfinite(speed)
-        return self._result(
-            ctx.apply(remove, self.label), ctx,
-            detail=f"Accepted range: {lo:g}-{hi:g} km/h.",
-        )
+        return self._result(ctx.apply(remove, self.label), ctx)
 
 
 class SpeedChangeFilter(CleaningStep):
@@ -315,10 +342,7 @@ class SpeedChangeFilter(CleaningStep):
         with np.errstate(divide="ignore", invalid="ignore"):
             change = np.abs(speed - previous) / np.where(previous > 0, previous, np.nan)
         remove = np.isfinite(change) & (change > limit)
-        return self._result(
-            ctx.apply(remove, self.label), ctx,
-            detail=f"Maximum change tolerated: {limit * 100:g}%.",
-        )
+        return self._result(ctx.apply(remove, self.label), ctx)
 
 
 class SwathWidthFilter(CleaningStep):
@@ -345,8 +369,7 @@ class SwathWidthFilter(CleaningStep):
         remove = valid & (swath < full * fraction)
         remove |= ~valid
         return self._result(
-            ctx.apply(remove, self.label), ctx,
-            detail=f"Full width estimated at {full:.2f} m; minimum accepted {full * fraction:.2f} m.",
+            ctx.apply(remove, self.label), ctx, full_swath_m=full,
         )
 
 
@@ -381,13 +404,7 @@ class OverlapFilter(CleaningStep):
         limit = float(self.params.get("max_overlap_pct", 40.0)) / 100.0
         remove = coverage["valid"] & (fraction > limit)
         removed = ctx.apply(remove, self.label)
-        return self._result(
-            removed, ctx,
-            detail=(
-                f"{coverage['cell']:.2f} m cell; tolerating {limit * 100:g}% "
-                "of repeated area."
-            ),
-        )
+        return self._result(removed, ctx, cell_m=float(coverage["cell"]))
 
 
 class BoundaryFilter(CleaningStep):
@@ -429,10 +446,7 @@ class BoundaryFilter(CleaningStep):
         point_distance = distance[row, col]
 
         remove = coverage["valid"] & (point_distance < buffer_m)
-        return self._result(
-            ctx.apply(remove, self.label), ctx,
-            detail=f"{buffer_m:g} m strip in from the worked edge.",
-        )
+        return self._result(ctx.apply(remove, self.label), ctx)
 
 
 class PassEndsFilter(CleaningStep):
@@ -476,10 +490,7 @@ class PassEndsFilter(CleaningStep):
         if end_m > 0:
             remove |= ((totals - cumulative) <= end_m).to_numpy()
 
-        return self._result(
-            ctx.apply(remove, self.label), ctx,
-            detail=f"{start_m:g} m at the start and {end_m:g} m at the end of each pass.",
-        )
+        return self._result(ctx.apply(remove, self.label), ctx)
 
 
 class ShortPassFilter(CleaningStep):
@@ -500,10 +511,7 @@ class ShortPassFilter(CleaningStep):
         pass_id = pd.Series(ctx.df[sch.PASS].to_numpy())
         counts = pass_id.map(pass_id[ctx.alive].value_counts()).fillna(0).to_numpy()
         remove = counts < minimum
-        return self._result(
-            ctx.apply(remove, self.label), ctx,
-            detail=f"At least {minimum} records per pass.",
-        )
+        return self._result(ctx.apply(remove, self.label), ctx)
 
 
 class MoistureFilter(CleaningStep):
@@ -524,10 +532,7 @@ class MoistureFilter(CleaningStep):
         lo = float(self.params.get("min") or 0)
         hi = float(self.params.get("max") or 100)
         remove = np.isfinite(moisture) & ((moisture < lo) | (moisture > hi))
-        return self._result(
-            ctx.apply(remove, self.label), ctx,
-            detail=f"Accepted range: {lo:g}-{hi:g}%.",
-        )
+        return self._result(ctx.apply(remove, self.label), ctx)
 
 
 class PositionFilter(CleaningStep):
@@ -559,10 +564,7 @@ class PositionFilter(CleaningStep):
             step[0] = 0.0
             remove |= np.isfinite(step) & (step > max_jump)
 
-        return self._result(
-            ctx.apply(remove, self.label), ctx,
-            detail=f"Maximum jump accepted: {max_jump:g} m.",
-        )
+        return self._result(ctx.apply(remove, self.label), ctx)
 
 
 class GlobalOutlierFilter(CleaningStep):
@@ -587,21 +589,21 @@ class GlobalOutlierFilter(CleaningStep):
             return self._result(0, ctx, "Not enough records.", skipped=True)
 
         method = self.params.get("method", "std")
+        measured: dict[str, Any] = {}
         if method == "percentile":
             lo = float(np.percentile(alive_values, float(self.params.get("lower_pct", 1.0))))
             hi = float(np.percentile(alive_values, float(self.params.get("upper_pct", 99.0))))
-            detail = f"Percentiles {self.params.get('lower_pct')}-{self.params.get('upper_pct')}."
         else:
-            k = float(self.params.get("k", 3.0))
             mean = float(np.mean(alive_values))
             std = float(np.std(alive_values, ddof=1))
-            lo, hi = mean - k * std, mean + k * std
-            detail = f"Mean {mean:.1f} +/- {k:g} x {std:.1f}."
+            lo, hi = mean - float(self.params.get("k", 3.0)) * std, mean + float(
+                self.params.get("k", 3.0)) * std
+            measured = {"mean": mean, "sd": std}
 
         remove = np.isfinite(values) & ((values < lo) | (values > hi))
         return self._result(
             ctx.apply(remove, self.label), ctx,
-            detail=f"{detail} Accepted interval: {lo:.1f} to {hi:.1f}.",
+            accepted_min=lo, accepted_max=hi, **measured,
         )
 
 
@@ -653,13 +655,86 @@ class LocalOutlierFilter(CleaningStep):
 
         remove = np.zeros(ctx.n, dtype=bool)
         remove[alive_idx[flagged]] = True
-        return self._result(
-            ctx.apply(remove, self.label), ctx,
-            detail=(
-                f"{self.params.get('k_neighbors', 12)} neighbours, limit of "
-                f"{threshold:g} deviations."
-            ),
-        )
+        return self._result(ctx.apply(remove, self.label), ctx)
+
+
+# ==========================================================================
+# What each step says about its own settings
+# ==========================================================================
+# A step's detail line is prose — "a 3 m strip in from the worked edge" —
+# with a width, a speed or a rate written into it. It is composed here,
+# from the settings and from what the step measured, rather than inside
+# ``run``: a cleaning report is saved with the project and printed months
+# later, and the page and the screen have to be able to say it again in
+# whatever unit set the reader is in without running the filters again.
+# ``None`` for the unit set is the metric store, which is what everything
+# here is stored in.
+
+
+DETAIL_WRITERS: dict[str, Any] = {
+    # The unit is written once, at the end of the range, the way a range is
+    # spoken: "1.5-20 km/h", not "1.5 km/h-20 km/h".
+    "speed_range": lambda p, say, op: (
+        f"Accepted range: {say.number(say.to_speed(p.get('min') or 0), 1).rstrip('0').rstrip('.')}"
+        f"-{say.speed(p.get('max') or 0, None)}."
+    ),
+    "speed_change": lambda p, say, op: (
+        f"Maximum change tolerated: {float(p.get('max_change_pct', 25.0)):g}%."
+    ),
+    "swath_partial": lambda p, say, op: (
+        f"Full width estimated at {say.length(p.get('full_swath_m'), 2)}; minimum "
+        f"accepted {say.length((p.get('full_swath_m') or 0) * float(p.get('min_fraction', 0.5)), 2)}."
+    ),
+    "overlap": lambda p, say, op: (
+        f"{say.length(p.get('cell_m'), 2)} cell; tolerating "
+        f"{float(p.get('max_overlap_pct', 40.0)):g}% of repeated area."
+    ),
+    "boundary": lambda p, say, op: (
+        f"{say.length(p.get('buffer_m') or 0, None)} strip in from the worked edge."
+    ),
+    "pass_ends": lambda p, say, op: (
+        f"{say.length(p.get('start_m') or 0, None)} at the start and "
+        f"{say.length(p.get('end_m') or 0, None)} at the end of each pass."
+    ),
+    "short_pass": lambda p, say, op: (
+        f"At least {int(p.get('min_points', 8))} records per pass."
+    ),
+    "moisture": lambda p, say, op: (
+        f"Accepted range: {float(p.get('min') or 0):g}-{float(p.get('max') or 0):g}%."
+    ),
+    "position": lambda p, say, op: (
+        f"Maximum jump accepted: {say.length(p.get('max_jump_m') or 0, None)}."
+    ),
+    # The interval is in the main variable's own unit — a yield on a harvest,
+    # an input rate on anything else, which is what ``op`` decides.
+    "global_outlier": lambda p, say, op: (
+        (f"Mean {say.rate(p.get('mean'), op)} +/- {float(p.get('k', 3.0)):g} x "
+         f"{say.rate(p.get('sd'), op)}."
+         if p.get("method", "std") != "percentile"
+         else f"Percentiles {p.get('lower_pct')}-{p.get('upper_pct')}.")
+        + f" Accepted interval: {say.rate(p.get('accepted_min'), op)} to "
+        + f"{say.rate(p.get('accepted_max'), op)}."
+    ),
+    "local_outlier": lambda p, say, op: (
+        f"{int(p.get('k_neighbors', 12))} neighbours, limit of "
+        f"{float(p.get('threshold', 3.5)):g} deviations."
+    ),
+}
+
+
+def detail_for(step: dict[str, Any], say: Phrase, operation: str | None = None) -> str:
+    """The detail line of one step, in the unit set ``say`` carries.
+
+    ``step`` is the step as the report stores it. A step that was skipped,
+    or one whose settings have nothing to say, keeps the sentence it
+    already has: those carry no number and mean the same in every unit.
+    """
+    if step.get("skipped"):
+        return str(step.get("detail") or "")
+    writer = DETAIL_WRITERS.get(str(step.get("key") or ""))
+    if writer is None:
+        return str(step.get("detail") or "")
+    return writer(step.get("params") or {}, say, operation)
 
 
 #: Registry of available steps, in the recommended order of execution.

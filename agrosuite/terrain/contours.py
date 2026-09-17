@@ -33,6 +33,7 @@ import numpy as np
 from shapely.geometry import LineString
 
 from ..core import crs as crs_mod
+from ..core.units import Phrase
 from .grid import ElevationGrid
 
 # skimage.measure is imported inside :func:`contours`: it costs about half a
@@ -176,6 +177,7 @@ def contours(
     grid: ElevationGrid,
     interval_m: float | None = None,
     values: np.ndarray | None = None,
+    units: dict[str, Any] | None = None,
 ) -> tuple[list[dict[str, Any]], float]:
     """Contour lines of the grid as GeoJSON LineString features in WGS84.
 
@@ -190,6 +192,11 @@ def contours(
     surface, a wetness index); NaN there is treated as outside, as is
     anything outside the grid's own mask. ``interval_m`` defaults to
     :func:`choose_interval` on the layer's relief.
+
+    ``units`` is the reader's unit set, and it reaches the two refusals
+    only. They name an interval and suggest another, and the reader typed
+    theirs in the unit on screen: told to "choose 2 m or coarser" after
+    typing 1.5 in feet, they would type 2 feet and be refused again.
 
     Returns ``(features, interval_m)``.
     """
@@ -206,9 +213,11 @@ def contours(
     else:
         interval = float(interval_m)
         if not (math.isfinite(interval) and interval > 0.0):
+            say = Phrase(units)
             raise ValueError(
-                "The contour interval must be a positive number of metres — "
-                "0.25 suits a flat field, 1 or 2 a rolling one."
+                "The contour interval must be a positive height — "
+                f"{say.length(0.25, None)} suits a flat field, "
+                f"{say.length(1.0, None)} or {say.length(2.0, None)} a rolling one."
             )
 
     if not valid.any():
@@ -221,9 +230,11 @@ def contours(
     levels = _levels(zmin, zmax, interval)
     if len(levels) > MAX_LEVELS:
         suggested = choose_interval(zmax - zmin, target_count=MAX_LINES)
+        say = Phrase(units)
         raise ValueError(
-            f"A {interval:g} m interval over {zmax - zmin:.1f} m of relief would "
-            f"draw {len(levels)} contour lines; choose {suggested:g} m or coarser."
+            f"A {say.length(interval, None)} interval over "
+            f"{say.length(zmax - zmin)} of relief would draw {len(levels)} contour "
+            f"lines; choose {say.length(suggested, None)} or coarser."
         )
     if len(levels) == 0:
         return [], interval

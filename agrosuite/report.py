@@ -581,7 +581,8 @@ def _header(entry, units: _Units, generated_at: str, project: dict, title: str |
     ]
 
 
-def _preflight_section(report: dict, st: dict, width: float, next_step: bool = True) -> list:
+def _preflight_section(entry, units: _Units, st: dict, width: float,
+                       next_step: bool = True) -> list:
     """The first look; ``next_step`` is False once the step it names is done.
 
     The first look runs when a dataset is registered, and its advice is
@@ -589,7 +590,22 @@ def _preflight_section(report: dict, st: dict, width: float, next_step: bool = T
     an original that has since been cleaned carry that same advice, and on
     paper it would sit right above the Cleaning section that answers it.
     What follows cleaning is the reader's decision, not the page's.
+
+    It is **run again here**, over the dataset itself, in the unit set this
+    page was asked for. The stored report's sentences were written for
+    whatever was on screen when the file was opened, and a page that says
+    "7.7 ha" beside a table in acres is the fault this whole path exists to
+    remove. Re-reading the columns costs milliseconds and cannot drift from
+    what it describes; if it fails for any reason, the stored sentences are
+    printed rather than nothing.
     """
+    from .core import preflight as _preflight
+
+    report = entry.reports.get("preflight") or {}
+    try:
+        report = _preflight.run(entry.dataset, units.prefs)
+    except Exception:
+        pass
     verdict = str(report.get("verdict") or "warning")
     summary = str(report.get("summary") or "")
     findings = [f for f in (report.get("findings") or []) if f.get("level") != "ok"]
@@ -626,12 +642,15 @@ def _terrain_section(summary: dict, units: _Units, st: dict, width: float) -> li
     and the share of the field in each slope class — plus the findings, which
     are what the reader takes to the kitchen table.
 
-    The findings are printed as they came. Their numbers are metric because
-    they are written into the sentence, and rewriting a sentence to change
-    its unit is re-deciding what it says; the tables around them are in the
-    unit set the report was asked for, and a line says so when the two
-    differ.
+    The findings are **written again** here, in the unit set the page was
+    asked for, from the numbers the stored summary carries — the same
+    treatment the comparison below gets. Printing them as they came would
+    put a sentence in metres next to a table in feet on a page that cannot
+    be corrected afterwards.
     """
+    from .terrain import analysis as _terrain
+
+    summary = _terrain.restate(summary, units.prefs)
     elevation = summary.get("elevation") or {}
     trend = summary.get("trend") or {}
     slope = summary.get("slope") or {}
@@ -732,12 +751,6 @@ def _terrain_section(summary: dict, units: _Units, st: dict, width: float) -> li
         flow.append(Spacer(1, 3))
         flow.append(Paragraph(
             "\u2022 " + "<br/>\u2022 ".join(_t(f.get("text", "")) for f in rest), st["note"]))
-    if units.length_unit != "m" or units.area_unit != "ha":
-        flow.append(Spacer(1, 2))
-        flow.append(Paragraph(
-            "The sentences above are the analyser's own and carry metric numbers; "
-            f"the tables are in {_t(units.length_unit)} and {_t(units.area_unit)}.",
-            st["muted"]))
     return flow
 
 
@@ -857,6 +870,16 @@ def _signed_pct(value, decimals: int = 1) -> str:
 
 def _clean_section(report: dict, operation: str | None, units: _Units, st: dict,
                    width: float) -> list:
+    """What the cleaning removed, and what each filter was set to.
+
+    The step details are written again in the unit set the page was asked
+    for, from the settings and measurements the stored report carries: "a
+    20 ft strip in from the worked edge" on a page in feet, "6 m" on one in
+    metres, and never one beside the other.
+    """
+    from .clean import pipeline as _clean_pipeline
+
+    report = _clean_pipeline.restate(report, units.prefs, operation)
     totals = report.get("totals") or {}
     conv, unit = units.for_column(str(report.get("value_column") or "value"), operation)
     before = (report.get("statistics") or {}).get("before") or {}
@@ -1232,7 +1255,7 @@ def build_pdf(
         story.append(Spacer(1, 5))
         already_cleaned = entry.origin in CLEANING_ORIGINS or bool(reports.get("clean"))
         story.append(KeepTogether(_preflight_section(
-            reports["preflight"], st, width, next_step=not already_cleaned,
+            entry, resolved, st, width, next_step=not already_cleaned,
         )))
         sections.append("preflight")
 

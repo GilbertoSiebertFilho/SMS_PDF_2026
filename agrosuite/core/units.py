@@ -557,13 +557,16 @@ class Phrase:
         return from_internal(float(value), group, unit, self.units["crop"])
 
     # -- rendered, number and unit together ------------------------------
-    def length(self, metres, decimals: int = 1) -> str:
+    # ``decimals=None`` means "as many as this number needs, at most two":
+    # a setting the user typed as 10 should read "10 m", not "10.0 m", and
+    # the same setting in feet is 32.81 ft rather than 32.8096.
+    def length(self, metres, decimals: int | None = 1) -> str:
         return self._render(self.to_length(metres), self.length_unit, decimals)
 
-    def area(self, hectares, decimals: int = 1) -> str:
+    def area(self, hectares, decimals: int | None = 1) -> str:
         return self._render(self.to_area(hectares), self.area_unit, decimals)
 
-    def speed(self, kmh, decimals: int = 1) -> str:
+    def speed(self, kmh, decimals: int | None = 1) -> str:
         return self._render(self.to_speed(kmh), self.speed_unit, decimals)
 
     def volume(self, cubic_metres) -> str:
@@ -611,6 +614,20 @@ class Phrase:
             return "—"
         return f"{float(value):,.{decimals}f}".replace(",", THIN_SPACE)
 
+    def per_area(self, per_hectare, decimals: int = 0) -> str:
+        """A count of records over ground: "745 per ha", "301 per ac".
+
+        The density is a ratio, so it is the ground unit that changes and
+        the count that follows it: the same file is 745 readings a hectare
+        and 301 an acre, and quoting the first to someone who thinks in
+        acres understates how dense the log is by two and a half times.
+        """
+        if per_hectare is None:
+            return f"— per {self.area_unit}"
+        one = self.to_area(1.0)
+        value = float(per_hectare) / one if one else float(per_hectare)
+        return f"{self.number(value, decimals)} per {self.area_unit}"
+
     @staticmethod
     def decimals_for(value) -> int:
         """Decimal places proportional to magnitude: 12 553 needs none,
@@ -625,7 +642,10 @@ class Phrase:
         magnitude = abs(float(value))
         return 0 if magnitude >= 100 else 1 if magnitude >= 1 else 2
 
-    def _render(self, value, unit: str, decimals: int) -> str:
+    def _render(self, value, unit: str, decimals: int | None) -> str:
         if value is None:
             return f"— {unit}".strip()
+        if decimals is None:
+            text = self.number(value, 2).rstrip("0").rstrip(".")
+            return f"{text or '0'} {unit}".strip()
         return f"{self.number(value, decimals)} {unit}".strip()

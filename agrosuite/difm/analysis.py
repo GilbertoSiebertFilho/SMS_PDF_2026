@@ -23,6 +23,7 @@ import pandas as pd
 
 from ..core import schema as sch
 from ..core.dataset import Dataset
+from ..core.units import Phrase
 from . import response as response_mod
 
 
@@ -135,6 +136,7 @@ def aggregate_cells(
     value_column: str = sch.VALUE,
     group_columns: tuple[str, ...] = (),
     min_points: int = 3,
+    units: dict[str, Any] | None = None,
 ) -> pd.DataFrame:
     """Aggregate records into square cells of ``cell_m`` metres.
 
@@ -190,8 +192,8 @@ def aggregate_cells(
     grouped = grouped[grouped["n"] >= min_points]
     if grouped.empty:
         raise ValueError(
-            f"No {cell_m:g} m cell gathered at least {min_points} records. "
-            "Reduce the cell size or the minimum required."
+            f"No {Phrase(units).length(cell_m, None)} cell gathered at least "
+            f"{min_points} records. Reduce the cell size or the minimum required."
         )
     return grouped
 
@@ -258,6 +260,7 @@ def analyze(
     models: list[str] | None = None,
     rate_max: float | None = None,
     min_points: int | None = None,
+    units: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Run the full economic analysis and return the report.
 
@@ -265,6 +268,13 @@ def analyze(
     comparison between uniform and zone-based variable rate, and the summary
     by applied rate — which is the most direct way to check whether the trial
     came out as planned.
+
+    Every number in the report is internal — kg/ha, metres, money per
+    hectare — and its notes are deliberately free of any unit, so the
+    interface writes them beside figures it has converted itself. ``units``
+    reaches the one sentence that does carry a measurement: the refusal
+    when no cell gathered enough records, which names a cell size and has
+    to name it in the size the reader typed.
     """
     df = dataset.df
     if rate_column not in df.columns:
@@ -294,7 +304,7 @@ def analyze(
     cells = aggregate_cells(
         trimmed, cell_m=cell_m, rate_column=rate_column,
         value_column=value_column, group_columns=group_columns,
-        min_points=min_points,
+        min_points=min_points, units=units,
     )
     notes.append(f"{len(cells)} cells used to fit the curve.")
 

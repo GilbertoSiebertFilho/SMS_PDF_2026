@@ -21,6 +21,8 @@ from typing import Any
 
 import numpy as np
 
+from ..core.units import Phrase
+
 
 def _principal_direction(polygon) -> float:
     """Angle (degrees) of the longest side of the field's minimum bounding box.
@@ -48,6 +50,7 @@ def design_strips(
     angle_deg: float | None = None,
     buffer_m: float = 0.0,
     seed: int = 0,
+    units: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Generate trial strips over a field boundary.
 
@@ -68,6 +71,10 @@ def design_strips(
         Strip direction. When absent, the field's longest side is used.
     buffer_m:
         Inward setback from the boundary, dropping the headland.
+    units:
+        The reader's unit set, which reaches the two refusals that quote a
+        width: they name the setback and the strip width the user typed,
+        and have to name them in the unit they were typed in.
 
     Returns
     -------
@@ -101,11 +108,13 @@ def design_strips(
     if field.is_empty:
         raise ValueError("The field boundary produced an empty polygon.")
 
+    say = Phrase(units)
     warnings: list[str] = []
     working = field.buffer(-abs(buffer_m)) if buffer_m else field
     if working.is_empty:
         raise ValueError(
-            f"The {buffer_m:g} m setback consumed the whole field. Reduce the headland."
+            f"The {say.length(buffer_m, None)} setback consumed the whole field. "
+            "Reduce the headland."
         )
     if working.geom_type == "MultiPolygon":
         working = max(working.geoms, key=lambda g: g.area)
@@ -121,9 +130,10 @@ def design_strips(
     total_strips = int(math.floor((max_y - min_y) / strip_width))
     if total_strips < len(rates):
         raise ValueError(
-            f"The field only fits {total_strips} strip(s) of {strip_width:g} m, and the "
-            f"trial needs at least {len(rates)} — one per rate. Reduce the strip width "
-            "or the number of rates."
+            f"The field only fits {total_strips} strip(s) of "
+            f"{say.length(strip_width, None)}, and the trial needs at least "
+            f"{len(rates)} — one per rate. Reduce the strip width or the number of "
+            "rates."
         )
 
     usable_blocks = min(blocks, total_strips // len(rates))

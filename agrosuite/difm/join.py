@@ -26,6 +26,7 @@ import pandas as pd
 
 from ..core import schema as sch
 from ..core.dataset import Dataset
+from ..core.units import Phrase
 
 #: How each role contributes to the joined table.
 ROLE_COLUMNS = {
@@ -141,6 +142,7 @@ def join_layers(
     columns: dict[str, str] | None = None,
     min_purity: float = 0.8,
     carry: list[str] | None = None,
+    units: dict[str, Any] | None = None,
 ) -> tuple[Dataset, dict[str, Any]]:
     """Join yield, as-applied and planned-rate layers onto a shared grid.
 
@@ -165,6 +167,10 @@ def join_layers(
         a soil class, a variety. Without them the joined table loses whatever
         would let the analysis split the field, and the response of two
         different zones gets pooled into one curve that fits neither.
+    units:
+        The reader's unit set, which reaches the two sentences that quote
+        the cell size — the note on the joined dataset and the refusal when
+        the layers share no cell. Every number stays metric.
 
     Returns
     -------
@@ -172,6 +178,7 @@ def join_layers(
         A point dataset, one point per joined cell, carrying ``yield``,
         ``applied_rate`` and ``planned_rate`` as available.
     """
+    say = Phrase(units)
     if "yield" not in layers:
         raise ValueError(
             "The economic analysis needs a yield layer. Add the harvest file and "
@@ -252,9 +259,9 @@ def join_layers(
     if merged is None or merged.empty:
         overlaps = ", ".join(f"{layer['role']}: {layer['cells']}" for layer in report["layers"])
         raise ValueError(
-            f"The layers share no {cell_m:g} m cell. Cells per layer — {overlaps}. "
-            "Either they cover different fields, or the cell is too small for the "
-            "sparsest layer."
+            f"The layers share no {say.length(cell_m, None)} cell. Cells per layer — "
+            f"{overlaps}. Either they cover different fields, or the cell is too small "
+            "for the sparsest layer."
         )
 
     # ---- coverage diagnostics
@@ -345,7 +352,7 @@ def join_layers(
         field_name=layers["yield"].meta.field_name,
         value_label="Yield",
         notes=[
-            f"{len(frame)} cells of {cell_m:g} m shared by "
+            f"{len(frame)} cells of {say.length(cell_m, None)} shared by "
             f"{len(report['layers'])} layer(s).",
             *report["notes"],
         ],

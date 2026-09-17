@@ -128,11 +128,22 @@ def test_the_findings_are_the_first_panel_and_are_printed_as_they_came():
     assert '{ ok: "ok", warning: "warning" }' in findings
 
 
-def test_the_panel_says_which_numbers_are_metric_when_they_are_not_all():
+def test_the_panel_shows_the_findings_in_the_units_on_screen():
+    """The panel used to warn that the sentences were metric while the
+    tables beside them were not. They are not metric any more: the server
+    writes them in the unit set the reader is in, and a change of units
+    asks for them again — so the warning is gone, and what replaces it is
+    the refresh that makes it unnecessary."""
     findings = _block("terrainFindingsPanel")
-    assert 'Units.label.length() === "m" && Units.label.area() === "ha"' in findings
-    assert "carry metric numbers" in findings
-    assert "follows the units on screen" in findings
+    assert "carry metric numbers" not in findings
+    assert 'Units.label.length() === "m"' not in findings
+    refresh = _block("refreshPhrasing")
+    assert "/api/units/display" in _block("sendDisplayUnits")
+    assert "this.sendDisplayUnits()" in refresh
+    assert "refreshTerrainPhrasing()" in refresh
+    # The relief's own summary is asked for again, not only the comparison.
+    terrain = _block("refreshTerrainPhrasing")
+    assert "`/api/terrain/${analysis.id}`" in terrain
 
 
 def test_a_volume_is_the_length_unit_cubed_on_both_sides():
@@ -225,26 +236,36 @@ def test_the_printed_relief_is_in_the_units_that_were_asked_for(analysed_entry, 
     # reportlab writes a byte outside ASCII as an octal escape inside the
     # string literal, so the superscript three of "ft³" reads as \263.
     assert "ft\\263" in feet
-    assert "the tables are in ft and ac" in feet
+    # The sentences are in feet too, so there is nothing left to warn about:
+    # the page used to carry a line saying the prose was metric.
+    assert "the tables are in ft and ac" not in feet
 
     metric = tmp_path / "metric.pdf"
     report_mod.build_pdf(analysed_entry, metric, METRIC, STAMP, PROJECT)
     metres = _pdf_strings(metric)
     assert f"{relief_m:,.1f}" in metres
-    # Nothing to warn about when the tables already speak the findings' unit.
     assert "the tables are in" not in metres
 
 
 def test_the_printed_findings_are_the_analysers_own_sentences(analysed_entry, tmp_path):
+    """The analyser's words, written in the units the page was asked for.
+
+    Their numbers are inside the sentence, so the page cannot convert them
+    — it asks the analyser to say them again from the stored numbers. What
+    it must never do is print one sentence in metres beside a table in
+    feet, which is what it used to do.
+    """
+    from agrosuite.terrain import analysis as terrain_analysis
+
     out = tmp_path / "findings.pdf"
     report_mod.build_pdf(analysed_entry, out, CANADA, STAMP, PROJECT)
     text = _pdf_strings(out)
-    # Their numbers are written into the sentence: converting them would be
-    # rewriting what they say, so they print as they came — in metres, on a
-    # page whose tables are in feet, with the line above that says so.
-    first = analysed_entry.reports["terrain"]["findings"][0]["text"]
+    stored = analysed_entry.reports["terrain"]
+    assert stored["findings"][0]["text"].startswith("Total relief is 10.5 m")
+    first = terrain_analysis.restate(stored, CANADA)["findings"][0]["text"]
     assert first.split(":")[0] in text
-    assert "10.5 m" in text
+    assert "34.6 ft" in first and "10.5 m" not in first
+    assert "10.5 m" not in text
 
 
 # ==========================================================================

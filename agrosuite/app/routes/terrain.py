@@ -33,6 +33,7 @@ from fastapi.responses import Response
 from pydantic import BaseModel, ConfigDict, Field
 
 from ...core import crs as crs_mod
+from ...core.units import Phrase
 from ...formats import raster as raster_mod
 from ...formats import writers
 from ...terrain import analysis as analysis_mod
@@ -366,13 +367,26 @@ def _optional_float(raw: str | None, name: str) -> float | None:
 
 @router.post("/analyze")
 def analyze(request: AnalyzeRequest) -> dict[str, Any]:
-    """Run the terrain analysis on a loaded dataset and return its summary."""
+    """Run the terrain analysis on a loaded dataset and return its summary.
+
+    What is stored is the summary as the analyser wrote it: metric
+    numbers and metric sentences, like everything else this app keeps.
+    What is sent back is the same summary said in the units on screen —
+    :func:`agrosuite.terrain.analysis.restate` writes the sentences again
+    and touches no number — so the reader never sees a sentence in one
+    unit beside a table in another, and a later change of units needs
+    only another read, not another analysis.
+    """
     server_mod = _server()
     entry = _entry(request.dataset_id)
     _refuse_zones(entry)
     options = TerrainOptions(**request.model_dump(exclude={"dataset_id"}))
+    units = server_mod.state.display_units
     try:
-        result = analysis_mod.analyze(entry.dataset, options)
+        # The units reach the analysis itself for one thing only: the notes
+        # the grid builder and the raster reader write while the file is
+        # being read, which cannot be written again without reading it again.
+        result = analysis_mod.analyze(entry.dataset, options, units)
         summary = result.summary()
     except ValueError as exc:
         raise server_mod._fail(str(exc), 400)
@@ -380,7 +394,10 @@ def analyze(request: AnalyzeRequest) -> dict[str, Any]:
     # Replaces any earlier report: an analysis re-run with other options is
     # the one the user now wants to read.
     entry.reports["terrain"] = summary
-    return {"dataset_id": request.dataset_id, "summary": summary}
+    return {
+        "dataset_id": request.dataset_id,
+        "summary": analysis_mod.restate(summary, units),
+    }
 
 
 def _refuse_zones(entry) -> None:
@@ -413,16 +430,25 @@ def _refuse_zones(entry) -> None:
 
 @router.get("/{dataset_id}")
 def summary(dataset_id: str) -> dict[str, Any]:
-    """The summary of the last analysis of a dataset."""
+    """The summary of the last analysis of a dataset, said in today's units.
+
+    The stored summary is metric, sentences included; what comes back here
+    is the same summary with its prose written again in the unit set the
+    reader is working in. No number differs between the two.
+    """
     entry = _entry(dataset_id)
+    units = _server().state.display_units
     with _lock:
         cached = _cache.get(dataset_id)
     if cached is not None:
-        return {"dataset_id": dataset_id, "summary": cached.result.summary()}
+        return {
+            "dataset_id": dataset_id,
+            "summary": analysis_mod.restate(cached.result.summary(), units),
+        }
     # The summary outlives the arrays: it is what a saved report shows.
     report = entry.reports.get("terrain")
     if report is not None:
-        return {"dataset_id": dataset_id, "summary": report}
+        return {"dataset_id": dataset_id, "summary": analysis_mod.restate(report, units)}
     raise _server()._fail(
         f"Run the terrain analysis first: '{entry.label}' has not been analysed. "
         "Post its id to /api/terrain/analyze.",
@@ -520,7 +546,10 @@ def contours(dataset_id: str, interval_m: str | None = None) -> dict[str, Any]:
         used = result.contour_interval_m
     else:
         try:
-            features, used = contour_lines(result.grid, interval_m=interval)
+            features, used = contour_lines(
+                result.grid, interval_m=interval,
+                units=_server().state.display_units,
+            )
         except ValueError as exc:
             raise server_mod._fail(str(exc), 400)
     return {
@@ -551,12 +580,16 @@ def profile(dataset_id: str, request: ProfileRequest) -> dict[str, Any]:
     """
     server_mod = _server()
     result = _cached(dataset_id).result
+    # The request may name its own unit set; otherwise the one the reader is
+    # working in, which the interface has already told the server about.
+    units = request.units or server_mod.state.display_units
+    say = Phrase(units)
     if request.n > MAX_PROFILE_STATIONS:
         raise server_mod._fail(
             f"A profile of {request.n:,} stations is more than a chart can show: ask "
             f"for at most {MAX_PROFILE_STATIONS:,}. The line is sampled evenly, so "
-            f"one station per {result.grid.cell / 2:g} m (half a grid cell) already "
-            "reads every cell it crosses."
+            f"one station per {say.length(result.grid.cell / 2, None)} (half a grid "
+            "cell) already reads every cell it crosses."
         )
     try:
         line = profile_along(result.grid, request.points, n=request.n)
@@ -570,7 +603,7 @@ def profile(dataset_id: str, request: ProfileRequest) -> dict[str, Any]:
         series, meta = yieldrelief.profile_values(
             result.grid, line, values_entry.dataset,
             value_column=request.value_column, values_label=values_entry.label,
-            units=request.units,
+            units=units,
         )
     except ValueError as exc:
         raise server_mod._fail(str(exc), 400)
@@ -594,9 +627,11 @@ def yield_against_relief(dataset_id: str, request: YieldReliefRequest) -> dict[s
 
     The result is kept on the analysed dataset's entry, beside its terrain
     report, so the printed page carries it and a reload brings it back.
-    The findings stored with it are the ones this call rendered, in the
-    unit set it was given; the printed page re-renders them in whatever
-    units it is asked for.
+    What is stored carries metric sentences, like every other report in
+    this app, and what is sent back carries them in the unit set this call
+    was given — the one the request named, or the one the reader is
+    working in. The printed page writes them again in whatever units it is
+    asked for, and so does the next read after the picker changes.
     """
     server_mod = _server()
     entry = _entry(dataset_id)
@@ -605,18 +640,19 @@ def yield_against_relief(dataset_id: str, request: YieldReliefRequest) -> dict[s
     # Cleaning produces a new dataset rather than changing one, so a layer
     # that has been cleaned is a layer whose origin is the cleaning.
     cleaned = values_entry.origin in CLEANED_ORIGINS
+    units = request.units or server_mod.state.display_units
     try:
         summary = yieldrelief.analyse(
             result, values_entry.dataset,
             terrain_id=dataset_id, terrain_label=entry.label,
             values_id=request.yield_dataset_id, values_label=values_entry.label,
             bands=request.bands, value_column=request.value_column,
-            cleaned=cleaned, units=request.units,
+            cleaned=cleaned,
         )
     except ValueError as exc:
         raise server_mod._fail(str(exc), 400)
     entry.reports["terrain_yield"] = summary
-    return summary
+    return {**summary, "findings": yieldrelief.findings(summary, units)}
 
 
 # ==========================================================================
@@ -731,7 +767,10 @@ def export(dataset_id: str, request: TerrainExportRequest) -> dict[str, Any]:
         raise server_mod._fail(f"The terrain export failed: {exc}")
 
     readme = out_dir / "README.txt"
-    readme.write_text(_readme(result, entry.label, written, notes), encoding="utf-8")
+    readme.write_text(
+        _readme(result, entry.label, written, notes, _server().state.display_units),
+        encoding="utf-8",
+    )
     written.append({"name": readme.name, "what": "This description"})
 
     zip_path = state.exports / f"{out_dir.name}.zip"
@@ -860,9 +899,21 @@ def _write_collection(
 
 
 def _readme(
-    result: TerrainResult, label: str, written: list[dict[str, str]], notes: list[str]
+    result: TerrainResult,
+    label: str,
+    written: list[dict[str, str]],
+    notes: list[str],
+    units: dict[str, Any] | None = None,
 ) -> str:
-    summary = result.summary()
+    """The README beside the exported layers.
+
+    The findings are the ones the reader saw on screen, written in the
+    units they work in — the same sentences, not a metric copy of them.
+    The lines above them describe the files themselves: a GeoTIFF's cell
+    size and extent are in the units of its own CRS, which is metric, and
+    they say so by naming the CRS.
+    """
+    summary = analysis_mod.restate(result.summary(), units)
     grid = summary["grid"]
     source = summary["source"]
     lines = [

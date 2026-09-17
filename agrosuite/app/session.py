@@ -8,6 +8,31 @@ A dataset is never overwritten. Cleaning produces two new datasets — clean
 and removed — that live alongside the original. That is what makes it
 possible to compare before and after, and to undo a bad cleaning without
 re-importing the file.
+
+**The unit set the reader works in lives here too**, in
+:attr:`Session.display_units`. Every number the app stores is metric and
+the interface converts it for the screen, but a *sentence* cannot be
+converted for the screen: its numbers are written inside it, and restating
+it in another unit means deciding again what it says. So the generators
+write their prose in the reader's unit set, and they need to know it at
+the moment they write.
+
+It is kept on the session rather than sent with every request because it
+is a property of the reader, not of the request — one person, one screen,
+one set of units at a time — and because the prose is written in a dozen
+places (the first look, the cleaning report, the relief, the economics,
+the notes on a joined layer) that would otherwise each grow a parameter
+the interface has to remember to fill. The interface sets it whenever the
+preset or one picker changes; a request that names its own set (the
+printed report, which is a document for someone else, and the terrain
+endpoints, which were written that way) overrides it for that call.
+
+Nothing stored depends on it. Reports are stored as they were generated,
+with metric numbers, and every path that hands prose to a person writes
+the sentences again in the unit set in force at that moment — which is
+why changing the picker changes every sentence on screen without
+re-importing or re-analysing anything, and why a project saved in acres
+opens in hectares if that is what the reader is in now.
 """
 
 from __future__ import annotations
@@ -24,6 +49,7 @@ import numpy as np
 import pandas as pd
 
 from ..core import schema as sch
+from ..core import units as units_mod
 from ..core.dataset import Dataset
 
 #: Ceiling on points sent to the map in one response. Above it the sampling is
@@ -93,6 +119,12 @@ class Session:
         # than in the browser so that reloading the page does not forget
         # where the next save should go.
         self.project_file: dict[str, Any] | None = None
+        # The unit set every sentence is written in, until the interface
+        # says otherwise: the app's default preset, the same one the
+        # pickers open on.
+        self.display_units: dict[str, Any] = dict(
+            units_mod.UNIT_PRESETS[units_mod.DEFAULT_PRESET]
+        )
         self.workdir = Path(tempfile.mkdtemp(prefix="agrosuite_"))
         self.uploads = self.workdir / "uploads"
         self.exports = self.workdir / "exports"

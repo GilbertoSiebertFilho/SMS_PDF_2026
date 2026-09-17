@@ -300,7 +300,10 @@ def test_dem_area_is_the_same_figure_everywhere(dem, tmp_path, client):
 
     body = client.post("/api/import/path", json={"path": str(path)}).json()
     assert body["area_ha"] == pytest.approx(footprint)
-    assert f"{footprint:.1f} ha" in body["preflight"]["findings"][0]["detail"]
+    # Over the wire the sentence is written in the units the app opens in —
+    # acres, on the Canadian default — and it is the same figure.
+    assert (f"{footprint / 0.40468564224:.1f} ac"
+            in body["preflight"]["findings"][0]["detail"])
     listed = next(d for d in client.get("/api/datasets").json()["datasets"] if d["id"] == body["id"])
     assert listed["area_ha"] == pytest.approx(footprint)
 

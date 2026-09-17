@@ -24,6 +24,7 @@ from typing import Any
 import numpy as np
 from scipy import ndimage
 
+from ..core.units import Phrase
 from .derivatives import SECTOR_LABELS, SECTOR_NAMES, aspect_sectors
 from .grid import ElevationGrid, connected_components
 from .render import LANDFORM_COLORS
@@ -224,14 +225,26 @@ def aspect_distribution(
 # Field character and position words
 # ==========================================================================
 
-def character(relief_m: float, mean_slope_pct: float, p95_slope_pct: float) -> dict[str, str]:
+def character(
+    relief_m: float,
+    mean_slope_pct: float,
+    p95_slope_pct: float,
+    units: dict | None = None,
+) -> dict[str, str]:
     """The one-word character of the field, with the reason in a sentence.
 
     Mean slope is the deciding number because it is what the whole field
     feels like under a machine; the relief only separates "flat" from
     "gently undulating" (a field can average under 1 % and still fall 5 m
     end to end).
+
+    ``why`` is prose with a height written into it, so it takes the
+    reader's unit set like every other sentence in the app; ``None`` is
+    the metric store, which is what the stored summary holds until
+    :func:`agrosuite.terrain.analysis.restate` writes it again for a
+    reader.
     """
+    say = Phrase(units)
     relief = float(relief_m) if np.isfinite(relief_m) else 0.0
     mean = float(mean_slope_pct) if np.isfinite(mean_slope_pct) else 0.0
     p95 = float(p95_slope_pct) if np.isfinite(p95_slope_pct) else 0.0
@@ -239,25 +252,27 @@ def character(relief_m: float, mean_slope_pct: float, p95_slope_pct: float) -> d
         key = "flat"
         why = (
             f"The slope averages {mean:.1f} % and the whole field lies within "
-            f"{relief:.1f} m of height: flat ground."
+            f"{say.length(relief)} of height: flat ground."
         )
     elif mean < 3.0:
         key = "gently_undulating"
         why = (
             f"The slope averages {mean:.1f} % (95 % of the field is under {p95:.1f} %) "
-            f"over {relief:.1f} m of relief: gentle undulations rather than distinct hills."
+            f"over {say.length(relief)} of relief: gentle undulations rather than "
+            "distinct hills."
         )
     elif mean < 8.0:
         key = "rolling"
         why = (
             f"The slope averages {mean:.1f} % (95 % of the field is under {p95:.1f} %) "
-            f"over {relief:.1f} m of relief: rolling ground with real hills and hollows."
+            f"over {say.length(relief)} of relief: rolling ground with real hills and "
+            "hollows."
         )
     else:
         key = "hilly"
         why = (
             f"The slope averages {mean:.1f} % and reaches {p95:.1f} % on a twentieth of "
-            f"the field, over {relief:.1f} m of relief: hilly ground."
+            f"the field, over {say.length(relief)} of relief: hilly ground."
         )
     return {"key": key, "label": CHARACTERS[key], "why": why}
 

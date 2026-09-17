@@ -40,9 +40,16 @@ of those would otherwise be drawn from the rounding noise of the gridding
 (a constant altitude column comes back as 953 contour loops around
 differences of 1e-13 m).
 
-Everything stored here is metric; the numbers in the findings are written
-with their metric unit because the sentence is the finding, and the
-structured summary carries the same numbers for an interface that converts.
+Everything stored here is metric, the sentences included: :func:`summary`
+writes them in metres, hectares and cubic metres, and the structured
+numbers beside them are the same store an interface converts at display
+time. A sentence cannot be converted at display time — its numbers are
+written into it, and restating it in another unit means deciding again
+what it says — so the reader's unit set travels into the writing of it
+instead, through :class:`~agrosuite.core.units.Phrase`. :func:`findings`
+takes that unit set, and :func:`restate` writes a stored summary's
+sentences again for a reader who works in another one, from the numbers
+the summary already carries and without touching a single one of them.
 """
 
 from __future__ import annotations
@@ -60,6 +67,7 @@ from scipy import ndimage
 from ..core import preflight as preflight_mod
 from ..core import schema as sch
 from ..core.dataset import Dataset, DatasetMeta
+from ..core.units import Phrase
 from . import contours as contours_mod
 from . import derivatives as deriv
 from . import hydrology as hydro_mod
@@ -307,8 +315,47 @@ class TerrainResult:
         return out
 
     # ------------------------------------------------------------------
+    def _steep(self) -> dict[str, Any]:
+        """The ground over :data:`STEEP_PCT`: how much, and where it lies."""
+        grid = self.grid
+        slope = self.layers["slope_pct"]
+        with np.errstate(invalid="ignore"):
+            steep = slope > STEEP_PCT
+        n_steep = int(np.count_nonzero(steep))
+        pct = 100.0 * n_steep / grid.valid_count if grid.valid_count else 0.0
+        area_ha = n_steep * grid.cell ** 2 / 10_000.0
+        # A patch too small to matter is reported as none: a single steep
+        # cell on a 60 ha field is the gridding, not a hillside.
+        worth_saying = pct >= 1.0 or area_ha >= 0.2
+        return {
+            "threshold_pct": STEEP_PCT,
+            "pct": pct,
+            "area_ha": area_ha,
+            "where": _where_steep(self, steep) if worth_saying else None,
+        }
+
+    def _wet_position(self) -> str | None:
+        """Which part of the field the likely-wet cells sit in, or ``None``."""
+        if self.wet is None or not self.wet.any():
+            return None
+        grid = self.grid
+        rows_i, cols_i = np.nonzero(self.wet)
+        cx = grid.x0 + (cols_i.mean() + 0.5) * grid.cell
+        cy = grid.y0 - (rows_i.mean() + 0.5) * grid.cell
+        return lf.position_label(grid, cx, cy)
+
+    # ------------------------------------------------------------------
     def summary(self) -> dict[str, Any]:
-        """The JSON summary (cached): every number a plain Python type."""
+        """The JSON summary (cached): every number a plain Python type.
+
+        The sentences it carries — the findings, the character's reason,
+        the note under the share tables — are written in metric, like every
+        number stored in this app, and :func:`restate` writes them again
+        for a reader working in another unit set. The one exception is the
+        notes the grid builder and the raster reader wrote while the file
+        was being read: they are in the unit set :func:`analyze` was given,
+        because saying them again would mean reading the file again.
+        """
         if self._summary is not None:
             return self._summary
         grid = self.grid
@@ -342,12 +389,7 @@ class TerrainResult:
         grid_info = grid.to_dict()
         grid_info["interior_ha"] = n_interior * cell ** 2 / 10_000.0
         grid_info["edge_ring_ha"] = ring_ha
-        grid_info["shares_note"] = (
-            f"The slope, aspect, landform and wet shares are read on the "
-            f"{grid_info['interior_ha']:.1f} ha inside the field's outermost ring of "
-            f"cells; the ring ({ring_ha:.1f} ha) is drawn on every layer but left out "
-            "of the shares, because its slope and aspect lean on copied values."
-        )
+        grid_info["shares_note"] = shares_note(grid_info)
 
         summary = {
             "source": dict(self.source_report),
@@ -372,6 +414,11 @@ class TerrainResult:
                 "max_pct": float(slope_f.max()) if slope_f.size else 0.0,
                 "histogram": s_hist,
                 "classes": _field_areas(lf.slope_classes(slope_in, cell), area_ha),
+                # The steep ground, measured here rather than in the sentence
+                # that reports it: the layers live in memory and are evicted,
+                # the summary is saved with the project, and the sentence has
+                # to be writable again from the summary alone.
+                "steep": self._steep(),
             },
             "aspect": {
                 "sectors": _field_areas(lf.aspect_distribution(aspect_in, slope_in, cell), area_ha),
@@ -405,6 +452,11 @@ class TerrainResult:
                 "wet_area_ha": wet_pct / 100.0 * area_ha,
                 "wet_pct": wet_pct,
                 "drainage_length_m": float(self.drainage_length_m),
+                # Whether the index could rank anything, and where the wet
+                # cells sit: both read off the arrays, so that the sentences
+                # about them can be written again from the summary alone.
+                "by_index": bool(self.wet_by_index),
+                "where": self._wet_position(),
             },
             "contours": {
                 # None on a level field: no interval draws anything there.
@@ -455,7 +507,11 @@ class TerrainResult:
 # The analysis
 # ==========================================================================
 
-def analyze(dataset: Dataset, options: TerrainOptions | None = None) -> TerrainResult:
+def analyze(
+    dataset: Dataset,
+    options: TerrainOptions | None = None,
+    units: dict[str, Any] | None = None,
+) -> TerrainResult:
     """Run the whole terrain chain on a dataset.
 
     A dataset that came from a DEM (``meta.extra['dem_path']``) is analysed
@@ -463,6 +519,12 @@ def analyze(dataset: Dataset, options: TerrainOptions | None = None) -> TerrainR
     are only a sample of its cells; if that file has gone the analysis
     stops and says so rather than quietly gridding the sample as if it were
     a GPS survey. Anything else is gridded from its GPS altitude.
+
+    ``units`` is the reader's unit set, and it reaches one thing only: the
+    notes the grid builder and the raster reader write while the file is
+    being read, which are sentences and cannot be converted afterwards.
+    Every number the analysis produces is metric, and so are the findings
+    it writes — :func:`restate` says them again for whoever is reading.
     """
     options = options or TerrainOptions()
     if isinstance(options, dict):
@@ -502,6 +564,7 @@ def analyze(dataset: Dataset, options: TerrainOptions | None = None) -> TerrainR
             str(dem_path), cell_m, smooth_m, max_cells,
             elevation_factor=float(extra.get("elevation_factor") or 1.0),
             elevation_unit_in=extra.get("elevation_unit_in"),
+            units=units,
         )
     else:
         _within_field(smooth_m, "The smoothing scale", _points_across_m(dataset))
@@ -512,6 +575,7 @@ def analyze(dataset: Dataset, options: TerrainOptions | None = None) -> TerrainR
             detrend_passes=bool(options.detrend_passes),
             remove_outliers=bool(options.remove_outliers),
             max_cells=max_cells,
+            units=units,
         )
         source = {
             "kind": "points",
@@ -714,6 +778,7 @@ def _grid_from_dem(
     max_cells: int,
     elevation_factor: float = 1.0,
     elevation_unit_in: str | None = None,
+    units: dict[str, Any] | None = None,
 ) -> tuple[ElevationGrid, dict[str, Any]]:
     """The DEM re-read at full resolution, coarsened to the cell budget.
 
@@ -727,7 +792,8 @@ def _grid_from_dem(
     """
     from ..formats import raster as raster_mod
 
-    grid, info = raster_mod.read_dem(path, target_cell_m=cell_m)
+    say = Phrase(units)
+    grid, info = raster_mod.read_dem(path, target_cell_m=cell_m, units=units)
     notes = list(info.get("notes", []))
     if elevation_factor != 1.0:
         grid = grid.with_values(grid.z * elevation_factor)
@@ -742,9 +808,9 @@ def _grid_from_dem(
         factor = int(math.ceil(math.sqrt(total_cells / max_cells)))
         grid = grid.coarsen(factor)
         notes.append(
-            f"The DEM's {info['cell_m']:g} m cells were averaged {factor} x {factor} "
-            f"into {grid.cell:g} m cells to keep the analysis under "
-            f"{max_cells:,} cells.".replace(",", " ")
+            f"The DEM's {say.length(info['cell_m'])} cells were averaged "
+            f"{factor} x {factor} into {say.length(grid.cell)} cells to keep the "
+            f"analysis under {say.number(max_cells)} cells."
         )
     if smooth_m is None and step > 0:
         # At least one cell: a sigma under half a cell changes nothing.
@@ -1022,19 +1088,41 @@ def _drainage_collection(grid: ElevationGrid, lines) -> dict[str, Any]:
 # Findings
 # ==========================================================================
 
-def findings(result: TerrainResult, summary: dict[str, Any] | None = None) -> list[dict[str, str]]:
+def findings(
+    result: "TerrainResult | dict[str, Any]",
+    summary: dict[str, Any] | None = None,
+    units: dict[str, Any] | None = None,
+) -> list[dict[str, str]]:
     """The sentences a farmer reads, in the order the relief is described.
 
     Each entry is ``{'level': 'ok' | 'info' | 'warning', 'text': ...}``.
-    Numbers are metric, metres and hectares to one decimal, percentages
-    whole, cubic metres to two significant figures.
+
+    Every quantity goes through a :class:`~agrosuite.core.units.Phrase`
+    built on ``units`` — the reader's unit set, the shape of
+    ``UNIT_PRESETS['canada']`` — so the same analysis says "total relief
+    is 34.6 ft over 149 ac" to someone working in acres and "10.5 m over
+    60.5 ha" to someone working in hectares. ``None`` is the metric store,
+    which is what a caller that names no units gets, and what
+    :meth:`TerrainResult.summary` writes.
+
+    The thresholds convert with the measurements. "Features smaller than
+    0.6 m are not reported" is as much a claim about the ground as the
+    heights above it, and a reader who works in feet cannot check a claim
+    made in metres against a relief quoted in feet.
+
+    ``result`` is the analysed :class:`TerrainResult`, or — once the
+    analysis is nothing but the summary it left behind, saved with the
+    project or evicted from memory — that summary itself. The sentences
+    are written from the summary alone either way, which is what lets a
+    stored report be said again in another unit set.
     """
-    if summary is None:
+    if isinstance(result, dict):
+        summary = result
+    elif summary is None:
         # summary() calls findings() itself; pass its dict in to avoid the loop.
         return result.summary()["findings"]
-    grid = result.grid
+    say = Phrase(units)
     out: list[dict[str, str]] = []
-    char = summary["character"]
     elev = summary["elevation"]
     area_ha = float(summary["grid"]["area_ha"])
 
@@ -1044,8 +1132,9 @@ def findings(result: TerrainResult, summary: dict[str, Any] | None = None) -> li
         out.append(_warning(str(doubt)))
 
     # (1) character, relief, area
+    char = _character(summary, units)
     out.append(_info(
-        f"Total relief is {_m(elev['relief_m'])} over {_ha(area_ha)}: "
+        f"Total relief is {say.length(elev['relief_m'])} over {say.area(area_ha)}: "
         f"a {char['label']} field. {char['why']}"
     ))
 
@@ -1054,7 +1143,7 @@ def findings(result: TerrainResult, summary: dict[str, Any] | None = None) -> li
     if trend["drop_m"] >= MIN_TREND_DROP_M and (trend["r2"] > 0.3 or trend["gradient_pct"] > 0.5):
         from_word = _sector_name(trend["direction_deg"] + 180.0)
         out.append(_info(
-            f"The field falls about {_m(trend['drop_m'])} from the {from_word} to the "
+            f"The field falls about {say.length(trend['drop_m'])} from the {from_word} to the "
             f"{trend['direction_label']}, an average gradient of "
             f"{trend['gradient_pct']:.1f} %."
         ))
@@ -1067,8 +1156,8 @@ def findings(result: TerrainResult, summary: dict[str, Any] | None = None) -> li
                          + " above the surrounding ground."))
         for h in hills[:5]:
             text = (
-                f"{h['label']} in the {h['position']} rises {_m(h['height_m'])} above its "
-                f"surroundings over {_ha(h['area_ha'])}"
+                f"{h['label']} in the {h['position']} rises {say.length(h['height_m'])} above "
+                f"its surroundings over {say.area(h['area_ha'])}"
             )
             if h.get("mean_slope_pct") is not None:
                 text += f"; its top averages {h['mean_slope_pct']:.1f} % slope"
@@ -1085,8 +1174,9 @@ def findings(result: TerrainResult, summary: dict[str, Any] | None = None) -> li
                 if l["closed"] else "water drains out of it"
             )
             out.append(_info(
-                f"{l['label']}, a {shape} in the {l['position']}, lies {_m(l['depth_m'])} "
-                f"below the ground around it over {_ha(l['area_ha'])}; {leave}."
+                f"{l['label']}, a {shape} in the {l['position']}, lies "
+                f"{say.length(l['depth_m'])} below the ground around it over "
+                f"{say.area(l['area_ha'])}; {leave}."
             ))
         if len(lows) > 5:
             out.append(_info(f"{len(lows) - 5} smaller lows are drawn on the map but not listed here."))
@@ -1097,77 +1187,69 @@ def findings(result: TerrainResult, summary: dict[str, Any] | None = None) -> li
     deps = summary["features"]["depressions"]
     for d in deps[:5]:
         text = (
-            f"A closed depression of {_ha(d['area_ha'])} in the {d['position']}, up to "
-            f"{_m(d['max_depth_m'])} deep, holds roughly {_m3(d['volume_m3'])} before it "
-            "spills; expect ponding after heavy rain or snowmelt."
+            f"A closed depression of {say.area(d['area_ha'])} in the {d['position']}, up to "
+            f"{say.length(d['max_depth_m'])} deep, holds roughly {say.volume(d['volume_m3'])} "
+            "before it spills; expect ponding after heavy rain or snowmelt."
         )
         out.append(_warning(text) if d["volume_m3"] > WARN_VOLUME_M3 else _info(text))
     if len(deps) > 5:
         rest = deps[5:]
         out.append(_info(
-            f"{len(rest)} smaller depressions hold another {_m3(sum(d['volume_m3'] for d in rest))} "
-            "together."
+            f"{len(rest)} smaller depressions hold another "
+            f"{say.volume(sum(d['volume_m3'] for d in rest))} together."
         ))
     unlisted = int(summary["features"].get("depressions_unlisted") or 0)
     if unlisted:
         floor = float(summary["features"]["depression_floor_m"])
         out.append(_info(
             f"{unlisted} shallow hollow{'s' if unlisted != 1 else ''} within the elevation "
-            f"noise (under {_m(floor)} deep, or under {MIN_DEPRESSION_AREA_HA:g} ha) "
+            f"noise (under {say.length(floor)} deep, or under "
+            f"{say.area(MIN_DEPRESSION_AREA_HA, 2)}) "
             f"{'were' if unlisted != 1 else 'was'} not listed as "
             f"{'closed depressions' if unlisted != 1 else 'a closed depression'}; the "
             f"ponding-depth layer still shows {'them' if unlisted != 1 else 'it'}."
         ))
 
     # (6) steep ground
-    slope = result.layers["slope_pct"]
-    with np.errstate(invalid="ignore"):
-        steep = slope > STEEP_PCT
-    n_steep = int(np.count_nonzero(steep))
-    steep_pct = 100.0 * n_steep / grid.valid_count if grid.valid_count else 0.0
-    steep_ha = n_steep * grid.cell ** 2 / 10_000.0
-    has_steep = steep_pct >= 1.0 or steep_ha >= 0.2
+    steep = summary["slope"].get("steep") or {}
+    has_steep = bool(steep.get("where"))
     if has_steep:
-        where = _where_steep(result, steep)
         out.append(_warning(
-            f"{_pct(steep_pct)} of the field ({_ha(steep_ha)}) is steeper than "
-            f"{STEEP_PCT:.0f} %, {where}; erosion risk on bare soil."
+            f"{say.percent(steep['pct'])} of the field ({say.area(steep['area_ha'])}) is "
+            f"steeper than {float(steep.get('threshold_pct') or STEEP_PCT):.0f} %, "
+            f"{steep['where']}; erosion risk on bare soil."
         ))
 
     # (7) wetness — or, on a level field, the one sentence that explains
     # why the map has no contours, drainage lines, wet ground or features
     wet = summary["wetness"]
-    if result.level:
+    if elev.get("level"):
         out.append(_info(
             f"The field is level within the precision of its elevation: beyond its "
-            f"general fall the ground varies by {100.0 * float(elev['residual_relief_m']):.1f} cm "
-            f"(5th to 95th percentile), under the {100.0 * float(elev['relief_floor_m']):.1f} cm "
+            f"general fall the ground varies by {say.length(elev['residual_relief_m'], 2)} "
+            f"(5th to 95th percentile), under the {say.length(elev['relief_floor_m'], 2)} "
             "the data can vouch for, so no contour lines, drainage lines, likely-wet "
             "ground or hills and hollows are drawn; they would trace the noise, not "
             "the ground."
         ))
-    elif not result.wet_by_index:
+    elif not wet.get("by_index"):
         out.append(_info(
             "The relief beyond the general fall is within the elevation noise, so the "
             "wetness index cannot tell wet ground from dry here; only the listed "
             "depressions are marked as likely wet."
         ))
-    elif result.wet_candidate_share < MIN_WET_CANDIDATE_SHARE:
+    elif float(wet["ranked_share_pct"]) / 100.0 < MIN_WET_CANDIDATE_SHARE:
         out.append(_info(
-            f"Only {_pct(100.0 * result.wet_candidate_share)} of the field has a slope "
-            f"the surface can vouch for (over {result.noise_slope_pct:.1f} %), too little "
-            "to rank wet ground against dry; only the listed depressions are marked as "
-            "likely wet."
+            f"Only {say.percent(wet['ranked_share_pct'])} of the field has a slope "
+            f"the surface can vouch for (over {float(wet['noise_slope_pct']):.1f} %), too "
+            "little to rank wet ground against dry; only the listed depressions are "
+            "marked as likely wet."
         ))
-    if result.wet is not None and wet["wet_pct"] >= 1.0:
-        rows_i, cols_i = np.nonzero(result.wet)
-        cx = grid.x0 + (cols_i.mean() + 0.5) * grid.cell
-        cy = grid.y0 - (rows_i.mean() + 0.5) * grid.cell
-        where = lf.position_label(grid, cx, cy)
+    if wet.get("where") and wet["wet_pct"] >= 1.0:
         along = ", along the drainage lines" if wet["drainage_length_m"] > 0 else ""
         out.append(_info(
-            f"Likely wet ground covers {_ha(wet['wet_area_ha'])} ({_pct(wet['wet_pct'])}), "
-            f"mostly in the {where}{along}."
+            f"Likely wet ground covers {say.area(wet['wet_area_ha'])} "
+            f"({say.percent(wet['wet_pct'])}), mostly in the {wet['where']}{along}."
         ))
 
     # (8) data quality
@@ -1177,15 +1259,16 @@ def findings(result: TerrainResult, summary: dict[str, Any] | None = None) -> li
         min_h = float(summary["options"]["min_feature_height_m"])
         if noise is not None:
             out.append(_info(
-                f"GPS elevation noise is about {_m(noise)} after smoothing; features "
-                f"smaller than {_m(min_h)} are not reported."
+                f"GPS elevation noise is about {say.length(noise)} after smoothing; "
+                f"features smaller than {say.length(min_h)} are not reported."
             ))
         sd = source.get("pass_offset_sd_m")
         if sd is not None and sd > RTK_OFFSET_SD_M:
             out.append(_warning(
-                f"The altitude shifted by about {_m(sd)} from pass to pass, which means the "
-                "receiver had no RTK correction. The offsets were corrected before gridding, "
-                "so the shape of the relief is sound, but absolute heights are approximate."
+                f"The altitude shifted by about {say.length(sd)} from pass to pass, which "
+                "means the receiver had no RTK correction. The offsets were corrected before "
+                "gridding, so the shape of the relief is sound, but absolute heights are "
+                "approximate."
             ))
     else:
         cell = float(summary["grid"]["cell_m"])
@@ -1194,19 +1277,19 @@ def findings(result: TerrainResult, summary: dict[str, Any] | None = None) -> li
             min_h = float(summary["options"]["min_feature_height_m"])
             smooth = float(source.get("smooth_m") or 0.0)
             out.append(_info(
-                f"The elevation raster ({cell:g} m cells) stores heights in steps of "
-                f"{step:g} m, which turns a gentle slope into terraces; the surface was "
-                f"smoothed over {smooth:g} m before reading slopes, and features smaller "
-                f"than {_m(min_h)} are not reported because a single step would pass "
-                "for one."
+                f"The elevation raster ({say.length(cell, None)} cells) stores heights in "
+                f"steps of {say.length(step, None)}, which turns a gentle slope into "
+                f"terraces; the surface was smoothed over {say.length(smooth, None)} before "
+                f"reading slopes, and features smaller than {say.length(min_h)} are not "
+                "reported because a single step would pass for one."
             ))
         else:
             out.append(_info(
-                f"The relief was read from the elevation raster at {cell:g} m cells; no GPS "
-                "noise or pass offsets apply."
+                f"The relief was read from the elevation raster at {say.length(cell, None)} "
+                "cells; no GPS noise or pass offsets apply."
             ))
-    for note in source.get("notes", []):
-        out.append(_info(str(note)))
+    for note in source_notes(source):
+        out.append(_info(note))
 
     # (9) closing line
     if not deps and not has_steep:
@@ -1214,6 +1297,70 @@ def findings(result: TerrainResult, summary: dict[str, Any] | None = None) -> li
             "No closed depressions or steep ground: the relief should not limit "
             "drainage or machinery."
         ))
+    return out
+
+
+def _character(summary: dict[str, Any], units: dict[str, Any] | None) -> dict[str, str]:
+    """The field's character with its reason written in ``units``.
+
+    The reason carries a height, so it is prose and follows the reader
+    like every other sentence; the class it names is decided by the same
+    numbers whatever the reader works in.
+    """
+    return lf.character(
+        float(summary["elevation"].get("relief_m") or 0.0),
+        float(summary["slope"].get("mean_pct") or 0.0),
+        float(summary["slope"].get("p95_pct") or 0.0),
+        units,
+    )
+
+
+def source_notes(source: dict[str, Any]) -> list[str]:
+    """What the grid builder and the raster reader had to say.
+
+    These come from the reading of the file rather than from the analysis
+    of the ground, and they are written once, while the file is being
+    read, in the unit set :func:`analyze` was given: the sentence is all
+    that survives the reading, so saying it again in another unit set
+    would mean reading the file again. They are passed through here as
+    they were written, which is why :func:`restate` leaves them alone.
+    """
+    return [str(note) for note in source.get("notes", [])]
+
+
+def shares_note(grid_info: dict[str, Any], units: dict[str, Any] | None = None) -> str:
+    """Why the share tables do not cover the whole field, in ``units``."""
+    say = Phrase(units)
+    return (
+        f"The slope, aspect, landform and wet shares are read on the "
+        f"{say.area(grid_info.get('interior_ha'))} inside the field's outermost ring of "
+        f"cells; the ring ({say.area(grid_info.get('edge_ring_ha'))}) is drawn on every "
+        "layer but left out of the shares, because its slope and aspect lean on copied "
+        "values."
+    )
+
+
+def restate(summary: dict[str, Any], units: dict[str, Any] | None = None) -> dict[str, Any]:
+    """The same analysis with its sentences written in another unit set.
+
+    Every number in the summary stays exactly as it was stored — metric,
+    to the last decimal — and only the prose is written again: the
+    findings, the reason under the field's character, and the note under
+    the share tables. That is what lets the unit picker change every
+    sentence on screen without re-running an analysis, and a project saved
+    in one unit set open in another.
+
+    The copy is shallow where nothing changed and fresh where it did, so
+    the stored summary is never edited underneath its owner.
+    """
+    if not summary:
+        return summary
+    out = dict(summary)
+    out["grid"] = {**summary.get("grid", {})}
+    out["grid"]["shares_note"] = shares_note(out["grid"], units)
+    character = _character(summary, units)
+    out["character"] = {**summary.get("character", {}), "why": character["why"]}
+    out["findings"] = findings(out, units=units)
     return out
 
 
@@ -1567,31 +1714,13 @@ def _warning(text: str) -> dict[str, str]:
     return {"level": "warning", "text": text}
 
 
-def _m(value: float) -> str:
-    return f"{float(value):.1f} m"
-
-
-def _ha(value: float) -> str:
-    return f"{float(value):.1f} ha"
-
-
-def _pct(value: float) -> str:
-    value = float(value)
-    if 0.0 < value < 1.0:
-        return "under 1 %"
-    return f"{value:.0f} %"
-
-
-def _m3(value: float) -> str:
-    """Cubic metres to two significant figures, thousands split by a thin space."""
-    value = float(value)
-    if value <= 0:
-        return "0 m³"
-    if value < 10:
-        return f"{value:.1f} m³"
-    digits = int(math.floor(math.log10(value)))
-    rounded = int(round(value, -(digits - 1)))
-    return f"{rounded:,}".replace(",", _THIN) + " m³"
+# ``_m``, ``_ha``, ``_pct`` and ``_m3`` lived here and wrote a metre, a
+# hectare, a percentage and a cubic metre into a sentence. They are gone
+# rather than kept as wrappers: each one hard-coded the unit it printed,
+# which is the whole of what was wrong, and a wrapper of the same name
+# would invite the next sentence to use it. Every quantity now goes
+# through :class:`~agrosuite.core.units.Phrase`, which carries the
+# reader's unit set and knows what a hectare is called on their screen.
 
 
 def _count_sentence(n: int, noun: str, singular_verb: str, plural_verb: str) -> str:

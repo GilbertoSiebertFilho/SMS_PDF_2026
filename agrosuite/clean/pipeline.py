@@ -9,6 +9,15 @@ holes, and the flow's time shift would stop making sense.
 Nothing is overwritten. The result carries the clean set, the removed set
 with the reason for each discard, and the comparative report — which is the
 material for judging whether the cleaning was appropriate or overdone.
+
+The report's numbers are metric, like everything else stored here. Its
+prose is not converted afterwards but written with the reader's unit set
+in hand: :func:`run` takes one, and :func:`restate` writes a stored
+report's sentences again — from the settings and the measurements the
+report already carries — for a reader working in another one. That is
+what lets the unit picker change a cleaning report that was made an hour
+ago, and the printed page carry the sentences in the units it was asked
+for.
 """
 
 from __future__ import annotations
@@ -21,6 +30,7 @@ import pandas as pd
 
 from ..core import schema as sch
 from ..core.dataset import Dataset
+from ..core.units import Phrase
 from . import steps as steps_mod
 
 #: Starting configuration per operation type. These are a starting point —
@@ -197,6 +207,7 @@ def run(
     dataset: Dataset,
     config: dict[str, Any] | None = None,
     value_column: str = sch.VALUE,
+    units: dict[str, Any] | None = None,
 ) -> CleaningResult:
     """Run the cleaning and return clean data, removed data and the report.
 
@@ -209,6 +220,11 @@ def run(
         detected operation type is used.
     value_column:
         Column to treat as the main variable.
+    units:
+        The reader's unit set, which reaches the report's sentences only —
+        what each filter says about its own settings, and the readings at
+        the end. Every number in the report stays metric. ``None`` is the
+        metric store.
     """
     if config is None:
         config = PRESETS[preset_for(dataset.meta.operation)]
@@ -228,7 +244,8 @@ def run(
     if message:
         corrections.append(message)
 
-    ctx = steps_mod.Context(working.df, value_column)
+    ctx = steps_mod.Context(
+        working.df, value_column, units=units, operation=dataset.meta.operation)
     step_config = config.get("steps") or {}
     results: list[steps_mod.StepResult] = []
 
@@ -280,6 +297,35 @@ def _histogram(series: pd.Series, bins: int = 30) -> dict[str, list[float]]:
         return {"edges": [], "counts": []}
     counts, edges = np.histogram(values, bins=bins)
     return {"edges": [float(e) for e in edges], "counts": [int(c) for c in counts]}
+
+
+def restate(
+    report: dict[str, Any],
+    units: dict[str, Any] | None = None,
+    operation: str | None = None,
+) -> dict[str, Any]:
+    """The same cleaning report with its sentences in another unit set.
+
+    Only the prose changes: what each filter says about its settings, from
+    the settings and measurements the report already holds. Every count,
+    percentage, statistic and histogram edge is left exactly as it was
+    stored, and the report itself is not edited — the copy is fresh where
+    it differs and shared where it does not.
+
+    The readings at the end (``findings``) are percentages and ratios of
+    the file to itself, which read the same in every unit set, so they are
+    carried over untouched.
+    """
+    if not report:
+        return report
+    say = Phrase(units)
+    operation = operation or report.get("operation")
+    out = dict(report)
+    out["steps"] = [
+        {**step, "detail": steps_mod.detail_for(step, say, operation)}
+        for step in report.get("steps") or []
+    ]
+    return out
 
 
 def _assess(removed_pct: float, before: dict, after: dict) -> list[dict[str, str]]:
@@ -375,7 +421,13 @@ def build_report(
     before_values: pd.Series,
     value_column: str,
 ) -> dict[str, Any]:
-    """Assemble the comparative cleaning report."""
+    """Assemble the comparative cleaning report.
+
+    Every number in it is metric; the sentences in ``steps`` and
+    ``findings`` were written by the step and by :func:`_assess` in
+    whatever unit set the run was given, and :func:`restate` writes them
+    again for another reader.
+    """
     total = len(original)
     kept = len(clean)
     removed_count = len(removed)
@@ -395,6 +447,11 @@ def build_report(
         ]
 
     return {
+        # What the main variable is — a yield on a harvest, an input rate on
+        # anything else — travels with the report so that the sentences can
+        # be written again later without the dataset: a saved project's
+        # cleaning report is read long after the session that made it.
+        "operation": original.meta.operation,
         "totals": {
             "input": total,
             "kept": kept,

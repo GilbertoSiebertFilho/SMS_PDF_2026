@@ -33,6 +33,7 @@ import pandas as pd
 from ..core import crs as crs_mod
 from ..core import schema as sch
 from ..core.dataset import Dataset, DatasetMeta
+from ..core.units import Phrase
 from . import brands as brands_mod
 
 if TYPE_CHECKING:  # pragma: no cover - the grid is imported lazily at runtime
@@ -386,6 +387,7 @@ def describe(path: str | Path) -> dict[str, Any]:
 def read_dem(
     path: str | Path,
     target_cell_m: float | None = None,
+    units: dict[str, Any] | None = None,
 ) -> tuple["ElevationGrid", dict[str, Any]]:
     """Read band 1 of a GeoTIFF as an :class:`ElevationGrid` in ground metres.
 
@@ -408,6 +410,11 @@ def read_dem(
         and what QGIS exchanges).
     target_cell_m:
         Cell size to resample to. ``None`` keeps the native resolution.
+    units:
+        The reader's unit set, which reaches the notes only: they are
+        sentences with a cell size written into them, and a sentence
+        cannot be converted after the fact. ``None`` is metric, and every
+        number in ``info`` is metric whatever is passed.
 
     Returns
     -------
@@ -439,6 +446,7 @@ def read_dem(
     from ..terrain.grid import ElevationGrid
 
     path = Path(path)
+    say = Phrase(units)
     if target_cell_m is not None and not (float(target_cell_m) > 0):
         raise ValueError("The target cell size must be a positive number of metres.")
 
@@ -556,7 +564,7 @@ def read_dem(
             if not _north_up_square(t) and metric:
                 notes.append(
                     f"The raster is rotated or has rectangular cells; it was resampled "
-                    f"onto {cell:g} m square cells."
+                    f"onto {say.length(cell)} square cells."
                 )
 
         cell, coarsened = _cap_cell(cell, east - west, north - south)
@@ -565,11 +573,13 @@ def read_dem(
             out_cells = math.ceil((east - west) / cell) * math.ceil((north - south) / cell)
             notes.append(
                 f"The raster has {_thousands(native_cells)} cells, more than a relief "
-                f"question needs; it was coarsened to {cell:g} m cells (about "
+                f"question needs; it was coarsened to {say.length(cell)} cells (about "
                 f"{_thousands(out_cells)}) so the analysis stays responsive."
             )
         elif target_cell_m is not None:
-            notes.append(f"Resampled from {cell_in:.3g} m to {cell:g} m cells.")
+            notes.append(
+                f"Resampled from {say.length(cell_in, 2)} to {say.length(cell)} cells."
+            )
 
         # Snap the origin to a multiple of the cell, as grid_from_points does,
         # so two rasters of the same field at the same cell line up exactly.
