@@ -277,6 +277,7 @@ table.data th, table.data td {
 table.data th { font-weight: 600; color: var(--text-muted); font-size: 11px; }
 table.data th:first-child, table.data td:first-child { text-align: left; }
 table.data tr:last-child td { border-bottom: none; }
+table.data tr.clickable:hover td { background: var(--surface-2); }
 table.data td.num { font-family: var(--mono); }
 
 .scroll-x { overflow-x: auto; }

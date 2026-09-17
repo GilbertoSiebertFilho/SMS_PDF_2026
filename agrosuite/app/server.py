@@ -768,12 +768,16 @@ def delete_dataset(dataset_id: str) -> dict[str, Any]:
 
 
 @app.get("/api/datasets/{dataset_id}/map")
-def dataset_map(dataset_id: str, column: str = sch.VALUE) -> dict[str, Any]:
+def dataset_map(
+    dataset_id: str,
+    column: str = sch.VALUE,
+    group_column: str | None = None,
+) -> dict[str, Any]:
     try:
         entry = state.get(dataset_id)
     except KeyError as exc:
         raise _fail(str(exc), 404)
-    return session_mod.map_payload(entry.dataset, column)
+    return session_mod.map_payload(entry.dataset, column, group_column=group_column)
 
 
 @app.get("/api/datasets/{dataset_id}/stats")

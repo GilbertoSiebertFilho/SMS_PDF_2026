@@ -873,3 +873,59 @@ def test_mcp_write_to_usb_requires_explicit_replacement():
 
     planner = mcp_server.TOOLS_BY_NAME["plan_usb_write"]
     assert "writes nothing" in planner["description"].lower()
+
+
+# ==========================================================================
+# Seeing what the cleaning did
+# ==========================================================================
+
+def test_removed_records_carry_their_reason():
+    """A percentage removed is not judgeable; a map of where it went is."""
+    from agrosuite.app import session as session_mod
+
+    dataset = synthetic_harvest()
+    result = clean_pipeline.run(dataset, clean_pipeline.PRESETS["harvest"])
+
+    assert "removal_reason" in result.removed.df.columns
+    payload = session_mod.map_payload(result.removed, group_column="removal_reason")
+    assert payload["group_column"] == "removal_reason"
+    assert len(payload["groups"]) == payload["count"]
+
+    reasons = set(filter(None, payload["groups"]))
+    assert "Swath overlap" in reasons, "the planted overlap has to be visible on the map"
+
+
+def test_first_look_proposes_the_whole_unit_set(sample_data):
+    """One click, not a dialog with three pickers: the app already worked the
+    units out from the file."""
+    from agrosuite.core import preflight
+
+    dataset = registry.read_any(sample_data["john_deere_shp"])
+    dataset.ensure_derived()
+    proposed = preflight.run(dataset)["proposed_units"]
+
+    assert proposed["rate"] == "bu/ac"
+    assert proposed["length"] == "ft"
+    assert proposed["crop"] == "canola"
+
+
+def test_applying_the_proposed_units_fixes_the_magnitude(sample_data):
+    """The proposal has to be right, not merely plausible."""
+    from agrosuite.core import preflight
+    from agrosuite.core.dataset import apply_source_units
+
+    dataset = registry.read_any(sample_data["john_deere_shp"])
+    dataset.ensure_derived()
+    proposed = preflight.run(dataset)["proposed_units"]
+
+    converted = dataset.copy()
+    apply_source_units(converted, {
+        sch.VALUE: proposed["rate"],
+        sch.SPEED: proposed.get("speed", "km/h"),
+        sch.SWATH: proposed.get("length", "m"),
+    }, proposed.get("crop"))
+    converted.ensure_derived()
+
+    after = preflight.run(converted)
+    assert after["verdict"] == "ok"
+    assert 800 <= converted.stats()["mean"] <= 6000, "canola yield in kg/ha"

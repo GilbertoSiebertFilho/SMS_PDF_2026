@@ -12,6 +12,7 @@ const MapView = (() => {
   let basemap = null;
   let overlayGroup = null;
   let data = null;      // { lon: [], lat: [], values: [], scale: {} }
+  let overlay = null;   // { lon: [], lat: [], groups: [], palette: {} }
   let colorScale = null;
   let pointSize = 3;
 
@@ -106,6 +107,18 @@ const MapView = (() => {
 
   function clearPoints() { data = null; colorScale = null; draw(); }
 
+  /* A second set of points drawn over the first, coloured by a category
+   * rather than by a value. It is how the app shows *why* each record was
+   * removed, which is the thing that makes a cleaning judgeable: 10% removed
+   * is meaningless until you can see that it was the headland and the
+   * overlap, and not a strip through the middle of the field. */
+  function setOverlay(payload, palette) {
+    overlay = payload ? { ...payload, palette: palette || {} } : null;
+    draw();
+  }
+
+  function clearOverlay() { overlay = null; draw(); }
+
   function draw() {
     if (!ctx || !canvas) return;
     const size = map.getSize();
@@ -142,6 +155,32 @@ const MapView = (() => {
       ctx.beginPath();
       ctx.arc(p.x, p.y, radius, 0, 6.283185307179586);
       ctx.fill();
+    }
+    ctx.globalAlpha = 1;
+
+    if (overlay?.lon?.length) drawOverlay(bounds, zoom);
+  }
+
+  function drawOverlay(bounds, zoom) {
+    const west = bounds.getWest(), east = bounds.getEast();
+    const south = bounds.getSouth(), north = bounds.getNorth();
+    const radius = Math.max(1.6, Math.min(8, 3.4 * (zoom / 15)));
+    const fallback = "#888";
+
+    ctx.globalAlpha = 0.95;
+    for (let i = 0; i < overlay.lon.length; i++) {
+      const lon = overlay.lon[i], lat = overlay.lat[i];
+      if (lon < west || lon > east || lat < south || lat > north) continue;
+      const group = overlay.groups?.[i];
+      ctx.fillStyle = overlay.palette[group] || fallback;
+      const p = map.latLngToContainerPoint([lat, lon]);
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, radius, 0, 6.283185307179586);
+      ctx.fill();
+      // A thin ring separates a removed point from the kept ones underneath.
+      ctx.strokeStyle = "rgba(255,255,255,.7)";
+      ctx.lineWidth = 0.7;
+      ctx.stroke();
     }
     ctx.globalAlpha = 1;
   }
@@ -243,7 +282,8 @@ const MapView = (() => {
   function instance() { return map; }
 
   return {
-    init, setPoints, clearPoints, setPolygons, setFeatures, addLine, clearOverlays,
+    init, setPoints, clearPoints, setOverlay, clearOverlay,
+    setPolygons, setFeatures, addLine, clearOverlays,
     fit, fitOverlays, setBasemap, rampCss, rampColor, draw, onClick, offClick, instance,
   };
 })();

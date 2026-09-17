@@ -332,12 +332,22 @@ def _guess_unit(ds, operation: str, crop: str | None) -> tuple[list[Finding], di
             imperial_equivalent = value_median * units_mod.unit_factor(
                 "rate_mass", "lb/ac", crop
             )
+            proposed = {"rate": "lb/ac"}
+            if speed_guess == "mph":
+                proposed["speed"] = "mph"
+            if width_guess == "ft":
+                proposed["length"] = "ft"
+            if crop:
+                proposed["crop"] = crop
+            info["proposed_units"] = proposed
+
             findings.append(_warn(
                 "Possibly imperial units",
                 f"The {label} magnitude is plausible as kg/ha, but the rest of the file "
                 f"looks imperial: {'; '.join(evidence)}. If the file is in lb/ac, the "
                 f"real {label} is {_thousands(imperial_equivalent)} kg/ha.",
-                "Check how the monitor was configured and declare the units if imperial.",
+                "If the monitor was set to imperial, the button below applies the "
+                "whole set at once.",
             ))
         return findings, info
 
@@ -389,10 +399,25 @@ def _guess_unit(ds, operation: str, crop: str | None) -> tuple[list[Finding], di
         if corroboration:
             detail += " " + ("The rest of the file agrees: " + "; ".join(corroboration) + ".")
 
-        action = f"Open 'File units' and declare {best['unit']}"
-        if speed_guess == "mph" or width_guess == "ft":
-            action += f", {speed_guess or 'mph'} and {width_guess or 'ft'}"
-        action += " before going any further."
+        # The whole set, ready to apply in one go. Making the user open a
+        # dialog and pick three units the app already worked out is friction
+        # for its own sake.
+        proposed = {"rate": best["unit"]}
+        if speed_guess and speed_guess != "km/h":
+            proposed["speed"] = speed_guess
+        elif looks_imperial:
+            proposed["speed"] = "mph"
+        if width_guess and width_guess != "m":
+            proposed["length"] = width_guess
+        elif looks_imperial:
+            proposed["length"] = "ft"
+        if crop:
+            proposed["crop"] = crop
+        info["proposed_units"] = proposed
+
+        action = "Apply " + ", ".join(
+            v for k, v in proposed.items() if k != "crop"
+        ) + " — the button below does it in one step."
 
         findings.append(_alert("Units look wrong", detail, action))
     else:
@@ -575,6 +600,7 @@ def run(ds) -> dict[str, Any]:
         "summary": summary,
         "findings": [f.to_dict() for f in findings],
         "info": info,
+        "proposed_units": info.get("proposed_units"),
         "suggested_role": role,
         "role_label": ROLES[role],
         "next_step": next_step,

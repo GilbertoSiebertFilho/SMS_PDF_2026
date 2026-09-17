@@ -375,6 +375,10 @@ Object.assign(App, {
 
     this.renderPreview(document.getElementById("preview"), d.preview);
 
+    document.getElementById("btn-apply-units")?.addEventListener("click", () => {
+      const proposed = d.reports_data?.preflight?.proposed_units;
+      if (proposed) this.applyProposedUnits(proposed);
+    });
     document.getElementById("btn-preflight-next")?.addEventListener("click", () => {
       const step = d.reports_data?.preflight?.next_step?.step;
       if (step === "units") this.openImportUnitsDialog();
@@ -401,6 +405,7 @@ Object.assign(App, {
    * usable. Alerts come first because they block everything downstream. */
   preflightPanel(report) {
     if (!report) return "";
+    const proposed = report.proposed_units;
     const noteClass = { ok: "ok", warning: "warning", alert: "alert" }[report.verdict] || "";
     const icon = { ok: "✓", warning: "!", alert: "✕" };
     const order = { alert: 0, warning: 1, ok: 2 };
@@ -427,7 +432,12 @@ Object.assign(App, {
             </div>`).join("")}
         </div>
         <div class="row tight" style="margin-top:10px">
-          <button class="${report.verdict === "alert" ? "primary" : ""}" id="btn-preflight-next">
+          ${proposed ? `<button class="primary" id="btn-apply-units">
+            Apply ${this.escape(Object.entries(proposed)
+              .filter(([k]) => k !== "crop").map(([, v]) => v).join(" · "))}
+          </button>` : ""}
+          <button class="${report.verdict === "alert" && !proposed ? "primary" : ""}"
+                  id="btn-preflight-next">
             ${this.escape(report.next_step.label)}
           </button>
         </div>
@@ -723,7 +733,8 @@ Object.assign(App, {
     const after = report.statistics.after;
 
     const stepRows = report.steps.filter((s) => !s.skipped).map((s) =>
-      `<tr><td title="${this.escape(s.detail)}">${this.escape(s.label)}</td>
+      `<tr${s.removed ? ` class="clickable" data-reason="${this.escape(s.label)}"` : ""}>
+       <td title="${this.escape(s.detail)}">${this.escape(s.label)}</td>
        <td class="num">${Units.num(s.removed, 0)}</td>
        <td class="num">${Units.num(s.removed / totals.input * 100, 1)}%</td>
        <td class="num">${Units.num(s.remaining, 0)}</td></tr>`).join("");
@@ -792,8 +803,16 @@ Object.assign(App, {
           <div class="inner">${skipped.map((s) =>
             `<p class="hint tight"><b>${this.escape(s.label)}</b>: ${this.escape(s.detail)}</p>`
           ).join("")}</div></details>` : ""}
+        <p class="hint tight">Click a filter to see on the map exactly which records
+        it removed. Ten percent removed means nothing until you can see it was the
+        headland and the overlap, and not a strip through the middle of the field.</p>
         <h4>Removals by reason</h4>
         <div id="clean-bars"></div>
+        <div class="row tight" style="margin-top:8px">
+          <button class="small" id="btn-show-all-removed">Show everything removed</button>
+          <button class="small" id="btn-hide-removed">Clear the overlay</button>
+        </div>
+        <div id="removed-legend"></div>
       </div>
 
       <div class="panel">
@@ -812,10 +831,72 @@ Object.assign(App, {
     Charts.bars(document.getElementById("clean-bars"),
       report.by_reason.map((r) => ({ label: r.reason, value: r.records })));
 
+    if (result.removed) {
+      for (const row of box.querySelectorAll("tr.clickable")) {
+        row.style.cursor = "pointer";
+        row.addEventListener("click",
+          () => this.showRemoved(result.removed.id, row.dataset.reason));
+      }
+      document.getElementById("btn-show-all-removed")?.addEventListener("click",
+        () => this.showRemoved(result.removed.id, null));
+      document.getElementById("btn-hide-removed")?.addEventListener("click", () => {
+        MapView.clearOverlay();
+        document.getElementById("removed-legend").innerHTML = "";
+      });
+    }
+
     document.getElementById("btn-goto-clean")?.addEventListener("click",
       () => this.selectDataset(result.clean.id));
     document.getElementById("btn-goto-removed")?.addEventListener("click",
       () => this.selectDataset(result.removed.id));
+  },
+
+  /* Draw the removed records over the clean ones, coloured by the filter that
+   * caught them. Seeing that the removals sit on the headland and the overlap
+   * is the difference between trusting a cleaning and hoping. */
+  async showRemoved(removedDatasetId, onlyReason) {
+    const payload = await this.api(
+      `/api/datasets/${removedDatasetId}/map?group_column=removal_reason`
+    ).catch(() => null);
+    if (!payload?.lon?.length) {
+      this.toast("Nothing to show", "No removed record carries a position.", "warn");
+      return;
+    }
+
+    let filtered = payload;
+    if (onlyReason) {
+      const keep = [];
+      for (let i = 0; i < payload.groups.length; i++) {
+        if (payload.groups[i] === onlyReason) keep.push(i);
+      }
+      filtered = {
+        lon: keep.map((i) => payload.lon[i]),
+        lat: keep.map((i) => payload.lat[i]),
+        groups: keep.map(() => onlyReason),
+      };
+    }
+
+    // One colour per filter, taken from the same ramp the value map uses so the
+    // two never look like different applications.
+    const reasons = [...new Set(filtered.groups.filter(Boolean))];
+    const palette = {};
+    reasons.forEach((reason, index) => {
+      const c = MapView.rampColor(reasons.length === 1 ? 0.82
+        : index / Math.max(1, reasons.length - 1));
+      palette[reason] = `rgb(${c.join(",")})`;
+    });
+
+    MapView.setOverlay(filtered, palette);
+    document.getElementById("removed-legend").innerHTML = `
+      <p class="hint tight" style="margin-top:8px">
+        ${Units.num(filtered.lon.length, 0)} removed record(s) on the map${
+          onlyReason ? ` — ${this.escape(onlyReason)}` : ""}.</p>
+      ${reasons.map((reason) => `
+        <div class="inline" style="margin-bottom:3px">
+          <span style="width:11px;height:11px;border-radius:50%;flex:none;
+                background:${palette[reason]};border:1px solid rgba(255,255,255,.7)"></span>
+          <span style="font-size:11px">${this.escape(reason)}</span>
+        </div>`).join("")}`;
   },
 
   /* The histogram arrives in internal units; the bin edges have to follow the
@@ -2107,6 +2188,34 @@ Object.assign(App, {
       ${this.field("Crop (for bushels)", this.selectInput("iu-crop",
         this.state.units.crops.map((c) => [c.key, c.label]), Units.get().crop))}`;
     document.getElementById("dlg-import-units").showModal();
+  },
+
+  /* One click instead of a dialog with three pickers. The app already worked
+   * the units out from the file; asking the user to re-enter them would be
+   * friction for its own sake. */
+  async applyProposedUnits(proposed) {
+    const source_units = {};
+    if (proposed.rate) {
+      source_units.value = proposed.rate;
+      source_units.target_rate = proposed.rate;
+      source_units.applied_rate = proposed.rate;
+    }
+    if (proposed.speed) source_units.speed_kmh = proposed.speed;
+    if (proposed.length) {
+      source_units.swath_m = proposed.length;
+      source_units.distance_m = proposed.length;
+    }
+
+    const result = await this.busy(document.getElementById("right-panel"), () =>
+      this.api(`/api/datasets/${this.state.selectedId}/units`, {
+        method: "POST",
+        body: { source_units, crop: proposed.crop || Units.get().crop },
+      }));
+    if (!result) return;
+
+    await this.refreshDatasets();
+    await this.selectDataset(result.dataset.id);
+    this.toast("Units applied", result.conversions.join("\n"));
   },
 
   async applyImportUnits() {

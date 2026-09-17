@@ -144,6 +144,7 @@ def map_payload(
     dataset: Dataset,
     column: str = sch.VALUE,
     limit: int = MAP_POINT_LIMIT,
+    group_column: str | None = None,
 ) -> dict[str, Any]:
     """Prepare the points for drawing on the map.
 
@@ -157,6 +158,8 @@ def map_payload(
         return {"count": 0, "lon": [], "lat": [], "values": [], "column": column}
 
     columns = [sch.LON, sch.LAT] + ([column] if column in df.columns else [])
+    if group_column and group_column in df.columns and group_column not in columns:
+        columns.append(group_column)
     frame = df[columns].dropna(subset=[sch.LON, sch.LAT])
 
     total = len(frame)
@@ -181,6 +184,14 @@ def map_payload(
         "values": values,
         "bounds": dataset.bounds(),
     }
+
+    # A categorical column travelling beside the values is what lets the map
+    # show *why* each point was removed, rather than only that it was.
+    if group_column and group_column in frame.columns:
+        payload["groups"] = [
+            None if pd.isna(v) else str(v) for v in frame[group_column]
+        ]
+        payload["group_column"] = group_column
 
     if values:
         finite = [v for v in values if v is not None]
