@@ -28,6 +28,11 @@ const App = {
     recent: null,
     machinePicked: {},   // the machine picked on each tab, by name: a redraw must not forget it
     machinePlaced: {},   // what the app put in a physical field, with its exact metric number
+    terrain: null,       // the relief analysis on screen: {id, summary, layers, ...}
+    terrainRefusal: {},  // dataset id -> why its relief cannot be read, in the analyser's words
+    terrainProbing: null,
+    terrainDraw: null,   // a profile line being clicked out on the map
+    terrainOnMap: false, // the relief owns the map: the points would cover it
   },
 
   /* ---------------------------------------------------------------- API */
@@ -210,6 +215,15 @@ const App = {
       const ids = [key.split(":")[0], cached?.clean?.id, cached?.removed?.id].filter(Boolean);
       if (ids.some((id) => !alive.has(id))) delete this.state.reports[key];
     }
+    // The relief analysis and the refusals belong to their datasets too: a
+    // file removed from the session takes its relief off the map with it.
+    if (this.state.terrain && !alive.has(this.state.terrain.id)) {
+      this.state.terrain = null;
+      this.leaveTerrainMap();
+    }
+    for (const id of Object.keys(this.state.terrainRefusal)) {
+      if (!alive.has(id)) delete this.state.terrainRefusal[id];
+    }
   },
 
   renderDatasetList() {
@@ -278,6 +292,9 @@ const App = {
     if (!this.state.selectedId) return;
     // In compare mode the two panes are painted together, on one scale.
     if (this.state.compare) return this.paintCompare();
+    // The Terrain tab has the map: the point canvas is drawn over it, so
+    // painting the points now would hide the relief the tab is about.
+    if (this.state.terrainOnMap) return;
     const column = this.state.colorColumn;
     const payload = await this.api(
       `/api/datasets/${this.state.selectedId}/map?column=${encodeURIComponent(column)}`
@@ -435,7 +452,36 @@ const App = {
       await this.selectDataset(id);
       return;
     }
+    // Like 'pick', but for a layer the app has just made: the Data tab is
+    // where a new dataset describes itself, and leaving the user on the tab
+    // that produced it would answer "show me" with the form that made it.
+    if (name === "inspect") {
+      const id = argument || selected;
+      if (!id) { this.toast("Nothing to show", "Load a file first.", "warn"); return; }
+      // The tab moves first: a dataset picked while a tab that cannot use it
+      // is on screen would have that tab draw its refusal on the way past.
+      this.goToTab("dados");
+      await this.selectDataset(id);
+      return;
+    }
     if (name === "draw") { this.goToTab("ensaio"); this.startDrawing(); return; }
+    if (name === "demo-terrain") { document.getElementById("btn-demo-terrain").click(); return; }
+    // The relief's two products are made on the Terrain tab itself, so these
+    // lead to the control rather than to another tab; pressed before there is
+    // an analysis, they say what would fill them.
+    if (name === "terrain-zones" || name === "terrain-export") {
+      this.goToTab("terrain");
+      const id = name === "terrain-zones" ? "btn-terrain-zones" : "btn-terrain-export";
+      const control = document.getElementById(id);
+      if (!control) {
+        this.toast("Nothing to make it from",
+          "Run \"Analyse the relief\" on this tab first.", "warn");
+        return;
+      }
+      control.scrollIntoView({ block: "center", behavior: "smooth" });
+      control.focus();
+      return;
+    }
     if (name === "prices") {
       const field = document.getElementById("difm-price") || document.getElementById("price-value");
       if (!field) { this.goToTab("difm"); return; }
@@ -516,8 +562,15 @@ const App = {
     const panel = document.getElementById("right-panel");
     // The comparison only makes sense next to its cleaning report.
     if (this.state.compare && this.state.tab !== "limpeza") this.exitCompare();
+    // The relief belongs to the Terrain tab and to the file it was read
+    // from: anywhere else the map is the points again, and another file's
+    // points over this file's relief would be two fields in one picture.
+    if (this.state.terrainOnMap && (this.state.tab !== "terrain" || !this.terrainAnalysis())) {
+      this.leaveTerrainMap();
+    }
     const renderers = {
       dados: () => this.tabDados(panel),
+      terrain: () => this.tabTerrain(panel),
       limpeza: () => this.tabLimpeza(panel),
       difm: () => this.tabDifm(panel),
       ensaio: () => this.tabEnsaio(panel),
@@ -531,7 +584,7 @@ const App = {
 };
 
 /* ======================================================================
- * Tab 1 — Data
+ * Data
  * ==================================================================== */
 
 Object.assign(App, {
@@ -801,7 +854,1321 @@ Object.assign(App, {
 });
 
 /* ======================================================================
- * Tab 2 — Cleaning
+ * Terrain
+ *
+ * The relief of the field, read from the altitude the monitor already
+ * logged: where the water sits, which way the ground falls, which end
+ * washes, where it is too steep to work across. It needs no survey and no
+ * drone — only a file carrying a GPS height — which is why it sits beside
+ * Data, and why both tracks pass through it: the relief decides where the
+ * strips go as much as it explains a yield map.
+ *
+ * The analyser speaks metric. Everything drawn here is converted the way
+ * the rest of the app converts, with one deliberate exception, named in
+ * the panel itself: the findings are sentences with their numbers written
+ * into them, and converting those would mean rewriting what they say.
+ * ==================================================================== */
+
+Object.assign(App, {
+  /* The layers that come and go on the map, each under its own name so one
+   * can be switched off without taking the others with it. */
+  TERRAIN_LAYERS: ["terrain-contours", "terrain-features", "terrain-drainage",
+                   "terrain-profile"],
+
+  /* How each kind of relief feature is drawn. A closed depression is dashed
+   * and darker than an open low, because whether the hollow closes is what
+   * decides if the water sits there or runs out of it. */
+  TERRAIN_FEATURE_STYLE: {
+    hill: { color: "#a0522d", dashArray: null },
+    low: { color: "#3182bd", dashArray: null },
+    depression: { color: "#1f4e79", dashArray: "4 3" },
+  },
+
+  /* ---------------------------------------------------------- the tab */
+
+  tabTerrain(panel) {
+    const d = this.state.selected;
+    if (!d) {
+      const loaded = this.state.datasets.length;
+      panel.innerHTML = (loaded
+        ? this.missingPanel(
+            "Terrain",
+            "The relief is read from one file's altitude, and none is picked yet.",
+            { cta: "pick", label: "Show the first file" })
+        : this.missingPanel(
+            "Terrain",
+            "Nothing is open yet. This tab reads the GPS height every monitor "
+            + "file already carries and turns it into the relief of the field: "
+            + "the hills, the low ground, the closed hollows where water sits, "
+            + "the slope classes and which way each part faces. A DEM GeoTIFF "
+            + "works too, and is read at its own resolution.",
+            { cta: "load", label: "Load a file that carries the altitude",
+              hint: "A yield or as-applied export logs a height on every point. "
+                    + "Nothing else is needed here: no prices, no cleaning, no trial." }))
+        + this.terrainDemoPanel();
+      return;
+    }
+
+    // The analyser's own sentence about this file, kept from the refusal it
+    // gave: it names what to open instead, which is more use than a form
+    // that cannot be submitted.
+    const refusal = this.state.terrainRefusal[d.id];
+    if (refusal) {
+      // A zone layer this analyser cut carries the id of the file it was cut
+      // from, so the panel can offer that file itself. The sentence then
+      // loses its closing parenthesis — the one naming the dataset id and the
+      // endpoint — because the button does what it was telling the caller to
+      // do, and an id and a URL are not an instruction to a person.
+      const source = this.state.datasets.find(
+        (item) => item.id === d.meta?.extra?.terrain_source_id);
+      panel.innerHTML = source
+        ? this.missingPanel("Terrain", refusal.replace(/\s*\(dataset [^)]*\)/, ""),
+            { cta: `pick:${source.id}`, label: `Show ${source.label}`,
+              hint: "Zones are what the analysis produced, not a layer of the "
+                    + "field: re-gridding their cell centres would hand back a "
+                    + "coarser copy of the relief they were cut from." })
+        : this.missingPanel("Terrain", refusal,
+            { cta: "load", label: "Open a file that carries the altitude",
+              hint: "A yield or as-applied export from the monitor logs a GPS height "
+                    + "on every point; a DEM GeoTIFF of the field works too." })
+          + this.terrainDemoPanel();
+      return;
+    }
+
+    if (this.state.terrainProbing === d.id) {
+      panel.innerHTML = `
+        <div class="panel"><h3>Terrain</h3>
+          <div class="note">Looking for a usable altitude in
+            ${this.escape(d.label)}…</div>
+        </div>`;
+      return;
+    }
+
+    const produces = this.producesPanel([
+      { label: "Print the report (PDF)", cta: "print",
+        hint: "The relief on a page: the character of the field, which way it "
+              + "falls, the hills, the low ground and the depressions, the slope "
+              + "classes and every finding, in the units on screen." },
+      { label: "Make zones for the monitor", cta: "terrain-zones",
+        hint: "Landform, slope class, elevation bands or wetness as a layer the "
+              + "machine can read — the relief turned into something to apply." },
+      { label: "Export the layers for QGIS", cta: "terrain-export",
+        hint: "GeoTIFFs on the analysis grid, the contours, the features and the "
+              + "drainage, zipped with a README that names each file." },
+    ], "Reading the relief and stopping there is a complete use of the app: "
+       + "nothing further down the tabs is needed to act on what it found.");
+
+    const analysis = this.terrainAnalysis();
+    if (!analysis) {
+      panel.innerHTML = this.terrainRunPanel(null) + produces;
+      this.bindTerrainRun();
+      // A file with no altitude column cannot be analysed, and asking the
+      // analyser is how the panel gets the sentence that says what to open
+      // instead — it refuses before any gridding, so it costs nothing.
+      if (this.terrainLooksUnanalysable(d)) this.probeTerrain(d.id);
+      else if (d.reports?.terrain) this.restoreTerrainReport(d);
+      return;
+    }
+
+    const summary = analysis.summary;
+    panel.innerHTML =
+      this.terrainFindingsPanel(summary) +
+      this.terrainRunPanel(analysis) +
+      this.terrainFieldPanel(summary) +
+      this.terrainMapPanel(analysis) +
+      this.terrainFeaturesPanel(summary) +
+      this.terrainProfilePanel() +
+      this.terrainSlopePanel(summary) +
+      this.terrainAspectPanel(summary) +
+      this.terrainLandformPanel(summary) +
+      this.terrainZonesPanel(analysis) +
+      this.terrainExportPanel() +
+      produces;
+
+    this.bindTerrainRun();
+    this.bindTerrainMapControls();
+    this.bindTerrainPanels();
+    this.drawTerrainCharts();
+    this.showTerrainLayer();
+  },
+
+  terrainDemoPanel() {
+    return this.missingPanel(
+      "Or try it on made-up relief",
+      "The terrain demo is a synthetic field of known relief — two hills, a "
+      + "valley and a closed hollow — logged the way a monitor would log it, "
+      + "GPS noise and pass-to-pass offsets included.",
+      { cta: "demo-terrain", label: "Terrain demo" });
+  },
+
+  /* The analysis on screen, when it belongs to the dataset on screen: one
+   * analysis is kept, and picking another file must not show that file the
+   * relief of the previous one. */
+  terrainAnalysis() {
+    const terrain = this.state.terrain;
+    return terrain && terrain.id === this.state.selectedId ? terrain : null;
+  },
+
+  /* A file with no altitude column at all, or the zone layer this analyser
+   * itself produced — both are refused, and the refusal is where the
+   * sentence for the panel comes from. */
+  terrainLooksUnanalysable(d) {
+    if (d.meta?.extra?.zones_by) return true;
+    if (d.meta?.extra?.dem_path) return false;
+    return !(d.columns || []).includes("elev_m");
+  },
+
+  async probeTerrain(id) {
+    this.state.terrainProbing = id;
+    try {
+      const result = await this.api("/api/terrain/analyze", {
+        method: "POST", body: { dataset_id: id },
+      });
+      // It could be analysed after all — an altitude under another name, a
+      // raster behind the points. Keep the result rather than throwing away
+      // work the user would only have to ask for again.
+      this.rememberTerrain(id, result.summary);
+      await this.afterTerrainRun(id);
+    } catch (err) {
+      if (err.status === 400) this.state.terrainRefusal[id] = err.message;
+      else this.toast("That did not work", err.message, "error");
+    } finally {
+      if (this.state.terrainProbing === id) this.state.terrainProbing = null;
+      if (this.state.tab === "terrain" && this.state.selectedId === id) this.renderTab();
+    }
+  },
+
+  /* ------------------------------------------------- running the analysis */
+
+  terrainRunPanel(analysis) {
+    const lengthUnit = Units.label.length();
+    const options = analysis?.summary?.options;
+    const shown = (metres) => (metres == null || !isFinite(metres)
+      ? "" : Number(Units.convert.length(metres).toFixed(3)));
+
+    return `
+      <div class="panel">
+        <h3>${analysis ? "Analysis" : "The relief of this field"}</h3>
+        ${analysis ? "" : `<p class="hint tight">${this.state.selected?.meta?.extra?.dem_path
+          ? `This layer is an elevation raster: the analysis reads the file itself,
+             at its own resolution, rather than the sample of it drawn on the map.`
+          : `Every point in a monitor file carries a GPS height. Scattered along a
+             track they say nothing; on a grid they answer where the water sits,
+             which way the field falls and where the ground is too steep to work
+             across.`}</p>`}
+        <details class="fold">
+          <summary>Options — cell, smoothing, contour interval, smallest feature</summary>
+          <div class="inner">
+            <div class="row tight">
+              ${this.field(`Grid cell (${lengthUnit})`,
+                this.numberInput("terrain-cell", shown(options?.cell_m), "any", "0"))}
+              ${this.field(`Smoothing (${lengthUnit})`,
+                this.numberInput("terrain-smooth", shown(options?.smooth_m), "any", "0"))}
+            </div>
+            <div class="row tight">
+              ${this.field(`Contour interval (${lengthUnit})`,
+                this.numberInput("terrain-interval", shown(options?.contour_interval_m), "any", "0"))}
+              ${this.field(`Smallest feature (${lengthUnit})`,
+                this.numberInput("terrain-feature", shown(options?.min_feature_height_m), "any", "0"))}
+            </div>
+            <p class="hint tight">An empty box is chosen from the data: the cell
+            from the swath, the smoothing from the noise in the readings, the
+            interval from the relief, and the smallest feature from twice the
+            GPS noise — a bump smaller than the noise is the noise. Smoothing 0
+            reads the raw surface.</p>
+          </div>
+        </details>
+        <button class="primary wide" id="btn-run-terrain">
+          ${analysis ? "Analyse the relief again" : "Analyse the relief"}</button>
+        <p class="hint tight">The heights are gridded, the pass-to-pass offsets
+        solved and removed, and everything below is read off the result.</p>
+      </div>`;
+  },
+
+  bindTerrainRun() {
+    document.getElementById("btn-run-terrain")
+      ?.addEventListener("click", () => this.runTerrain());
+    document.getElementById("btn-print-terrain")?.addEventListener("click", (event) =>
+      this.printReport(this.state.selectedId, event.currentTarget));
+  },
+
+  async runTerrain() {
+    const id = this.state.selectedId;
+    if (!id) { this.toast("Nothing to analyse", "Pick a file first.", "warn"); return; }
+
+    const metres = (field) => {
+      const typed = this.number(field, null);
+      return typed == null ? null : Units.toInternal.length(typed);
+    };
+    const body = { dataset_id: id };
+    const asked = {
+      cell_m: metres("terrain-cell"),
+      smooth_m: metres("terrain-smooth"),
+      contour_interval_m: metres("terrain-interval"),
+      min_feature_height_m: metres("terrain-feature"),
+    };
+    for (const [key, value] of Object.entries(asked)) {
+      if (value != null) body[key] = value;
+    }
+    const defaults = Object.values(asked).every((value) => value == null);
+
+    // The whole panel greys while it runs: on a full yield map the gridding,
+    // the smoothing and the hydrology take a few seconds, and every number in
+    // the panel belongs to the analysis that is being replaced.
+    const result = await this.busy(document.getElementById("right-panel"), async () => {
+      try {
+        return await this.api("/api/terrain/analyze", { method: "POST", body });
+      } catch (err) {
+        // With every box empty nothing the user typed can be wrong, so a
+        // refusal is about the file: it becomes the panel, with the sentence
+        // that names what to open instead. With a box filled in, the same
+        // sentence belongs beside the box, where it can be acted on.
+        if (err.status === 400 && defaults) {
+          this.state.terrainRefusal[id] = err.message;
+          this.state.terrain = null;
+          this.renderTab();
+          return null;
+        }
+        throw err;
+      }
+    });
+    if (!result) return;
+
+    this.rememberTerrain(id, result.summary);
+    await this.afterTerrainRun(id);
+    this.renderTab();
+    const character = result.summary.character?.label || "analysed";
+    this.toast("Relief analysed",
+      `${character[0].toUpperCase()}${character.slice(1)}: ` +
+      `${Units.num(Units.convert.length(result.summary.elevation.relief_m), 1)} ` +
+      `${Units.label.length()} between the highest and the lowest ground.`);
+  },
+
+  rememberTerrain(id, summary) {
+    const previous = this.state.terrain?.id === id ? this.state.terrain : null;
+    delete this.state.terrainRefusal[id];
+    this.state.terrain = {
+      id,
+      summary,
+      layers: null,
+      layersGone: null,
+      // What the user had chosen stays chosen across a re-run: the point of
+      // running again is usually to see the same layer under other options.
+      layerKey: previous?.layerKey || "elevation",
+      opacity: previous?.opacity ?? 0.75,
+      hillshade: previous?.hillshade ?? false,
+      contoursOn: previous?.contoursOn ?? false,
+      featuresOn: previous?.featuresOn ?? true,
+      drainageOn: previous?.drainageOn ?? false,
+      contours: null,
+      features: null,
+      profile: null,
+      zones: previous?.zones || null,
+      exported: null,
+      fitted: false,
+      // The layer PNGs live under one URL per key and change whenever the
+      // analysis is re-run; the stamp in the query is what stops the browser
+      // from showing the previous relief under the new options.
+      stamp: Date.now(),
+    };
+  },
+
+  /* Everything the map needs, fetched once per analysis: the layer list with
+   * its legends, and the feature outlines the popups are filled from. */
+  async afterTerrainRun(id) {
+    const analysis = this.state.terrain;
+    if (!analysis || analysis.id !== id) return;
+    try {
+      analysis.layers = (await this.api(`/api/terrain/${id}/layers`)).layers;
+    } catch (err) {
+      // The arrays are evicted after four other analyses; the summary
+      // outlives them, so the panel stays and only the map goes.
+      analysis.layersGone = err.message;
+    }
+    analysis.features = await this.api(`/api/terrain/${id}/features`).catch(() => null);
+    if (analysis.contoursOn) await this.loadTerrainContours(null);
+    await this.refreshDatasets();
+  },
+
+  /* After a reload the server still holds the analysis, and the summary is
+   * saved with the dataset: the panel comes back without re-running. */
+  async restoreTerrainReport(d) {
+    if (this.state.terrainRestoring === d.id) return;
+    this.state.terrainRestoring = d.id;
+    const report = await this.storedReport("terrain");
+    this.state.terrainRestoring = null;
+    if (!report || this.state.selectedId !== d.id || this.state.tab !== "terrain") return;
+    this.rememberTerrain(d.id, report);
+    await this.afterTerrainRun(d.id);
+    this.renderTab();
+  },
+
+  /* ------------------------------------------------------- the findings */
+
+  terrainFindingsPanel(summary) {
+    const findings = summary.findings || [];
+    const noteClass = { ok: "ok", warning: "warning" };
+    // The sentences carry their own numbers, in metres, hectares and cubic
+    // metres. They are the finding — rewriting them in another unit would
+    // mean re-deciding what they say — so when the screen is in another unit
+    // the panel says which is which rather than mixing the two in silence.
+    const metric = Units.label.length() === "m" && Units.label.area() === "ha";
+    return `
+      <div class="panel">
+        ${this.printableHead("What the relief says", "btn-print-terrain")}
+        ${findings.length ? findings.map((f) => `
+          <div class="note ${noteClass[f.level] || ""}" style="margin-bottom:6px">
+            ${this.escape(f.text)}</div>`).join("")
+          : '<div class="empty">The analysis produced no findings.</div>'}
+        ${metric ? "" : `<p class="hint tight">Sentences quoted from the analyser,
+          here and further down, carry metric numbers — metres, hectares, cubic
+          metres. Every table, legend and chart follows the units on screen:
+          ${this.escape(Units.label.length())} and
+          ${this.escape(Units.label.area())}.</p>`}
+      </div>`;
+  },
+
+  /* ------------------------------------------------------- the field */
+
+  terrainFieldPanel(summary) {
+    const elevation = summary.elevation;
+    const trend = summary.trend;
+    const grid = summary.grid;
+    const wet = summary.wetness;
+    const lengthUnit = Units.label.length();
+    const areaUnit = Units.label.area();
+    const length = (v, decimals) => Units.num(Units.convert.length(v), decimals);
+    const area = (v) => Units.num(Units.convert.area(v));
+
+    return `
+      <div class="panel">
+        <h3>The field</h3>
+        <div class="note">${this.escape(summary.character?.why || "")}</div>
+        <div class="stat-grid" style="margin-top:8px">
+          <div class="stat"><div class="k">Relief</div>
+            <div class="v">${length(elevation.relief_m, 1)}</div>
+            <div class="d">${lengthUnit} · highest to lowest</div></div>
+          <div class="stat"><div class="k">Mean slope</div>
+            <div class="v">${Units.num(summary.slope.mean_pct, 1)}</div>
+            <div class="d">% · 95% under ${Units.num(summary.slope.p95_pct, 1)} %</div></div>
+          <div class="stat"><div class="k">Falls to the</div>
+            <div class="v" style="font-size:13px">${trend.gradient_pct >= 0.05
+              ? this.escape(trend.direction_label) : "nowhere in particular"}</div>
+            <div class="d">${trend.gradient_pct >= 0.05
+              ? `${Units.num(trend.gradient_pct, 2)} % · ${length(trend.drop_m, 1)} ` +
+                `${lengthUnit} across the field`
+              : "no consistent fall across the field"}</div></div>
+          <div class="stat"><div class="k">Likely wet ground</div>
+            <div class="v">${area(wet.wet_area_ha)}</div>
+            <div class="d">${areaUnit} · ${Units.num(wet.wet_pct, 1)} % of the field</div></div>
+          <div class="stat"><div class="k">Highest / lowest</div>
+            <div class="v" style="font-size:13px">${length(elevation.max_m, 1)} /
+              ${length(elevation.min_m, 1)}</div>
+            <div class="d">${lengthUnit}</div></div>
+          <div class="stat"><div class="k">Grid</div>
+            <div class="v">${length(grid.cell_m, 1)}</div>
+            <div class="d">${lengthUnit} cells · ${area(grid.area_ha)} ${areaUnit}</div></div>
+        </div>
+        <p class="hint tight">The slope, aspect, landform and wet shares are read
+        inside the field's outermost ring of cells — ${area(grid.interior_ha)} of
+        the ${area(grid.area_ha)} ${areaUnit}. The ring is drawn on every layer
+        but left out of the shares, because its slope and aspect lean on values
+        copied from inside the field.</p>
+        <h4>Heights across the field</h4>
+        <div id="terrain-elevation-histogram"></div>
+      </div>`;
+  },
+
+  /* ---------------------------------------------------------- the map */
+
+  terrainMapPanel(analysis) {
+    if (!analysis.layers?.length) {
+      return `
+        <div class="panel">
+          <h3>On the map</h3>
+          <div class="note warning">${this.escape(analysis.layersGone
+            || "The map layers of this analysis are not in memory.")}</div>
+          <p class="hint tight">The findings and the tables come from the saved
+          summary and are complete; the layer images need the arrays, which the
+          app keeps for the four most recent analyses. Press "Analyse the relief
+          again" above to bring them back.</p>
+        </div>`;
+    }
+    const layer = this.terrainLayer(analysis);
+    const lengthUnit = Units.label.length();
+    const interval = analysis.contourInterval ?? analysis.summary.contours.interval_m;
+    const level = analysis.summary.elevation.level;
+
+    return `
+      <div class="panel">
+        <h3>On the map</h3>
+        ${this.field("Layer", this.selectInput("terrain-layer",
+          analysis.layers.map((l) => [l.key, l.label]), layer.key))}
+        <label class="field">
+          <span>Opacity <span style="color:var(--text-faint)" id="terrain-opacity-value">${
+            Math.round(analysis.opacity * 100)}%</span></span>
+          <input type="range" id="terrain-opacity" min="0.1" max="1" step="0.05"
+                 value="${analysis.opacity}">
+        </label>
+        <label class="inline" style="margin-bottom:6px">
+          <input type="checkbox" id="terrain-hillshade"${analysis.hillshade ? " checked" : ""}
+            ${layer.key === "hillshade" ? " disabled" : ""}>
+          <span>Blend the hillshade in${layer.key === "hillshade"
+            ? " (this layer is the hillshade)" : ""}</span></label>
+        <div id="terrain-legend"></div>
+        <p class="hint tight">The points are off the map while the relief is on
+        it: they are drawn over everything and would hide what is underneath.</p>
+
+        <h4>Contour lines</h4>
+        <label class="inline" style="margin-bottom:6px">
+          <input type="checkbox" id="terrain-contours"${analysis.contoursOn ? " checked" : ""}
+            ${level ? " disabled" : ""}>
+          <span>${level ? "This field is level: there is nothing to contour"
+            : "Draw the contours over the layer"}</span></label>
+        ${level ? "" : `
+        <div class="row tight" style="align-items:flex-end">
+          ${this.field(`Interval (${lengthUnit})`, this.numberInput("terrain-contour-interval",
+            interval == null ? "" : Number(Units.convert.length(interval).toFixed(3)), "any", "0"))}
+          <button class="small" id="btn-terrain-contours" style="flex:none;margin-bottom:11px">
+            Redraw</button>
+        </div>
+        <p class="hint tight" id="terrain-contour-status">${interval == null
+          ? "No interval was drawn."
+          : `Drawn every ${Units.num(Units.convert.length(interval), 2)} ${lengthUnit}` +
+            `; every fifth line is heavier and carries its height.`}</p>`}
+
+        <h4>Features</h4>
+        <label class="inline" style="margin-bottom:6px">
+          <input type="checkbox" id="terrain-features"${analysis.featuresOn ? " checked" : ""}>
+          <span>Hills, low ground and closed depressions</span></label>
+        <label class="inline" style="margin-bottom:6px">
+          <input type="checkbox" id="terrain-drainage"${analysis.drainageOn ? " checked" : ""}>
+          <span>Drainage lines (${Units.num(Units.convert.length(
+            analysis.summary.wetness.drainage_length_m), 0)} ${lengthUnit} in all)</span></label>
+      </div>`;
+  },
+
+  terrainLayer(analysis) {
+    const layers = analysis.layers || [];
+    return layers.find((l) => l.key === analysis.layerKey) || layers[0];
+  },
+
+  /* The unit a layer's numbers are in, once converted for the screen. The
+   * metre layers — elevation, the two positions, the ponding depth — follow
+   * the length unit; a percentage, a bearing and a dimensionless index are
+   * the same everywhere. Read off the layer's own unit rather than a list of
+   * keys, so a layer added to the analyser needs no change here. */
+  terrainLayerUnit(layer) {
+    if (layer.unit === "m") return Units.label.length();
+    if (layer.unit === "deg") return "°";
+    return layer.unit || "";
+  },
+
+  /* A legend value, with as many decimals as the bar's own span needs: the
+   * curvatures run over thousandths and would read as four zeros at the two
+   * decimals an elevation wants. */
+  terrainLayerValue(layer, value) {
+    if (value == null || !isFinite(value)) return "—";
+    const metres = layer.unit === "m";
+    const convert = metres ? Units.convert.length : (v) => v;
+    const legend = layer.legend || {};
+    const span = Math.abs(convert(legend.vmax ?? 1) - convert(legend.vmin ?? 0));
+    const decimals = span >= 1000 ? 0 : span >= 100 ? 1 : span >= 10 ? 2
+      : span >= 1 ? 2 : span >= 0.1 ? 3 : 4;
+    return Units.num(convert(value), decimals);
+  },
+
+  renderTerrainLegend() {
+    const box = document.getElementById("terrain-legend");
+    const analysis = this.terrainAnalysis();
+    if (!box || !analysis) return;
+    const layer = this.terrainLayer(analysis);
+    const legend = layer?.legend;
+    const unit = this.terrainLayerUnit(layer);
+    if (!legend) {
+      box.innerHTML = `<div class="empty">Nothing inside the field has a
+        ${this.escape(layer?.label || "value")}: the layer draws transparent.</div>`;
+      return;
+    }
+
+    if (legend.kind === "categorical") {
+      // The class shares come from the summary, which counts them inside the
+      // ring of edge cells; the legend itself only knows the colours.
+      const shares = {};
+      for (const cls of analysis.summary.landforms?.classes || []) shares[cls.code] = cls;
+      box.innerHTML = `
+        <div class="legend" style="margin-top:6px">
+          <h4>${this.escape(layer.label)}</h4>
+          ${legend.classes.map((cls) => {
+            const share = shares[cls.code];
+            return `<div class="inline" style="gap:6px;margin-bottom:3px;font-size:12px">
+              <span style="flex:none;width:14px;height:14px;border-radius:3px;
+                background:${this.escape(cls.color)};border:1px solid var(--border)"></span>
+              <span style="flex:1;min-width:0">${this.escape(cls.label)}</span>
+              ${share ? `<span style="font:11px var(--mono);color:var(--text-muted)">${
+                Units.num(Units.convert.area(share.area_ha))} ${Units.label.area()} ·
+                ${Units.num(share.pct, 1)}%</span>` : ""}
+            </div>`;
+          }).join("")}
+        </div>`;
+      return;
+    }
+
+    // Continuous: the ramp is the palette, and the labels are the stops' own
+    // values — on the flow-accumulation ramp they are not evenly spaced, and
+    // reading them off the ends would misstate every colour between.
+    const stops = legend.stops || [];
+    const gradient = stops.map((s) =>
+      `${s.color} ${(s.position * 100).toFixed(1)}%`).join(", ");
+    const labelled = stops.filter((_, i) => i % 2 === 0 || i === stops.length - 1);
+    box.innerHTML = `
+      <div class="legend" style="margin-top:6px">
+        <h4>${this.escape(layer.label)}${unit ? ` (${this.escape(unit)})` : ""}</h4>
+        <div class="ramp" style="background:linear-gradient(90deg, ${gradient})"></div>
+        <div style="position:relative;height:14px">
+          ${labelled.map((stop) => {
+            const percent = (stop.position * 100).toFixed(1);
+            return `<span style="position:absolute;left:${percent}%;
+              transform:translateX(-${percent}%);font:11px var(--mono);
+              color:var(--text-muted);white-space:nowrap">${
+                this.terrainLayerValue(layer, stop.value)}</span>`;
+          }).join("")}
+        </div>
+      </div>`;
+  },
+
+  bindTerrainMapControls() {
+    const analysis = this.terrainAnalysis();
+    if (!analysis?.layers?.length) return;
+
+    document.getElementById("terrain-layer").addEventListener("change", (event) => {
+      analysis.layerKey = event.target.value;
+      this.renderTab();
+    });
+    const opacity = document.getElementById("terrain-opacity");
+    opacity.addEventListener("input", (event) => {
+      analysis.opacity = Number(event.target.value);
+      document.getElementById("terrain-opacity-value").textContent =
+        `${Math.round(analysis.opacity * 100)}%`;
+      MapView.setImageOpacity(analysis.opacity);
+    });
+    document.getElementById("terrain-hillshade").addEventListener("change", (event) => {
+      analysis.hillshade = event.target.checked;
+      this.showTerrainLayer();
+    });
+
+    document.getElementById("terrain-contours")?.addEventListener("change", async (event) => {
+      analysis.contoursOn = event.target.checked;
+      if (analysis.contoursOn && !analysis.contours) await this.loadTerrainContours(null);
+      this.drawTerrainContours();
+    });
+    document.getElementById("btn-terrain-contours")?.addEventListener("click", async (event) => {
+      const typed = this.number("terrain-contour-interval", null);
+      await this.busy(event.currentTarget, () =>
+        this.loadTerrainContours(typed == null ? null : Units.toInternal.length(typed)));
+      analysis.contoursOn = true;
+      this.renderTab();
+    });
+
+    document.getElementById("terrain-features").addEventListener("change", (event) => {
+      analysis.featuresOn = event.target.checked;
+      this.drawTerrainFeatures();
+    });
+    document.getElementById("terrain-drainage").addEventListener("change", (event) => {
+      analysis.drainageOn = event.target.checked;
+      this.drawTerrainFeatures();
+    });
+  },
+
+  /* The relief on the map: one image, swapped in place, with the contours
+   * and the outlines above it. */
+  showTerrainLayer() {
+    const analysis = this.terrainAnalysis();
+    const layer = analysis && this.terrainLayer(analysis);
+    if (!layer) return;
+    analysis.layerKey = layer.key;
+
+    // The point canvas is drawn over the map rather than in it, so the
+    // points would cover the relief entirely. The panel says so beside the
+    // picker, and leaving the tab brings them back.
+    MapView.clearPoints();
+    document.getElementById("legend").hidden = true;
+
+    const query = new URLSearchParams({ run: String(analysis.stamp) });
+    if (analysis.hillshade && layer.key !== "hillshade") query.set("hillshade", "1");
+    MapView.setImage(`${layer.url}?${query}`, layer.bounds, {
+      opacity: analysis.opacity,
+      onError: () => this.terrainImageFailed(analysis.id),
+    });
+    this.state.terrainOnMap = true;
+
+    document.getElementById("map-status").textContent =
+      `${layer.label} · ${Units.num(Units.convert.area(analysis.summary.grid.area_ha))} ` +
+      `${Units.label.area()}`;
+    if (!analysis.fitted) {
+      analysis.fitted = true;
+      MapView.fit(analysis.summary.grid.bounds_lonlat);
+    }
+    this.renderTerrainLegend();
+    this.drawTerrainContours();
+    this.drawTerrainFeatures();
+    this.drawProfileLine(this.state.terrainDraw?.points || this.state.terrain?.profile?.points);
+  },
+
+  /* The layer images are drawn from the arrays the app keeps for the four
+   * most recent analyses, and a fifth analysis takes this one's away. The
+   * summary and the tables live on — they are saved with the dataset — so
+   * the first sign of the loss is an image that will not load. Asking
+   * /layers turns that into the analyser's own sentence about what to do,
+   * and a transient failure that /layers survives changes nothing. */
+  async terrainImageFailed(id) {
+    const analysis = this.terrainAnalysis();
+    if (!analysis || analysis.id !== id || analysis.layersGone) return;
+    try {
+      await this.api(`/api/terrain/${id}/layers`);
+      return;
+    } catch (err) {
+      analysis.layers = null;
+      analysis.layersGone = err.message;
+    }
+    this.leaveTerrainMap();
+    this.renderTab();
+  },
+
+  /* Everything this tab put on the map comes off when the tab is left: the
+   * relief belongs to this panel, and the points it replaced come back. */
+  leaveTerrainMap() {
+    if (!this.state.terrainOnMap) return;
+    this.state.terrainOnMap = false;
+    this.endProfile();
+    MapView.clearImage();
+    for (const name of this.TERRAIN_LAYERS) MapView.clearGeoJson(name);
+    this.loadMap();
+  },
+
+  /* ------------------------------------------------------------ contours */
+
+  async loadTerrainContours(intervalM) {
+    const analysis = this.terrainAnalysis();
+    if (!analysis) return null;
+    const query = intervalM == null ? "" : `?interval_m=${encodeURIComponent(intervalM)}`;
+    const collection = await this.api(
+      `/api/terrain/${analysis.id}/contours${query}`).catch((err) => {
+        this.toast("The contours did not come", err.message, "error");
+        return null;
+      });
+    if (!collection) return null;
+    analysis.contours = collection;
+    // What was asked for and what was drawn are not always the same: a level
+    // field ignores the request, so the box shows the interval actually used.
+    analysis.contourInterval = collection.interval_m;
+    return collection;
+  },
+
+  drawTerrainContours() {
+    const analysis = this.terrainAnalysis();
+    if (!analysis?.contoursOn || !analysis.contours) {
+      MapView.clearGeoJson("terrain-contours");
+      return;
+    }
+    const lengthUnit = Units.label.length();
+    MapView.setGeoJson("terrain-contours", analysis.contours, {
+      style: (p) => ({
+        color: "#3d3222", weight: p.major ? 2 : 1, opacity: p.major ? 0.95 : 0.7,
+      }),
+      // Every fifth line carries its height where it is drawn; the rest
+      // answer on hover, or the labels would cover the layer they describe.
+      tooltip: (p) => ({
+        text: `${Units.num(Units.convert.length(p.level_m), 1)} ${lengthUnit}`,
+        permanent: !!p.major,
+        className: "contour-label",
+      }),
+    });
+  },
+
+  /* ------------------------------------------------------------ features */
+
+  terrainFeaturesPanel(summary) {
+    const features = summary.features;
+    const lengthUnit = Units.label.length();
+    const areaUnit = Units.label.area();
+    const length = (v, decimals = 2) => Units.num(Units.convert.length(v), decimals);
+    const area = (v) => Units.num(Units.convert.area(v));
+    const none = !features.hills.length && !features.lows.length && !features.depressions.length;
+
+    const table = (title, header, rows) => rows.length ? `
+      <h4>${title}</h4>
+      <div class="scroll-x"><table class="data">
+        <tr>${header.map((h) => `<th>${h}</th>`).join("")}</tr>
+        ${rows.join("")}
+      </table></div>` : "";
+
+    // Five columns each: what it is, where, how big, how far it stands out,
+    // and the one thing that follows from it. The absolute heights — the
+    // summit, the bottom, the spill point — are in the popup on the map and
+    // on the printed page; in a panel this wide they would push the share
+    // and the ponding off the edge, and they are the numbers a farmer reads
+    // last.
+    const hills = features.hills.map((h) => `
+      <tr class="clickable" data-feature="${h.lon},${h.lat}">
+        <td>${this.escape(h.label)}</td><td>${this.escape(h.position)}</td>
+        <td class="num">${length(h.height_m, 1)}</td>
+        <td class="num">${area(h.area_ha)}</td>
+        <td class="num">${Units.num(h.mean_slope_pct, 1)}</td></tr>`);
+    const lows = features.lows.map((l) => `
+      <tr class="clickable" data-feature="${l.lon},${l.lat}">
+        <td>${this.escape(l.label)}</td><td>${this.escape(l.position)}</td>
+        <td class="num">${length(l.depth_m, 1)}</td>
+        <td class="num">${area(l.area_ha)}</td>
+        <td>${l.closed ? "ponds" : "runs off"}</td></tr>`);
+    const depressions = features.depressions.map((d) => `
+      <tr class="clickable" data-feature="${d.lon},${d.lat}">
+        <td>${this.escape(d.label)}</td><td>${this.escape(d.position)}</td>
+        <td class="num">${area(d.area_ha)}</td>
+        <td class="num">${length(d.max_depth_m, 2)}</td>
+        <td class="num">${Units.num(this.terrainVolume(d.volume_m3), 0)}</td></tr>`);
+
+    return `
+      <div class="panel">
+        <h3>Hills, low ground and depressions</h3>
+        ${none ? `<div class="note">No hill, hollow or closed depression stands
+          more than ${length(summary.features.depression_floor_m, 2)} ${lengthUnit}
+          out of the general fall of this field.</div>` : ""}
+        ${table("Hills", ["Hill", "Where", `Rises (${lengthUnit})`, `Area (${areaUnit})`,
+                          "Slope %"], hills)}
+        ${table("Low ground", ["Low", "Where", `Below (${lengthUnit})`,
+                               `Area (${areaUnit})`, "Water"], lows)}
+        ${table("Closed depressions", ["Depression", "Where", `Area (${areaUnit})`,
+                                       `Depth (${lengthUnit})`,
+                                       `Holds (${this.terrainVolumeUnit()})`], depressions)}
+        ${features.depressions_unlisted ? `<p class="hint tight">
+          ${features.depressions_unlisted} shallower hollow(s) were not listed: they
+          are under the ${length(features.depression_floor_m, 2)} ${lengthUnit} a
+          feature has to stand out by, which is twice the noise in these readings.
+          Lower "smallest feature" in the options above to list them, and read what
+          comes out knowing it is close to the noise.</p>` : ""}
+        ${none ? "" : `<p class="hint tight">A row centres the map on its feature.
+          The outlines carry the same numbers in a popup.</p>`}
+      </div>`;
+  },
+
+  /* A volume in the user's length unit cubed. There is no volume group in
+   * the unit catalogue — nothing else in the app measures one — so the
+   * length factor is cubed here: a cubic foot is 0.3048³ of a cubic metre.
+   * The unit is written beside every number, because a pond volume is the
+   * one figure nobody can check by eye. */
+  terrainVolume(cubicMetres) {
+    if (cubicMetres == null || !isFinite(cubicMetres)) return null;
+    const factor = Units.factor("length", Units.label.length());
+    return cubicMetres / (factor * factor * factor);
+  },
+
+  terrainVolumeUnit() { return `${Units.label.length()}³`; },
+
+  drawTerrainFeatures() {
+    const analysis = this.terrainAnalysis();
+    const collection = analysis?.features;
+    if (!analysis) return;
+
+    if (!analysis.featuresOn || !collection) {
+      MapView.clearGeoJson("terrain-features");
+    } else {
+      const lengthUnit = Units.label.length();
+      const areaUnit = Units.label.area();
+      const length = (v, d = 1) => `${Units.num(Units.convert.length(v), d)} ${lengthUnit}`;
+      const area = (v) => `${Units.num(Units.convert.area(v))} ${areaUnit}`;
+      MapView.setGeoJson("terrain-features", collection, {
+        style: (p) => {
+          const style = this.TERRAIN_FEATURE_STYLE[p.kind] || this.TERRAIN_FEATURE_STYLE.hill;
+          return {
+            color: style.color, weight: 2, dashArray: style.dashArray,
+            fillColor: style.color, fillOpacity: p.kind === "hill" ? 0.12 : 0.22,
+          };
+        },
+        popup: (p) => {
+          const lines = [`<b>${this.escape(p.label)}</b> — ${this.escape(p.position)}`];
+          if (p.kind === "hill") {
+            lines.push(`Rises ${length(p.height_m)} above its surroundings`,
+                       `${area(p.area_ha)} · top at ${length(p.summit_m)}`,
+                       `Averages ${Units.num(p.mean_slope_pct, 1)} % slope`);
+          } else if (p.kind === "low") {
+            lines.push(`Lies ${length(p.depth_m)} below the ground around it`,
+                       `${area(p.area_ha)} · bottom at ${length(p.bottom_m)}`,
+                       p.closed ? "Part of it is closed: water ponds there"
+                                : "Open: the water runs out");
+          } else {
+            lines.push(`${area(p.area_ha)} · ${length(p.max_depth_m, 2)} at its deepest`,
+                       `Holds ${Units.num(this.terrainVolume(p.volume_m3), 0)} ` +
+                       `${this.terrainVolumeUnit()} before it spills`,
+                       `Spills at ${length(p.spill_m)}`);
+          }
+          return lines.join("<br>");
+        },
+        tooltip: (p) => this.escape(p.label),
+      });
+    }
+
+    if (!analysis.drainageOn || !collection?.drainage) {
+      MapView.clearGeoJson("terrain-drainage");
+      return;
+    }
+    MapView.setGeoJson("terrain-drainage", collection.drainage, {
+      style: () => ({ color: "#2b6cb0", weight: 2, opacity: 0.85, dashArray: "6 4" }),
+      tooltip: (p) => `${Units.num(Units.convert.length(p.length_m), 0)} ` +
+        `${Units.label.length()} of drainage line`,
+    });
+  },
+
+  /* ------------------------------------------------------------- profile */
+
+  terrainProfilePanel() {
+    const analysis = this.terrainAnalysis();
+    const profile = analysis?.profile;
+    const lengthUnit = Units.label.length();
+    const drawing = !!this.state.terrainDraw;
+    const length = (v, d = 1) => Units.num(Units.convert.length(v), d);
+
+    let numbers = "";
+    if (profile) {
+      const measured = profile.elev_m.filter((z) => z != null);
+      const fall = measured.length ? Math.max(...measured) - Math.min(...measured) : null;
+      const steps = profile.slope_pct.filter((s) => s != null);
+      const steepest = steps.length
+        ? steps.reduce((a, b) => (Math.abs(b) > Math.abs(a) ? b : a)) : null;
+      const rows = profile.distance_m.map((distance, i) => `
+        <tr><td class="num">${length(distance, 0)}</td>
+          <td class="num">${profile.elev_m[i] == null ? "off the field"
+            : length(profile.elev_m[i], 1)}</td>
+          <td class="num">${profile.slope_pct[i] == null ? "—"
+            : Units.num(profile.slope_pct[i], 2)}</td></tr>`).join("");
+      numbers = `
+        <div class="stat-grid" style="margin-top:8px">
+          <div class="stat"><div class="k">Length</div>
+            <div class="v">${length(profile.length_m, 0)}</div>
+            <div class="d">${lengthUnit}</div></div>
+          <div class="stat"><div class="k">Fall along the line</div>
+            <div class="v">${length(fall, 1)}</div>
+            <div class="d">${lengthUnit} · highest to lowest</div></div>
+        </div>
+        <p class="hint tight">Steepest step ${steepest == null ? "—"
+          : `${Units.num(Math.abs(steepest), 2)} %, ${steepest > 0 ? "downhill" : "uphill"}`}
+          along the walk. Downhill is positive.</p>
+        <details class="fold"><summary>Every station</summary>
+          <div class="inner scroll-x"><table class="data">
+            <tr><th>Distance (${lengthUnit})</th><th>Height (${lengthUnit})</th>
+              <th>Slope from the last (%)</th></tr>${rows}
+          </table></div>
+        </details>`;
+    }
+
+    return `
+      <div class="panel">
+        <h3>Profile along a line</h3>
+        <div class="row tight">
+          <button id="btn-terrain-profile" class="${drawing ? "" : "primary"}">
+            ${drawing ? "Drawing…" : "Draw a profile"}</button>
+          <button id="btn-terrain-profile-done"${drawing ? "" : " disabled"}>Done</button>
+        </div>
+        <p class="hint tight" id="terrain-profile-status">${drawing
+          ? "Click the start and the end on the map. Each further click extends the "
+            + "line. Escape or Done ends it; pressing Draw again starts a new one."
+          : "Click two points on the map and the ground between them is drawn "
+            + "below, height against distance."}</p>
+        <div id="terrain-profile-chart"></div>
+        ${numbers}
+      </div>`;
+  },
+
+  bindTerrainPanels() {
+    document.getElementById("btn-terrain-profile")
+      ?.addEventListener("click", () => this.startProfile());
+    document.getElementById("btn-terrain-profile-done")
+      ?.addEventListener("click", () => { this.endProfile(); this.renderTab(); });
+
+    for (const row of document.querySelectorAll("[data-feature]")) {
+      row.addEventListener("click", () => {
+        const [lon, lat] = row.dataset.feature.split(",").map(Number);
+        MapView.panTo(lon, lat, 16);
+      });
+    }
+
+    document.getElementById("btn-terrain-zones")
+      ?.addEventListener("click", (event) => this.makeTerrainZones(event.currentTarget));
+    document.getElementById("btn-terrain-export")
+      ?.addEventListener("click", (event) => this.runTerrainExport(event.currentTarget));
+  },
+
+  startProfile() {
+    const analysis = this.terrainAnalysis();
+    if (!analysis) {
+      this.toast("Nothing to profile",
+        "Run the analysis above and the line can be drawn over the result.", "warn");
+      return;
+    }
+    // A second press starts a new line rather than adding to the old one.
+    this.endProfile();
+    const draw = { points: [] };
+    draw.onMapClick = (event) => {
+      draw.points.push([event.latlng.lng, event.latlng.lat]);
+      this.drawProfileLine(draw.points);
+      if (draw.points.length >= 2) this.runProfile(draw.points);
+      else this.setProfileStatus("Start set. Click where the line should end.");
+    };
+    draw.onKey = (event) => { if (event.key === "Escape") { this.endProfile(); this.renderTab(); } };
+    // The outlines and the contours stay on the map but stop answering
+    // clicks, or a line drawn across a hill would open the hill's popup
+    // instead of setting its second point.
+    MapView.setClickThrough(true);
+    MapView.onClick(draw.onMapClick);
+    document.addEventListener("keydown", draw.onKey);
+    this.state.terrainDraw = draw;
+    MapView.clearGeoJson("terrain-profile");
+    this.renderTab();
+  },
+
+  endProfile() {
+    const draw = this.state.terrainDraw;
+    if (!draw) return;
+    MapView.offClick(draw.onMapClick);
+    document.removeEventListener("keydown", draw.onKey);
+    MapView.setClickThrough(false);
+    this.state.terrainDraw = null;
+  },
+
+  setProfileStatus(text) {
+    const node = document.getElementById("terrain-profile-status");
+    if (node) node.textContent = text;
+  },
+
+  /* The line as it is drawn, so the click is answered before the profile
+   * comes back from the server. */
+  drawProfileLine(points) {
+    if (!points?.length) { MapView.clearGeoJson("terrain-profile"); return; }
+    const features = points.map((point, i) => ({
+      type: "Feature", properties: { station: i + 1 },
+      geometry: { type: "Point", coordinates: point },
+    }));
+    if (points.length >= 2) {
+      features.push({
+        type: "Feature", properties: { station: 0 },
+        geometry: { type: "LineString", coordinates: points },
+      });
+    }
+    MapView.setGeoJson("terrain-profile", { type: "FeatureCollection", features }, {
+      style: (p) => (p.station
+        ? { radius: 4, color: "#ffffff", weight: 2, fillColor: "#b33a3a", fillOpacity: 1 }
+        : { color: "#b33a3a", weight: 3, opacity: 0.9 }),
+    });
+  },
+
+  async runProfile(points) {
+    const analysis = this.terrainAnalysis();
+    if (!analysis) return;
+    // Two hundred stations read every cell a line crosses on any field this
+    // app grids, and a chart a panel wide has fewer pixels than that.
+    const profile = await this.api(`/api/terrain/${analysis.id}/profile`, {
+      method: "POST", body: { points, n: 200 },
+    }).catch((err) => {
+      this.setProfileStatus(err.message);
+      return null;
+    });
+    if (!profile) return;
+    analysis.profile = profile;
+    this.renderTab();
+    this.setProfileStatus(
+      `${points.length} point(s) on the line. Click again to extend it, `
+      + "Escape or Done to finish.");
+  },
+
+  /* --------------------------------------------------- slope and aspect */
+
+  terrainSlopePanel(summary) {
+    const areaUnit = Units.label.area();
+    const rows = summary.slope.classes.map((cls) => `
+      <tr><td>${this.escape(cls.label)}</td>
+        <td class="num">${Units.num(Units.convert.area(cls.area_ha))}</td>
+        <td class="num">${Units.num(cls.pct, 1)}</td></tr>`).join("");
+    return `
+      <div class="panel">
+        <h3>Slope</h3>
+        <div id="terrain-slope-histogram"></div>
+        <p class="hint tight">The dashed lines are the agronomic breaks: under
+        2 % the water leaves slowly, 2–5 % is where sheet erosion starts on bare
+        soil, and above 10 % both the machinery and the erosion become a
+        concern.</p>
+        <div class="scroll-x"><table class="data">
+          <tr><th>Class</th><th>Area (${areaUnit})</th><th>Share (%)</th></tr>${rows}
+        </table></div>
+      </div>`;
+  },
+
+  terrainAspectPanel(summary) {
+    const areaUnit = Units.label.area();
+    const sectors = summary.aspect.sectors || [];
+    const flat = sectors.find((s) => s.key === "flat");
+    const rows = sectors.map((sector) => `
+      <tr><td>${this.escape(sector.label)}</td>
+        <td class="num">${Units.num(Units.convert.area(sector.area_ha))}</td>
+        <td class="num">${Units.num(sector.pct, 1)}</td></tr>`).join("");
+    return `
+      <div class="panel">
+        <h3>Which way it faces</h3>
+        <div id="terrain-aspect-rose"></div>
+        <p class="hint tight">${flat && flat.pct > 0
+          ? `${Units.num(flat.pct, 1)} % of the field (${Units.num(
+              Units.convert.area(flat.area_ha))} ${areaUnit}) is too flat to face
+              anywhere, and is not drawn as a petal.`
+          : "Every part of this field falls one way or another."}
+          A south-facing slope dries and warms first in the spring.</p>
+        <details class="fold"><summary>Every sector</summary>
+          <div class="inner scroll-x"><table class="data">
+            <tr><th>Facing</th><th>Area (${areaUnit})</th><th>Share (%)</th></tr>${rows}
+          </table></div>
+        </details>
+      </div>`;
+  },
+
+  terrainLandformPanel(summary) {
+    const areaUnit = Units.label.area();
+    const classes = summary.landforms?.classes || [];
+    if (!classes.length) return "";
+    const lengthUnit = Units.label.length();
+    return `
+      <div class="panel">
+        <h3>Landform</h3>
+        <div class="scroll-x"><table class="data">
+          <tr><th>Class</th><th>Area (${areaUnit})</th><th>Share (%)</th></tr>
+          ${classes.map((cls) => `
+            <tr><td><span style="display:inline-block;width:10px;height:10px;
+              border-radius:2px;margin-right:6px;background:${this.escape(cls.color)}"></span>${
+              this.escape(cls.label)}</td>
+              <td class="num">${Units.num(Units.convert.area(cls.area_ha))}</td>
+              <td class="num">${Units.num(cls.pct, 1)}</td></tr>`).join("")}
+        </table></div>
+        <p class="hint tight">Each cell is placed by how high it sits against the
+        ground within ${Units.num(Units.convert.length(summary.landforms.tpi_small_m), 0)}
+        and ${Units.num(Units.convert.length(summary.landforms.tpi_large_m), 0)}
+        ${lengthUnit} of it — the near view says whether it is on a crest or in a
+        hollow, the far view where that sits in the field as a whole.</p>
+      </div>`;
+  },
+
+  drawTerrainCharts() {
+    const analysis = this.terrainAnalysis();
+    if (!analysis) return;
+    const summary = analysis.summary;
+    const lengthUnit = Units.label.length();
+
+    const elevation = document.getElementById("terrain-elevation-histogram");
+    if (elevation) {
+      Charts.histogram(elevation, null, this.terrainHistogram(
+        summary.elevation.histogram, Units.convert.length), {
+        height: 120,
+        format: (v) => `${Units.num(v, 0)} ${lengthUnit}`,
+      });
+    }
+
+    const slope = document.getElementById("terrain-slope-histogram");
+    if (slope) {
+      Charts.histogram(slope, null, summary.slope.histogram, {
+        height: 130,
+        format: (v) => `${Units.num(v, 1)} %`,
+        marks: summary.slope.classes
+          .filter((cls) => cls.from_pct > 0)
+          .map((cls) => ({ value: cls.from_pct, label: `${cls.from_pct}%` })),
+      });
+    }
+
+    const rose = document.getElementById("terrain-aspect-rose");
+    if (rose) Charts.rose(rose, summary.aspect.sectors);
+
+    const chart = document.getElementById("terrain-profile-chart");
+    if (chart && analysis.profile) {
+      Charts.profile(chart, {
+        distance: analysis.profile.distance_m.map(Units.convert.length),
+        elevation: analysis.profile.elev_m.map(
+          (z) => (z == null ? null : Units.convert.length(z))),
+      }, { distanceUnit: lengthUnit, elevationUnit: lengthUnit });
+    }
+  },
+
+  /* A histogram's edges in the displayed unit; the counts are counts. */
+  terrainHistogram(histogram, convert) {
+    if (!histogram?.counts?.length) return histogram;
+    return { counts: histogram.counts, edges: histogram.edges.map(convert) };
+  },
+
+  /* --------------------------------------------------------------- zones */
+
+  terrainZonesPanel(analysis) {
+    const zones = analysis.zones;
+    return `
+      <div class="panel">
+        <h3>Make zones from this</h3>
+        <p class="hint tight">A zone layer is an ordinary dataset: it shows up in
+        "Loaded data", exports as shapefile, GeoJSON or GeoPackage, and goes to
+        the monitor like any other map. This is the bridge from the relief to the
+        machine.</p>
+        ${this.field("Zones by", this.selectInput("terrain-zones-by", [
+          ["landform", "Landform — hilltop, slope, flat, hollow"],
+          ["slope_class", "Slope class — the agronomic breaks"],
+          ["elevation_bands", "Elevation bands"],
+          ["wetness", "Wetness — the wet ground against the rest"],
+        ], this.state.terrainZonesBy || "landform"))}
+        <div class="row tight">
+          ${this.field("As", this.selectInput("terrain-zones-kind", [
+            ["polygons", "Polygons — one per zone"],
+            ["points", "Points — one per grid cell"],
+          ], this.state.terrainZonesKind || "polygons"))}
+          ${this.field("Bands", this.numberInput("terrain-zones-bands", 4, "1", "2"),
+            "Elevation bands only.")}
+        </div>
+        <button class="primary wide" id="btn-terrain-zones">Make the zone layer</button>
+        <div id="terrain-zones-result">${zones ? this.terrainZonesResult(zones) : ""}</div>
+        <p class="hint tight">A zone layer is a map of class codes, not of
+        product: give it a rate per zone before it goes to the terminal, or the
+        monitor applies 1, 2 and 3. And to fit one response curve per zone, the
+        zone column has to sit on the yield layer itself — the economics reads
+        its zones from that file's own columns, not from a layer beside it.</p>
+      </div>`;
+  },
+
+  terrainZonesResult(zones) {
+    const dataset = zones.dataset;
+    const labels = Object.entries(zones.zone_labels || {})
+      .map(([code, label]) => `${code} · ${label}`).join(", ");
+    return `
+      <div class="note ok" style="margin-top:8px">
+        <b>${this.escape(dataset.label)}</b><br>
+        ${Units.num(dataset.rows, 0)} ${zones.kind === "points" ? "cells" : "zone(s)"},
+        ${Units.num(Units.convert.area(dataset.area_ha))} ${Units.label.area()}.<br>
+        <span class="d">${this.escape(labels)}</span>
+      </div>
+      <div class="row tight" style="margin-top:8px">
+        <button class="small" data-cta="inspect:${dataset.id}">Show the new layer</button>
+        <button class="small" data-cta="export-file:${dataset.id}">Take it to Export</button>
+      </div>`;
+  },
+
+  async makeTerrainZones(button) {
+    const analysis = this.terrainAnalysis();
+    if (!analysis) {
+      this.toast("Nothing to cut into zones",
+        "Run the analysis above first; the zones are cut from its layers.", "warn");
+      return;
+    }
+    this.state.terrainZonesBy = this.value("terrain-zones-by");
+    this.state.terrainZonesKind = this.value("terrain-zones-kind");
+    const body = {
+      by: this.state.terrainZonesBy,
+      kind: this.state.terrainZonesKind,
+      bands: this.number("terrain-zones-bands", 4),
+    };
+    const zones = await this.busy(button, () =>
+      this.api(`/api/terrain/${analysis.id}/zones`, { method: "POST", body }));
+    if (!zones) return;
+
+    analysis.zones = zones;
+    await this.refreshDatasets();
+    const box = document.getElementById("terrain-zones-result");
+    if (box) {
+      box.innerHTML = this.terrainZonesResult(zones);
+      this.bindPanelActions(box);
+    }
+    this.toast("Zone layer made",
+      `${zones.dataset.label}: ${Units.num(zones.dataset.rows, 0)} ` +
+      `${zones.kind === "points" ? "cells" : "zones"}. It is in "Loaded data", ` +
+      "ready to export to the monitor.");
+  },
+
+  /* -------------------------------------------------------------- export */
+
+  terrainExportPanel() {
+    const analysis = this.terrainAnalysis();
+    return `
+      <div class="panel">
+        <h3>Export the relief</h3>
+        <p class="hint tight">One zip for QGIS: the layers as GeoTIFFs on the
+        analysis grid, the vectors in WGS84, and a README naming every file and
+        the landform codes.</p>
+        <label class="inline" style="margin-bottom:6px">
+          <input type="checkbox" id="terrain-export-geotiff" checked>
+          <span>Layers as GeoTIFF — elevation, slope, aspect, wetness, hillshade,
+            landform, ponding depth</span></label>
+        <label class="inline" style="margin-bottom:6px">
+          <input type="checkbox" id="terrain-export-contours" checked>
+          <span>Contour lines</span></label>
+        <label class="inline" style="margin-bottom:6px">
+          <input type="checkbox" id="terrain-export-features" checked>
+          <span>Hills, low ground and depressions</span></label>
+        <label class="inline" style="margin-bottom:6px">
+          <input type="checkbox" id="terrain-export-drainage" checked>
+          <span>Drainage lines</span></label>
+        ${this.field("Vector format", this.selectInput("terrain-export-format", [
+          ["shapefile", "Shapefile (.shp)"],
+          ["geojson", "GeoJSON"],
+        ], this.state.terrainExportFormat || "shapefile"))}
+        <button class="primary wide" id="btn-terrain-export">Generate the files</button>
+        <div id="terrain-export-report">${
+          analysis?.exported ? this.terrainExportReport(analysis.exported) : ""}</div>
+      </div>`;
+  },
+
+  terrainExportReport(result) {
+    return `
+      <div style="margin-top:10px">
+        <a class="btn primary wide" style="display:block;text-decoration:none"
+           href="${result.download_url}" download>
+          Download ${this.escape(result.filename)}</a>
+        <p class="hint tight">Written to:<br>
+          <code style="font-size:11px">${this.escape(result.path)}</code></p>
+        <div class="scroll-x"><table class="data">
+          <tr><th>File</th></tr>
+          ${result.files.map((name) =>
+            `<tr><td style="font-family:var(--mono);font-size:11px">${
+              this.escape(name)}</td></tr>`).join("")}
+        </table></div>
+        ${(result.notes || []).map((note) =>
+          `<div class="note" style="margin-top:8px">${this.escape(note)}</div>`).join("")}
+      </div>`;
+  },
+
+  async runTerrainExport(button) {
+    const analysis = this.terrainAnalysis();
+    if (!analysis) {
+      this.toast("Nothing to export",
+        "Run the analysis above; the export is written from its layers.", "warn");
+      return;
+    }
+    const include = [
+      ["geotiff", this.checked("terrain-export-geotiff")],
+      ["contours", this.checked("terrain-export-contours")],
+      ["features", this.checked("terrain-export-features")],
+      ["drainage", this.checked("terrain-export-drainage")],
+    ].filter(([, on]) => on).map(([part]) => part);
+    if (!include.length) {
+      this.toast("Nothing chosen", "Tick at least one of the four.", "warn");
+      return;
+    }
+    this.state.terrainExportFormat = this.value("terrain-export-format");
+    const result = await this.busy(button, () =>
+      this.api(`/api/terrain/${analysis.id}/export`, {
+        method: "POST",
+        body: { include, vector_format: this.state.terrainExportFormat },
+      }));
+    if (!result) return;
+
+    analysis.exported = result;
+    const box = document.getElementById("terrain-export-report");
+    if (box) box.innerHTML = this.terrainExportReport(result);
+    this.toast("Terrain export written",
+      `${result.filename}: ${result.files.length} file(s).\nSaved at ${result.path}`);
+  },
+
+});
+
+/* ======================================================================
+ * Cleaning
  * ==================================================================== */
 
 Object.assign(App, {
@@ -2598,6 +3965,17 @@ Object.assign(App, {
       });
     }
 
+    // The relief demo is a field, not an operation: it comes from the
+    // terrain routes, which also carry the truth about what was put in it.
+    document.getElementById("btn-demo-terrain").addEventListener("click", async () => {
+      const result = await this.busy(document.querySelector("aside.left"), () =>
+        this.api("/api/terrain/demo", { method: "POST" }));
+      if (!result) return;
+      await this.refreshDatasets();
+      await this.selectDataset(result.id);
+      this.goToTab("terrain");
+    });
+
     /* Drag and drop anywhere on the window: files, a shapefile's parts, or a
      * whole folder.
      *
@@ -3071,7 +4449,7 @@ Object.assign(App, {
     const tab = {
       load: "dados", review: "dados", units: "dados", columns: "dados",
       clean: "limpeza", design: "ensaio", analyse: "difm", augmenta: "dados",
-      export: "exportar",
+      terrain: "terrain", export: "exportar",
     }[step] || "dados";
     this.goToTab(tab);
   },
@@ -3987,6 +5365,9 @@ Object.assign(App, {
     this.state.drawing = null;
     this.state.selectedId = null;
     this.state.selected = null;
+    this.leaveTerrainMap();
+    this.state.terrain = null;
+    this.state.terrainRefusal = {};
     MapView.clearPoints();
     MapView.clearOverlays();
     this.clearRemovedOverlay();
@@ -4131,7 +5512,8 @@ Object.assign(App, {
 
     // The stored report keys are the wire names; these are what they are
     // called on screen and on the page.
-    const names = { preflight: "first look", clean: "cleaning", difm: "economic report" };
+    const names = { preflight: "first look", clean: "cleaning", difm: "economic report",
+                    terrain: "relief" };
     const printed = result.sections.map((s) => names[s]).filter(Boolean).join(", ");
     this.toast("Report written",
       `${result.filename}: ${printed || "header only"}, ` +

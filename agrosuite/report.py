@@ -63,8 +63,9 @@ from .core.dataset import OPERATION_LABELS
 #: Section keys, in the order they appear on the page. 'difm' is the key the
 #: economic report is stored under — the wire name kept so that a project file
 #: or a stored report written before the rename still opens; the heading on
-#: the page reads "Economic report".
-SECTIONS = ("header", "preflight", "clean", "difm", "caveat")
+#: the page reads "Economic report". 'terrain' sits where its tab does, next
+#: to the first look: it describes the ground the other sections happened on.
+SECTIONS = ("header", "preflight", "terrain", "clean", "difm", "caveat")
 
 #: Origins the cleaning gives its two products, as the server registers them.
 CLEANING_ORIGINS = ("clean", "clean_removed")
@@ -190,6 +191,20 @@ class _Units:
     def speed(self, v):
         return None if v is None else _f(v) / self._factor("speed", "speed_unit")
 
+    def volume(self, v):
+        """Cubic metres in the chosen length unit cubed.
+
+        There is no volume group in the unit catalogue, because nothing else
+        in the app measures one, so the length factor is cubed here: a cubic
+        foot is 0.3048³ of a cubic metre. The unit is printed beside every
+        number, since a pond's volume is the one figure nobody can check by
+        eye.
+        """
+        if v is None:
+            return None
+        factor = self._factor("length", "length_unit")
+        return _f(v) / (factor ** 3)
+
     def per_area(self, v):
         """Money per hectare (internal) to money per chosen area unit.
 
@@ -227,6 +242,10 @@ class _Units:
     @property
     def area_unit(self) -> str:
         return self.prefs["area_unit"]
+
+    @property
+    def volume_unit(self) -> str:
+        return f"{self.prefs['length_unit']}³"
 
     @property
     def length_unit(self) -> str:
@@ -597,6 +616,131 @@ def _preflight_section(report: dict, st: dict, width: float, next_step: bool = T
     return flow
 
 
+def _terrain_section(summary: dict, units: _Units, st: dict, width: float) -> list:
+    """The relief: what kind of field it is, which way it falls, what stands
+    out of it, and the sentences the analyser wrote about it.
+
+    Compact by intention. The screen has room for twelve map layers, a
+    histogram and a rose; the page has the four things that are acted on —
+    the character, the fall, the features that hold water or stop machinery,
+    and the share of the field in each slope class — plus the findings, which
+    are what the reader takes to the kitchen table.
+
+    The findings are printed as they came. Their numbers are metric because
+    they are written into the sentence, and rewriting a sentence to change
+    its unit is re-deciding what it says; the tables around them are in the
+    unit set the report was asked for, and a line says so when the two
+    differ.
+    """
+    elevation = summary.get("elevation") or {}
+    trend = summary.get("trend") or {}
+    slope = summary.get("slope") or {}
+    wetness = summary.get("wetness") or {}
+    features = summary.get("features") or {}
+    character = summary.get("character") or {}
+
+    flow = _heading("Relief", st)
+    # A field with no fall worth the name is not given a direction: the
+    # analyser reports a bearing for any residue of a plane fit, and "falls
+    # to the north at 0.00 %" reads as information where there is none.
+    gradient = _f(trend.get("gradient_pct")) or 0.0
+    has_fall = gradient >= 0.05
+    fall = str(trend.get("direction_label") or "—") if has_fall else "nowhere"
+    fall_detail = (
+        f"{_pct(gradient, 2)} · {_num(units.length(trend.get('drop_m')), 1)} "
+        f"{units.length_unit} across" if has_fall else "no consistent fall"
+    )
+    flow.append(_stats([
+        ("The field is", str(character.get("label") or "—").capitalize(), ""),
+        ("Relief", _num(units.length(elevation.get("relief_m")), 1),
+         f"{units.length_unit} · highest to lowest"),
+        ("Mean slope", _pct(slope.get("mean_pct")),
+         f"95% under {_pct(slope.get('p95_pct'))}"),
+        ("Falls to the", fall, fall_detail),
+        ("Likely wet", _num(units.area(wetness.get("wet_area_ha"))),
+         f"{units.area_unit} · {_pct(wetness.get('wet_pct'))}"),
+    ], st, width))
+
+    # Hills, low ground and depressions in one table: the reader is looking
+    # for what holds water and what stops the machine, not for three lists.
+    rows = []
+    for hill in features.get("hills") or []:
+        rows.append([
+            hill.get("label", ""), hill.get("position", ""),
+            _num(units.area(hill.get("area_ha"))),
+            f"+{_num(units.length(hill.get('height_m')), 1)}",
+            f"top at {_num(units.length(hill.get('summit_m')), 1)} {units.length_unit}, "
+            f"{_pct(hill.get('mean_slope_pct'))} slope",
+        ])
+    for low in features.get("lows") or []:
+        rows.append([
+            low.get("label", ""), low.get("position", ""),
+            _num(units.area(low.get("area_ha"))),
+            f"-{_num(units.length(low.get('depth_m')), 1)}",
+            "part of it is closed: water ponds there" if low.get("closed")
+            else "open: the water runs out",
+        ])
+    for hollow in features.get("depressions") or []:
+        rows.append([
+            hollow.get("label", ""), hollow.get("position", ""),
+            _num(units.area(hollow.get("area_ha"))),
+            f"-{_num(units.length(hollow.get('max_depth_m')), 2)}",
+            f"holds {_num(units.volume(hollow.get('volume_m3')), 0)} {units.volume_unit} "
+            f"to its spill at {_num(units.length(hollow.get('spill_m')), 1)} {units.length_unit}",
+        ])
+
+    left_width = width * 0.62
+    right_width = width - left_width - 12
+    if rows:
+        left = [_table(
+            ["Feature", "Where", f"Area ({units.area_unit})", f"Stands ({units.length_unit})",
+             "And"], rows, st,
+            [left_width * f for f in (0.16, 0.18, 0.13, 0.13, 0.4)], text_columns=2,
+        )]
+    else:
+        left = [Paragraph(
+            "No hill, hollow or closed depression stands out of the general fall of "
+            "this field.", st["muted"])]
+    unlisted = int(features.get("depressions_unlisted") or 0)
+    if unlisted:
+        left += [Spacer(1, 2), Paragraph(
+            f"{unlisted} shallower hollow(s) were left out: they are under the "
+            f"{_num(units.length(features.get('depression_floor_m')), 2)} "
+            f"{units.length_unit} a feature has to stand out by, which is twice the "
+            "noise in these readings.", st["muted"])]
+
+    class_rows = [
+        [cls.get("label", ""), _num(units.area(cls.get("area_ha"))), _pct(cls.get("pct"))]
+        for cls in slope.get("classes") or []
+    ]
+    right = [_table(
+        ["Slope class", f"Area ({units.area_unit})", "Share"],
+        class_rows or [["—", "", ""]], st,
+        [right_width * f for f in (0.45, 0.27, 0.23)],
+    )]
+
+    flow.append(Spacer(1, 4))
+    flow.append(_columns(left, right, (left_width + 6, right_width + 6)))
+
+    findings = summary.get("findings") or []
+    warnings = [f for f in findings if f.get("level") == "warning"]
+    rest = [f for f in findings if f.get("level") != "warning"]
+    for finding in warnings:
+        flow.append(Spacer(1, 3))
+        flow.append(_note(_t(finding.get("text", "")), "warning", st, width))
+    if rest:
+        flow.append(Spacer(1, 3))
+        flow.append(Paragraph(
+            "\u2022 " + "<br/>\u2022 ".join(_t(f.get("text", "")) for f in rest), st["note"]))
+    if units.length_unit != "m" or units.area_unit != "ha":
+        flow.append(Spacer(1, 2))
+        flow.append(Paragraph(
+            "The sentences above are the analyser's own and carry metric numbers; "
+            f"the tables are in {_t(units.length_unit)} and {_t(units.area_unit)}.",
+            st["muted"]))
+    return flow
+
+
 def _clean_section(report: dict, operation: str | None, units: _Units, st: dict,
                    width: float) -> list:
     totals = report.get("totals") or {}
@@ -929,8 +1073,8 @@ def build_pdf(
     ----------
     entry:
         A session entry: ``dataset``, ``label`` and ``reports`` are read. Only
-        the reports present (``preflight``, ``clean``, ``difm`` — the economic
-        report's stored key) get a section.
+        the reports present (``preflight``, ``terrain``, ``clean``, ``difm`` —
+        the economic report's stored key) get a section.
     units:
         The unit set chosen on screen — ``yield_unit``, ``input_rate_unit``,
         ``area_unit``, ``length_unit``, ``speed_unit``, ``currency``, ``crop``.
@@ -978,6 +1122,11 @@ def build_pdf(
         )))
         sections.append("preflight")
 
+    if reports.get("terrain"):
+        story.append(Spacer(1, 5))
+        story += _terrain_section(reports["terrain"], resolved, st, width)
+        sections.append("terrain")
+
     if reports.get("clean"):
         story.append(Spacer(1, 5))
         story += _clean_section(reports["clean"], entry.dataset.meta.operation, resolved, st, width)
@@ -991,8 +1140,9 @@ def build_pdf(
     if len(sections) == 1:
         story.append(Spacer(1, 6))
         story.append(_note(
-            "No analysis has been run on this dataset yet. Clean it, or run the "
-            "economic analysis, and the report will carry the results.", "", st, width,
+            "No analysis has been run on this dataset yet. Read its relief, clean it, "
+            "or run the economic analysis, and the report will carry the results.",
+            "", st, width,
         ))
 
     story.append(Spacer(1, 8))

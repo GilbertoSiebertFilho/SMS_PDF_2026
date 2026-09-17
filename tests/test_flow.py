@@ -416,9 +416,10 @@ def test_nothing_the_user_reads_says_difm():
 def test_every_tab_says_what_it_needs_and_what_it_gives():
     """A tab that cannot work yet names the missing piece and carries the one
     button that fixes it; a tab that can ends with what it produces alone."""
-    for name in ("tabDados", "tabLimpeza", "tabDifm", "tabEnsaio", "tabExportar"):
+    for name in ("tabDados", "tabTerrain", "tabLimpeza", "tabDifm", "tabEnsaio",
+                 "tabExportar"):
         assert "this.missingPanel(" in _block(name), name
-    for name in ("tabDados", "tabLimpeza", "tabDifm", "tabEnsaio"):
+    for name in ("tabDados", "tabTerrain", "tabLimpeza", "tabDifm", "tabEnsaio"):
         assert "this.producesPanel(" in _block(name), name
     # And none of them is closed off: no tab button is ever disabled.
     nav = re.search(r'<nav class="steps".*?</nav>', INDEX_HTML, re.S)

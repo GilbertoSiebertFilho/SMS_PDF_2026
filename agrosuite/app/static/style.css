@@ -222,6 +222,19 @@ main.center { position: relative; min-width: 0; display: flex; flex-direction: c
 .map-tooltip .u { color: var(--text-muted); }
 
 /* "Before" / "After" over the compared panes, clear of the zoom control. */
+/* Contour labels: every fifth line carries its height on the map itself, and
+   Leaflet's tooltip box is built for a sentence. A height is two words, and a
+   light chip says it without hiding the ground it is drawn over. */
+.leaflet-tooltip.contour-label {
+  background: rgba(255, 255, 255, .78);
+  color: #23281f;
+  border: none;
+  box-shadow: none;
+  padding: 0 4px;
+  font: 600 10px var(--mono);
+}
+.leaflet-tooltip.contour-label::before { display: none; }
+
 .map-caption {
   position: absolute; z-index: 500; top: 12px; left: 52px;
   background: var(--surface); color: var(--text-muted);

@@ -21,6 +21,14 @@ function createMapView(defaultMapId, defaultCanvasId) {
   let colorScale = null;
   let unitLabel = "";   // what the tooltip writes after the number
   let pointSize = 3;
+  let imageLayer = null;        // one raster overlay at a time (the relief)
+  let imageUrl = "";            // what it is showing, so a redraw is not a refetch
+  let imageFailed = null;       // what to call when the server will not serve it
+  const named = new Map();      // vector layers that toggle independently
+  let clickThrough = false;     // a tool is drawing: the layers must not eat the clicks
+
+  /* Its own pane, between the imagery and the vectors: see setImage. */
+  const IMAGE_PANE = "rasterOverlay";
 
   /* Hover: the tooltip finds the point under the cursor through a grid of
    * screen-pixel cells rather than a scan of every point — at 60,000 points a
@@ -114,6 +122,8 @@ function createMapView(defaultMapId, defaultCanvasId) {
     resizeObserver = null;
     if (hoverFrame) cancelAnimationFrame(hoverFrame);
     hoverFrame = 0;
+    clearNamed();
+    clearImage();
     map.remove();
     map = null; canvas = null; ctx = null; basemap = null; overlayGroup = null;
     data = null; overlay = null; colorScale = null; index = null; tooltip = null;
@@ -458,6 +468,118 @@ function createMapView(defaultMapId, defaultCanvasId) {
 
   function clearOverlays() { overlayGroup?.clearLayers(); }
 
+  /* ------------------------------------------- raster and named layers --- */
+
+  /* An image the app itself serves — the terrain analyser draws each of its
+   * layers as a web-mercator PNG — placed by the corners the API gives.
+   *
+   * It goes in a pane of its own, below the one Leaflet draws vectors in,
+   * because panes stack as wholes: in the shared overlay pane the image
+   * would cover the contour lines and the feature outlines that are there
+   * to be read against it. The same overlay is re-pointed rather than
+   * replaced, so switching from slope to wetness does not flash the
+   * imagery through between two layers of one analysis — the box is the
+   * same for all of them. */
+  function setImage(url, bounds, options = {}) {
+    if (!map || !url || !bounds) return null;
+    if (!map.getPane(IMAGE_PANE)) map.createPane(IMAGE_PANE).style.zIndex = 350;
+    const opacity = options.opacity ?? 0.75;
+    // An image the server refuses is a blank map and no other sign, so the
+    // caller is told rather than left to wonder why the field went away.
+    imageFailed = options.onError || null;
+    if (imageLayer) {
+      imageLayer.setBounds(L.latLngBounds(bounds));
+      imageLayer.setOpacity(opacity);
+      // Leaflet re-requests on every setUrl and these images are served
+      // no-store, so pointing at the same URL again — which every redraw of
+      // the panel beside the map does — would fetch the same PNG each time.
+      if (url !== imageUrl) imageLayer.setUrl(url);
+    } else {
+      imageLayer = L.imageOverlay(url, bounds, {
+        opacity, pane: IMAGE_PANE, interactive: false,
+      }).addTo(map);
+      imageLayer.on("error", () => imageFailed?.());
+    }
+    imageUrl = url;
+    return imageLayer;
+  }
+
+  function setImageOpacity(opacity) { imageLayer?.setOpacity(opacity); }
+
+  function clearImage() {
+    imageFailed = null;
+    imageUrl = "";
+    if (!imageLayer) return;
+    map?.removeLayer(imageLayer);
+    imageLayer = null;
+  }
+
+  /* Vector layers that come and go one at a time, each under its own name:
+   * the contours, the hills and hollows, the drainage, the profile line.
+   * `setPolygons` and `setFeatures` share a single group that is cleared as
+   * a whole, which is right for one drawing and wrong here — turning the
+   * contours off would take the hills away with them.
+   *
+   * The options are plain data so that the caller never touches Leaflet:
+   * `style(properties)` returns the stroke and fill, `popup(properties)` the
+   * HTML of the popup, and `tooltip(properties)` either a string or
+   * `{ text, permanent }` — permanent is how a contour labels itself. */
+  function setGeoJson(name, collection, options = {}) {
+    if (!map) return null;
+    clearGeoJson(name);
+    if (!collection?.features?.length) return null;
+    const styleFor = (feature) => options.style?.(feature?.properties || {}) || {};
+    const layer = L.geoJSON(collection, {
+      interactive: !clickThrough,
+      style: styleFor,
+      pointToLayer: (feature, latlng) => L.circleMarker(latlng, styleFor(feature)),
+      onEachFeature: (feature, target) => {
+        const properties = feature.properties || {};
+        const popup = options.popup?.(properties);
+        if (popup) target.bindPopup(popup, { className: "strip-popup" });
+        const tip = options.tooltip?.(properties);
+        const { text, ...rest } = typeof tip === "string" ? { text: tip } : (tip || {});
+        if (text) target.bindTooltip(String(text), { direction: "center", ...rest });
+      },
+    }).addTo(map);
+    named.set(name, layer);
+    return layer;
+  }
+
+  function clearGeoJson(name) {
+    const layer = named.get(name);
+    if (!layer) return;
+    map?.removeLayer(layer);
+    named.delete(name);
+  }
+
+  function clearNamed() {
+    for (const name of [...named.keys()]) clearGeoJson(name);
+  }
+
+  /* A tool that collects points from the map — the elevation profile — needs
+   * every click, and a click inside a hill's outline is taken by the hill:
+   * Leaflet answers it with the popup and the map never hears it. Turning
+   * the layers non-interactive for the length of the tool keeps them visible
+   * and out of the way, which is better than hiding what the line is being
+   * drawn across. */
+  function setClickThrough(on) {
+    clickThrough = !!on;
+    if (clickThrough) map?.closePopup();
+    for (const layer of named.values()) {
+      layer.eachLayer((child) => { child.options.interactive = !clickThrough; });
+    }
+  }
+
+  /* Centre on a feature the user picked from a table. The zoom only comes in
+   * when the view is further out than the one asked for: a feature is read
+   * against the ground around it, and a hill zoomed to fill the screen has
+   * lost the field it stands above. */
+  function panTo(lon, lat, zoom) {
+    if (!map || !Number.isFinite(lon) || !Number.isFinite(lat)) return;
+    map.setView([lat, lon], Math.max(map.getZoom(), zoom ?? 0), { animate: true });
+  }
+
   function fit(bounds) {
     if (!map || !bounds || bounds.length !== 4) return;
     const [west, south, east, north] = bounds;
@@ -480,6 +602,8 @@ function createMapView(defaultMapId, defaultCanvasId) {
   return {
     init, destroy, invalidateSize, setPoints, clearPoints, setOverlay, clearOverlay,
     setPolygons, setFeatures, addLine, clearOverlays,
+    setImage, setImageOpacity, clearImage, setGeoJson, clearGeoJson, clearNamed,
+    setClickThrough, panTo,
     fit, fitOverlays, setBasemap, rampCss, rampColor, draw, onClick, offClick, instance,
   };
 }

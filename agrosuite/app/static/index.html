@@ -18,13 +18,17 @@
       <span class="sub">monitor data · cleaning · economics</span>
     </div>
 
-    <!-- Two tracks share these tabs: plan a trial (Data, Trial design,
-         Export) and evaluate one (Data, Cleaning, Economics, Export). They
-         carry no numbers, because no order is required: every tab is
-         clickable at any time and says in its own panel what it still needs.
-         A Terrain tab belongs between Data and Trial design. -->
+    <!-- Two tracks share these tabs: plan a trial (Data, Terrain, Trial
+         design, Export) and evaluate one (Data, Terrain, Cleaning,
+         Economics, Export). They carry no numbers, because no order is
+         required: every tab is clickable at any time and says in its own
+         panel what it still needs. Terrain sits next to Data because it
+         reads the altitude the file already carries, and both tracks use
+         what it finds — the relief decides where the strips go as much as
+         it explains a yield map. -->
     <nav class="steps" id="steps" role="tablist">
       <button data-tab="dados"    role="tab" aria-selected="true">Data</button>
+      <button data-tab="terrain"  role="tab" aria-selected="false">Terrain</button>
       <button data-tab="ensaio"   role="tab" aria-selected="false">Trial design</button>
       <button data-tab="limpeza"  role="tab" aria-selected="false">Cleaning</button>
       <button data-tab="difm"     role="tab" aria-selected="false">Economics</button>
@@ -64,6 +68,9 @@
         <div class="row tight">
           <button class="small" id="btn-demo-harvest">Harvest demo</button>
           <button class="small" id="btn-demo-trial">Trial demo</button>
+          <button class="small" id="btn-demo-terrain"
+                  title="A synthetic field of known relief: two hills, a valley and a closed hollow">
+            Terrain demo</button>
         </div>
         <p class="hint tight">
           A shapefile or an ISOXML folder needs all of its files together: drop

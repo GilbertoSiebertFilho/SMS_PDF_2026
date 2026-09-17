@@ -56,6 +56,11 @@ needs a yield map, prices or cleaning.
 and the plan, if there is one — review the units and the roles, clean, work out
 the economics, export.
 
+The **relief** of the field serves both, from the altitude the files already
+carry: before the season it says which way the ground falls and where the
+water sits, which is half of where the strips should run; after it, it
+explains the low corner of the yield map.
+
 Neither track is a gate. Every tab is clickable at any time; a tab that cannot
 do its work yet says in its own panel what is missing and offers the one button
 that fixes it. **Each step can be the last one**: looking at the data and
@@ -96,8 +101,8 @@ would otherwise come out at 90, a treatment nobody applied.
 
 ## The tabs
 
-**Data · Trial design · Cleaning · Economics · Export.** They carry no numbers,
-because no order is required.
+**Data · Terrain · Trial design · Cleaning · Economics · Export.** They carry
+no numbers, because no order is required.
 
 ### Data
 
@@ -121,6 +126,53 @@ carry them.
 
 A shapefile or an ISOXML folder needs all of its files together: use **Open
 by path / folder**, or upload a `.zip`.
+
+### Terrain
+
+Every yield and as-applied file carries a GPS height on every point, and
+nobody looks at it, because scattered heights along a track say nothing on
+their own. Put them on a grid and they answer the questions that get asked
+out loud: where does the water sit, which way does the field fall, which end
+washes, where is the ground too steep to work across. No survey, no drone,
+no LiDAR tile — the file you already have.
+
+**Analyse the relief** answers in sentences first: what kind of field it is,
+which way and how far it falls, each hill and each low with its size and
+height, each closed depression with the volume it holds before it spills,
+how much ground is likely wet. Then it draws them — twelve map layers
+(elevation, slope, aspect, hillshade, two scales of topographic position,
+wetness, landform, two curvatures, ponding depth and flow accumulation),
+contour lines labelled in your own units, the outlines of the features with
+their numbers in a popup, a slope histogram against the agronomic classes,
+an aspect rose, and the profile of the ground along any line you click
+across the field.
+
+**Make zones from this** turns the relief into an ordinary dataset — by
+landform, slope class, elevation band or wetness, as points or polygons —
+which exports to the monitor like any other map; give it a rate per zone
+first, because a file whose rate column holds 1, 2 and 3 is a map of class
+codes and the terminal will apply it as written. The whole analysis also
+leaves as one zip for QGIS: a GeoTIFF per layer, the contours, the features
+and the drainage lines, with a README naming each file.
+
+A DEM GeoTIFF is the better source when there is one, and it goes through
+the same chain — opened like any other file and read at the raster's own
+resolution.
+
+GPS altitude is the least reliable number in a monitor file: a consumer
+receiver reporting height above an ellipsoid while the machine bounces
+through the field. The analyser drops the readings that are not heights,
+discards a pass sitting away from the rest, solves and removes the offset
+every headland turn leaves behind, and then measures the noise that is left
+— and ties every threshold it uses to that number, so a bump smaller than
+the noise is not reported and a field with no relief is reported as level
+rather than contoured into nonsense. The shape of the relief is sound; the
+absolute heights are only as good as the receiver, which without an RTK
+correction means a few tens of centimetres.
+
+The reference for the whole feature — the endpoints, the layers with their
+units and palettes, the landform codes and the zone datasets — is in
+[docs/terrain.md](docs/terrain.md).
 
 ### Trial design
 
@@ -264,9 +316,10 @@ convenience — the round trip above needs no plugin at all.
 ## Asking Claude to do it
 
 AgroSuite ships an MCP server, so Claude can drive it: load the files, clean,
-join, analyse, and report the optimum, from one sentence. See
+join, read the relief, analyse, and report the optimum, from one sentence. See
 [docs/claude-integration.md](docs/claude-integration.md) for the setup and
-what it will and will not do.
+what it will and will not do, and [docs/terrain.md](docs/terrain.md) for the
+relief analyser, its API and the two terrain tools.
 
 ## What is proprietary and what is not
 
@@ -287,7 +340,7 @@ any other monitor without redrawing anything.
 ## Development
 
 ```
-python -m pytest tests/ -q          # the whole suite, about four minutes
+python -m pytest tests/ -q          # 800 tests, about five minutes
 python tests/fixtures.py samples    # sample files for every monitor
 python -m agrosuite --reload        # server with auto-reload
 ```
@@ -305,6 +358,8 @@ agrosuite/
   formats/    per-format reading and writing, monitor identification,
               per-platform packages, verification, USB, QGIS
   clean/      cleaning filters and report
+  terrain/    elevation grid, derivatives, landforms, hydrology,
+              contours, layer rendering
   difm/       response models, economics, trial layout, layer joining
               (an internal folder name; on screen the tab is Economics)
   app/        local server and interface

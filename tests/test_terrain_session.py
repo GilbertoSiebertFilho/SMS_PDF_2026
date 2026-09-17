@@ -1,7 +1,7 @@
 """The terrain feature inside the rest of the session.
 
 An elevation layer is a new kind of dataset, and the steps built for machine
-tracks — cleaning, the DIFM fit — must refuse it in a sentence rather than
+tracks — cleaning, the economic fit — must refuse it in a sentence rather than
 run over a raster's scan order. The QGIS export and the monitor package
 also come up on the way from a relief to the cab, and both had an older
 habit that the terrain round trip exposed.

@@ -1,9 +1,9 @@
 /* Inline SVG charts.
  *
- * There are only a few, and they are specific — a comparative histogram and a
- * response curve — so drawing the SVG by hand comes out smaller and more
- * controllable than loading a whole charting library into an app that has to
- * open offline. */
+ * There are only a few, and they are specific — a comparative histogram, a
+ * response curve, an elevation profile and an aspect rose — so drawing the
+ * SVG by hand comes out smaller and more controllable than loading a whole
+ * charting library into an app that has to open offline. */
 
 const Charts = (() => {
   const NS = "http://www.w3.org/2000/svg";
@@ -65,6 +65,23 @@ const Charts = (() => {
       x1: pad.l, y1: height - pad.b, x2: width - pad.r, y2: height - pad.b,
       stroke: css("--border-strong"), "stroke-width": 1,
     }, svg);
+
+    /* Breaks that mean something outside the data — the agronomic slope
+     * classes — drawn where they fall, so the bars are read against them
+     * rather than against the distribution's own shape. */
+    for (const mark of options.marks || []) {
+      if (!(mark.value > xMin && mark.value < xMax)) continue;
+      const x = sx(mark.value);
+      el("line", {
+        x1: x, y1: pad.t, x2: x, y2: height - pad.b,
+        stroke: css("--text-faint"), "stroke-width": 1, "stroke-dasharray": "2 3",
+      }, svg);
+      if (!mark.label) continue;
+      const label = el("text", {
+        x: x + 2, y: pad.t + 8, "font-size": 9, fill: css("--text-faint"),
+      }, svg);
+      label.textContent = mark.label;
+    }
 
     const fmt = options.format || ((v) => Units.num(v, 0));
     for (const [value, anchor] of [[xMin, "start"], [xMax, "end"]]) {
@@ -156,6 +173,140 @@ const Charts = (() => {
       `— yield (${options.yieldUnit})   ╌ profit   ·   rate in ${options.rateUnit || ""}`;
   }
 
+  /* Elevation along a line drawn on the map: height against distance, both
+   * in the unit the panel beside it uses.
+   *
+   * Stations that fall outside the field come back null, and the path
+   * breaks there rather than joining across the gap — a straight segment
+   * over ground that was never measured is an invention, and it is exactly
+   * where a line clipping the corner of a field would draw one. */
+  function profile(container, series, options = {}) {
+    container.innerHTML = "";
+    const distance = series?.distance || [];
+    const elevation = series?.elevation || [];
+    const points = distance
+      .map((d, i) => ({ d, z: elevation[i] }))
+      .filter((p) => Number.isFinite(p.d));
+    const measured = points.filter((p) => Number.isFinite(p.z));
+    if (measured.length < 2) {
+      container.innerHTML = '<div class="empty">The line crosses too little of the field to draw.</div>';
+      return;
+    }
+
+    const width = container.clientWidth || 360;
+    const height = options.height || 170;
+    const pad = { t: 14, r: 10, b: 24, l: 44 };
+    const svg = el("svg", { class: "chart", viewBox: `0 0 ${width} ${height}`, height }, container);
+
+    const xMin = 0, xMax = Math.max(...points.map((p) => p.d)) || 1;
+    let zMin = Math.min(...measured.map((p) => p.z));
+    let zMax = Math.max(...measured.map((p) => p.z));
+    // A profile along a contour is flat, not an error: a band around the
+    // height keeps the line in the middle instead of magnifying millimetres.
+    if (zMax - zMin < 1e-6) { zMin -= 0.5; zMax += 0.5; }
+    const span = zMax - zMin;
+    const sx = (v) => pad.l + ((v - xMin) / (xMax - xMin || 1)) * (width - pad.l - pad.r);
+    const sy = (v) => height - pad.b - ((v - zMin) / span) * (height - pad.t - pad.b);
+
+    el("line", {
+      x1: pad.l, y1: height - pad.b, x2: width - pad.r, y2: height - pad.b,
+      stroke: css("--border-strong"), "stroke-width": 1,
+    }, svg);
+
+    // One path per measured run, so a gap stays a gap.
+    let run = [];
+    const flush = () => {
+      if (run.length >= 2) {
+        el("path", {
+          d: run.map((p, i) => `${i ? "L" : "M"}${sx(p.d).toFixed(1)},${sy(p.z).toFixed(1)}`).join(" "),
+          fill: "none", stroke: css("--accent"), "stroke-width": 2,
+          "stroke-linejoin": "round", "stroke-linecap": "round",
+        }, svg);
+      } else if (run.length === 1) {
+        el("circle", { cx: sx(run[0].d), cy: sy(run[0].z), r: 2, fill: css("--accent") }, svg);
+      }
+      run = [];
+    };
+    for (const point of points) {
+      if (Number.isFinite(point.z)) run.push(point);
+      else flush();
+    }
+    flush();
+
+    const tick = (x, y, text, anchor, color) => {
+      const node = el("text", { x, y, "text-anchor": anchor, "font-size": 10, fill: color }, svg);
+      node.textContent = text;
+    };
+    // The unit rides on the top tick of each axis rather than on a floating
+    // label, which on a line that ends high would sit over the ground it
+    // describes.
+    const distanceUnit = options.distanceUnit ? ` ${options.distanceUnit}` : "";
+    const heightUnit = options.elevationUnit ? ` ${options.elevationUnit}` : "";
+    tick(pad.l, height - 7, "0", "start", css("--text-faint"));
+    tick(width - pad.r, height - 7, `${Units.num(xMax, 0)}${distanceUnit}`, "end", css("--text-faint"));
+    tick(4, pad.t + 4, `${Units.num(zMax, 1)}${heightUnit}`, "start", css("--accent"));
+    tick(4, height - pad.b, Units.num(zMin, 1), "start", css("--accent"));
+  }
+
+  /* The aspect rose: which way the field faces, as eight petals whose
+   * length is the share of the field facing that way. Ground too flat to
+   * have an aspect is named under the rose rather than drawn as a ninth
+   * petal — it points nowhere, and a petal would give it a direction. */
+  function rose(container, sectors, options = {}) {
+    container.innerHTML = "";
+    const bearings = {
+      N: 0, NE: 45, E: 90, SE: 135, S: 180, SW: 225, W: 270, NW: 315,
+    };
+    const petals = (sectors || []).filter((s) => s.key in bearings);
+    if (!petals.length) {
+      container.innerHTML = '<div class="empty">No aspect to show.</div>';
+      return;
+    }
+    const size = options.size || Math.min(container.clientWidth || 220, 240);
+    const svg = el("svg", { class: "chart", viewBox: `0 0 ${size} ${size}`, height: size }, container);
+    const cx = size / 2, cy = size / 2;
+    const radius = size / 2 - 16;
+    const max = Math.max(...petals.map((p) => p.pct || 0)) || 1;
+
+    for (const fraction of [0.5, 1]) {
+      el("circle", {
+        cx, cy, r: radius * fraction, fill: "none",
+        stroke: css("--border"), "stroke-width": 1, "stroke-dasharray": "2 3",
+      }, svg);
+    }
+
+    const point = (bearing, r) => [
+      cx + r * Math.sin((bearing * Math.PI) / 180),
+      cy - r * Math.cos((bearing * Math.PI) / 180),
+    ];
+    for (const petal of petals) {
+      const r = radius * ((petal.pct || 0) / max);
+      if (r <= 0.5) continue;
+      const centre = bearings[petal.key];
+      const [x1, y1] = point(centre - 22.5, r);
+      const [x2, y2] = point(centre + 22.5, r);
+      const wedge = el("path", {
+        d: `M${cx},${cy} L${x1.toFixed(1)},${y1.toFixed(1)} A${r.toFixed(1)},${r.toFixed(1)} 0 0 1 ` +
+           `${x2.toFixed(1)},${y2.toFixed(1)} Z`,
+        fill: css("--accent"), opacity: 0.75, stroke: css("--surface"), "stroke-width": 1,
+      }, svg);
+      el("title", {}, wedge).textContent = `${petal.label}: ${Units.num(petal.pct, 1)}%`;
+    }
+
+    for (const [key, bearing] of Object.entries(bearings)) {
+      const [x, y] = point(bearing, radius + 9);
+      const label = el("text", {
+        x, y: y + 3, "text-anchor": "middle", "font-size": 9,
+        fill: key === "N" ? css("--text") : css("--text-faint"),
+      }, svg);
+      label.textContent = key;
+    }
+    const scale = el("text", {
+      x: cx + 3, y: cy - radius * 0.5 - 2, "font-size": 9, fill: css("--text-faint"),
+    }, svg);
+    scale.textContent = `${Units.num(max / 2, 0)}%`;
+  }
+
   /* Horizontal bars for the removal counts by reason. */
   function bars(container, rows, options = {}) {
     container.innerHTML = "";
@@ -187,5 +338,5 @@ const Charts = (() => {
     container.appendChild(list);
   }
 
-  return { histogram, responseCurve, bars };
+  return { histogram, responseCurve, profile, rose, bars };
 })();
