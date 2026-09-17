@@ -219,6 +219,14 @@ def _build_dataset(
     extra_text: str = "",
 ) -> Dataset:
     """Build the final :class:`Dataset` from an already-read table."""
+    if not len(df):
+        # A header and nothing under it parses fine and would become a dataset
+        # with no records: selectable, saved into the project, useless. A
+        # readme dropped with a field folder is the usual way to get one.
+        raise ValueError(
+            f"'{path.name}' holds no records: a header line at most, and nothing "
+            "under it. It is not a data file, or the export came out empty."
+        )
     original_columns = list(df.columns)
     df, mapping = _normalize_frame(df)
     df = _resolve_coordinates(df, notes)

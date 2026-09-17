@@ -34,8 +34,15 @@ SHAPEFILE_SIDECARS = {".shp", ".shx", ".dbf", ".prj", ".cpg", ".sbn", ".sbx", ".
 #: project names layers, it does not hold them.
 QGIS_EXT = {".qgs", ".qgz"}
 
+#: Saved AgroSuite projects. Listed for the same reason as QGIS projects — the
+#: user should find them in the file browser — but opened by
+#: :mod:`agrosuite.app.persist`, because a project is a whole session, not a
+#: dataset to add to one.
+PROJECT_EXT = {".agrosuite"}
+
 ALL_IMPORT_EXT = (
-    VECTOR_EXT | TABULAR_EXT | EXCEL_EXT | ARCHIVE_EXT | QGIS_EXT | {".xml", ".iso"}
+    VECTOR_EXT | TABULAR_EXT | EXCEL_EXT | ARCHIVE_EXT | QGIS_EXT | PROJECT_EXT
+    | {".xml", ".iso"}
 )
 
 
@@ -106,6 +113,13 @@ def detect(path: str | Path) -> DetectedSource:
         raise ValueError(
             "That is a QGIS project. Use 'Open a QGIS project' on the Export tab, "
             "which lists its layers and lets you pick which ones to bring in."
+        )
+
+    if suffix in PROJECT_EXT:
+        raise ValueError(
+            "That is a saved AgroSuite project. Use 'Open project', which restores "
+            "the whole session — datasets, cleaning results, roles and prices — "
+            "rather than importing it as one more file."
         )
 
     raise ValueError(

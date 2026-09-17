@@ -141,6 +141,10 @@ def synthetic_harvest(
         "truth_kg_ha": df["truth_kg_ha"].to_numpy(),
     }).sort_values("timestamp").reset_index(drop=True)
 
+    # The magnitudes are corn's: ten tonnes a hectare, and the trial built on
+    # top responds to nitrogen up to 240 kg/ha. Declared as canola, the first
+    # look rightly called the demo's units wrong, and the app's own check
+    # contradicting its own sample data was the first thing a new user saw.
     meta = DatasetMeta(
         name="Demo field",
         source_path="<synthetic>",
@@ -148,7 +152,7 @@ def synthetic_harvest(
         brand="generic",
         brand_label="Synthetic data",
         operation="harvest",
-        crop="canola",
+        crop="corn",
         field_name="Demo field",
         value_label="Yield",
         value_unit="kg/ha",

@@ -192,9 +192,14 @@ class Dataset:
         if sch.TIMESTAMP in self.df.columns:
             ts = self.df[sch.TIMESTAMP]
             if pd.api.types.is_datetime64_any_dtype(ts) and ts.notna().any():
-                seconds = ts.astype("int64").to_numpy(dtype="float64") / 1e9
-                seconds[ts.isna().to_numpy()] = np.nan
-                dt = np.diff(seconds, prepend=seconds[0])
+                # The column's resolution depends on where it came from: text
+                # stamps out of a file parse to microseconds under pandas 3,
+                # the demo's arithmetic gives nanoseconds. Differencing the
+                # stamps themselves keeps the seconds honest either way.
+                # Reading the integer ticks as nanoseconds made every real
+                # file's interval a thousand times too short, and a 12 s flow
+                # delay then shifted thousands of records instead of six.
+                dt = ts.diff().dt.total_seconds().to_numpy(dtype="float64", copy=True)
                 if len(dt) > 1:
                     dt[0] = dt[1]
                 # Absurd gaps mean a jump between separate operations.

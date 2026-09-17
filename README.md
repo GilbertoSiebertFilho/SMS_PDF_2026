@@ -115,6 +115,9 @@ ends up several metres out of place.
 Nothing is overwritten. Cleaning produces two new datasets — *clean* and
 *removed*, the latter carrying the reason for each discard — plus a report
 with before and after, an overlaid histogram, and what each filter took out.
+The report can also put the field before and after side by side on the map,
+locked together and on one colour scale; hovering any point, on any map,
+shows its value in the chosen unit, or the reason it was removed.
 
 ### 3 · DIFM analysis
 
@@ -148,6 +151,28 @@ left out and reported — better to know here than in the cab.
 
 **Individual files** generates only what you ask for, with no folder
 structure.
+
+## Machine profiles
+
+A header width, a flow delay and a working speed belong to the machine, not
+to the field, yet the cleaning, the trial layout and the export each ask for
+one of them. Typing "60 ft, 12 s" for the third time this season is how a 6
+sneaks in for a 60. A **machine** is entered once and picked from a small row
+on each of those tabs: choosing it fills the fields that tab needs — flow
+delay and speed range on Cleaning, implement width and passes per strip on
+Trial layout, the target monitor on Export — in whatever units you chose.
+
+**Save as machine…** reads the current settings back into a short form;
+**Suggest from this file** prefills it from the selected dataset (median
+swath, 2nd–98th percentile speed, the monitor that wrote the file). Nothing
+is saved until you press Save, and a profile that cannot work is refused
+with the reasons listed, all at once.
+
+Profiles outlive the session: they live in `~/.agrosuite/profiles.json`
+(set `AGROSUITE_HOME` to keep them elsewhere, e.g. on a shared drive), as
+plain indented JSON in metric units, so the file can be read, edited or
+copied to another computer with a text editor. A file the app cannot read is
+refused, not overwritten.
 
 ## Check before you take it out
 

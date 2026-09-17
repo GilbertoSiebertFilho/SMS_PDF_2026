@@ -165,9 +165,35 @@ main.center { position: relative; min-width: 0; display: flex; flex-direction: c
 
 /* ------------------------------------------------------------------ mapa */
 
-#map { flex: 1; min-height: 0; background: var(--surface-2); }
-#map.leaflet-container { font: inherit; }
-#point-canvas { position: absolute; inset: 0; pointer-events: none; z-index: 400; }
+.map-panes { flex: 1; min-height: 0; display: flex; }
+/* The canvas is positioned against its own pane, not the whole centre column,
+   so it lines up with the map underneath whatever sits above or beside it. */
+.map-pane { position: relative; flex: 1 1 0; min-width: 0; min-height: 0; display: flex; }
+.map-panes.compare .map-pane + .map-pane { border-left: 2px solid var(--surface); }
+.map-pane > .map { flex: 1; min-height: 0; background: var(--surface-2); }
+.map-pane > .map.leaflet-container { font: inherit; }
+.map-pane > .point-canvas { position: absolute; inset: 0; pointer-events: none; z-index: 400; }
+
+/* Value under the cursor. It lives inside the map container, so it is clipped
+   with the map and never spills over the panels. */
+.map-tooltip {
+  position: absolute; z-index: 650; pointer-events: none;
+  background: var(--surface); color: var(--text);
+  border: 1px solid var(--border); border-radius: var(--radius-sm);
+  box-shadow: var(--shadow); padding: 3px 8px;
+  font-size: 12px; line-height: 1.4; white-space: nowrap;
+}
+.map-tooltip .v { font: 600 12px var(--mono); }
+.map-tooltip .u { color: var(--text-muted); }
+
+/* "Before" / "After" over the compared panes, clear of the zoom control. */
+.map-caption {
+  position: absolute; z-index: 500; top: 12px; left: 52px;
+  background: var(--surface); color: var(--text-muted);
+  border: 1px solid var(--border); border-radius: var(--radius-sm);
+  box-shadow: var(--shadow); padding: 3px 9px;
+  font-size: 11px; font-weight: 650; letter-spacing: .08em; text-transform: uppercase;
+}
 
 .map-overlay {
   position: absolute; z-index: 500; background: var(--surface);
@@ -191,10 +217,18 @@ main.center { position: relative; min-width: 0; display: flex; flex-direction: c
 
 .panel { padding: 14px; border-bottom: 1px solid var(--border); }
 .panel:last-child { border-bottom: none; }
-.panel > h3 {
+.panel > h3, .panel > .head > h3 {
   margin: 0 0 10px; font-size: 11px; font-weight: 650;
   letter-spacing: .08em; text-transform: uppercase; color: var(--text-faint);
 }
+/* A heading with its action beside it — "print this" sits on the report it
+ * prints, not at the foot of the tab where it could be read as printing
+ * something else. */
+.panel > .head {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 8px; margin: 0 0 10px;
+}
+.panel > .head > h3 { margin: 0; }
 .panel > h4 { margin: 14px 0 8px; font-size: 13px; font-weight: 600; }
 
 .hint { font-size: 12px; color: var(--text-muted); margin: 6px 0; }
@@ -337,6 +371,16 @@ dialog .foot {
 .file-list .item .icon { width: 16px; text-align: center; color: var(--text-faint); }
 .file-list .item .name { flex: 1; word-break: break-all; }
 .file-list .item .size { font: 11px var(--mono); color: var(--text-faint); }
+/* A recent project whose file is gone — an unplugged USB stick, a temporary
+   folder from an earlier run — stays listed, greyed, so the name says where
+   it was rather than vanishing without a word. */
+.file-list .item.unavailable { opacity: .5; cursor: not-allowed; }
+.file-list .item.current .name { color: var(--accent-strong); font-weight: 600; }
+/* The sidebar is narrow: names wrap on words, and the date sits under the
+   name instead of squeezing it. */
+#recent-projects .item { padding: 5px 6px; align-items: flex-start; }
+#recent-projects .item .name { word-break: normal; overflow-wrap: anywhere; font-size: 12px; }
+#recent-projects .item .when { display: block; font: 11px var(--mono); color: var(--text-faint); }
 
 /* ------------------------------------------------------------------ toast */
 
@@ -355,6 +399,9 @@ dialog .foot {
 .toast .m { color: var(--text-muted); font-size: 12px; white-space: pre-wrap; }
 
 .busy { pointer-events: none; opacity: .55; }
+/* Files or a folder held over the window: the whole app is the target, and
+   the dashed edge says so before the person lets go. */
+#app.dropping { outline: 3px dashed var(--accent); outline-offset: -6px; }
 
 details.fold { border: 1px solid var(--border); border-radius: var(--radius-sm); margin-bottom: 8px; }
 details.fold > summary {
@@ -365,6 +412,12 @@ details.fold > summary::-webkit-details-marker { display: none; }
 details.fold > summary::before { content: "▸ "; color: var(--text-faint); }
 details.fold[open] > summary::before { content: "▾ "; }
 details.fold > .inner { padding: 4px 10px 10px; border-top: 1px solid var(--border); }
+
+/* Machine picker: the select takes the room, the two buttons beside it only
+   what they need, all sitting on the same baseline. */
+.machine-row { align-items: flex-end; margin-bottom: 2px; }
+.machine-row > label.field { flex: 1 1 auto; margin-bottom: 0; }
+.machine-row > button { flex: 0 0 auto; margin-bottom: 1px; white-space: nowrap; }
 
 /* --------------------------------------------------------- responsividade */
 

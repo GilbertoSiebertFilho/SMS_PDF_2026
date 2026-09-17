@@ -3,9 +3,14 @@
  * The points do not become Leaflet markers: a yield map has tens of thousands
  * of them, and one DOM element per point locks up the browser. Instead a canvas
  * laid over the map is redrawn on every move, projecting the coordinates with
- * Leaflet's own maths. */
+ * Leaflet's own maths.
+ *
+ * It is a factory rather than a singleton because the cleaning tab shows two
+ * maps side by side — the field before and after — and each needs its own
+ * canvas, hover index and tooltip. `MapView` at the bottom is the main map;
+ * a second pane is `createMapView("map-b", "point-canvas-b")`. */
 
-const MapView = (() => {
+function createMapView(defaultMapId, defaultCanvasId) {
   let map = null;
   let canvas = null;
   let ctx = null;
@@ -14,7 +19,21 @@ const MapView = (() => {
   let data = null;      // { lon: [], lat: [], values: [], scale: {} }
   let overlay = null;   // { lon: [], lat: [], groups: [], palette: {} }
   let colorScale = null;
+  let unitLabel = "";   // what the tooltip writes after the number
   let pointSize = 3;
+
+  /* Hover: the tooltip finds the point under the cursor through a grid of
+   * screen-pixel cells rather than a scan of every point — at 60,000 points a
+   * scan per mouse move would stutter. The grid is rebuilt lazily, only after
+   * the view settles, because every move invalidates every projection. */
+  const HIT_RADIUS_PX = 8;
+  let index = null;
+  let indexDirty = true;
+  let moving = false;
+  let tooltip = null;
+  let hoverPoint = null;
+  let hoverFrame = 0;
+  let resizeObserver = null;
 
   /* A cool-to-warm ramp, legible in both light and dark themes and readable by
    * people who do not see green and red as separate colours: luminance rises
@@ -49,7 +68,9 @@ const MapView = (() => {
     return `linear-gradient(90deg, ${stops.join(", ")})`;
   }
 
-  function init(mapId, canvasId) {
+  function onWindowResize() { resize(); draw(); indexDirty = true; }
+
+  function init(mapId = defaultMapId, canvasId = defaultCanvasId) {
     map = L.map(mapId, { preferCanvas: true, zoomControl: true, attributionControl: false })
       .setView([-23.5, -51.2], 15);
 
@@ -63,14 +84,43 @@ const MapView = (() => {
     canvas = document.getElementById(canvasId);
     ctx = canvas.getContext("2d");
 
-    map.on("move zoom viewreset resize zoomend moveend", draw);
-    window.addEventListener("resize", () => { resize(); draw(); });
+    map.on("move zoom viewreset zoomend moveend", draw);
+    // Leaflet fires 'resize' from invalidateSize: the canvas has to follow the
+    // container, or the points drift off the imagery when a pane is added.
+    map.on("resize", () => { resize(); draw(); indexDirty = true; });
+    map.on("movestart zoomstart", () => { moving = true; hideTooltip(); });
+    map.on("moveend zoomend", () => { moving = false; indexDirty = true; scheduleHover(); });
+    window.addEventListener("resize", onWindowResize);
+    // The container changes size without the window doing so — the stage
+    // strip appears once a project exists, a second pane comes and goes — and
+    // Leaflet only re-measures on request. Left stale, its centre is off by
+    // half the difference and every point lands beside its imagery.
+    if (typeof ResizeObserver !== "undefined") {
+      resizeObserver = new ResizeObserver(() => { if (map) invalidateSize(); });
+      resizeObserver.observe(map.getContainer());
+    }
     resize();
+    bindHover();
     return map;
   }
 
+  /* Release the Leaflet instance and the listeners this view added outside
+   * its container, so a pane can be created and removed as often as the
+   * user toggles the comparison without leaking a map each time. */
+  function destroy() {
+    if (!map) return;
+    window.removeEventListener("resize", onWindowResize);
+    resizeObserver?.disconnect();
+    resizeObserver = null;
+    if (hoverFrame) cancelAnimationFrame(hoverFrame);
+    hoverFrame = 0;
+    map.remove();
+    map = null; canvas = null; ctx = null; basemap = null; overlayGroup = null;
+    data = null; overlay = null; colorScale = null; index = null; tooltip = null;
+  }
+
   function setBasemap(on) {
-    if (!basemap) return;
+    if (!basemap || !map) return;
     if (on && !map.hasLayer(basemap)) basemap.addTo(map);
     if (!on && map.hasLayer(basemap)) map.removeLayer(basemap);
   }
@@ -86,26 +136,50 @@ const MapView = (() => {
     ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
   }
 
+  /* After the layout around the map changes — a second pane appears or goes
+   * away — Leaflet has to re-measure its container, and the canvas with it. */
+  function invalidateSize() {
+    if (!map) return;
+    map.invalidateSize({ animate: false });
+    resize();
+    draw();
+    indexDirty = true;
+  }
+
   /* Feed the point layer. `convert` translates the internal value into the
    * chosen unit — the colour scale is computed in the displayed unit, so the
-   * legend and the colours tell the same story. */
-  function setPoints(payload, convert) {
+   * legend and the colours tell the same story.
+   *
+   * `options.unit` is the label the tooltip writes after the number, and
+   * `options.scale` ({ low, high }, in the displayed unit) pins the colour
+   * scale instead of deriving it from this payload: two maps compared side by
+   * side must share one scale, or the eye reads a rescaling as a change. */
+  function setPoints(payload, convert, options = {}) {
     data = payload;
+    const fixed = options.scale;
     const scale = payload?.scale;
-    if (scale) {
+    if (fixed && Number.isFinite(fixed.low) && Number.isFinite(fixed.high)) {
+      colorScale = { low: fixed.low, high: fixed.high, span: (fixed.high - fixed.low) || 1 };
+    } else if (scale) {
       const low = convert ? convert(scale.low) : scale.low;
       const high = convert ? convert(scale.high) : scale.high;
       colorScale = { low, high, span: (high - low) || 1 };
     } else {
       colorScale = null;
     }
-    data._convert = convert || ((v) => v);
+    unitLabel = options.unit ?? "";
+    if (data) data._convert = convert || ((v) => v);
+    indexDirty = true;
     resize();
     draw();
+    scheduleHover();
     return colorScale;
   }
 
-  function clearPoints() { data = null; colorScale = null; draw(); }
+  function clearPoints() {
+    data = null; colorScale = null; indexDirty = true;
+    hideTooltip(); draw();
+  }
 
   /* A second set of points drawn over the first, coloured by a category
    * rather than by a value. It is how the app shows *why* each record was
@@ -114,13 +188,15 @@ const MapView = (() => {
    * overlap, and not a strip through the middle of the field. */
   function setOverlay(payload, palette) {
     overlay = payload ? { ...payload, palette: palette || {} } : null;
+    indexDirty = true;
     draw();
+    scheduleHover();
   }
 
-  function clearOverlay() { overlay = null; draw(); }
+  function clearOverlay() { overlay = null; indexDirty = true; draw(); scheduleHover(); }
 
   function draw() {
-    if (!ctx || !canvas) return;
+    if (!ctx || !canvas || !map) return;
     const size = map.getSize();
     ctx.clearRect(0, 0, size.x, size.y);
     if (!data || !data.lon?.length) return;
@@ -184,6 +260,126 @@ const MapView = (() => {
     }
     ctx.globalAlpha = 1;
   }
+
+  /* ------------------------------------------------------------- hover --- */
+
+  function bindHover() {
+    const container = map.getContainer();
+    tooltip = document.createElement("div");
+    tooltip.className = "map-tooltip";
+    tooltip.hidden = true;
+    tooltip.innerHTML = '<span class="v"></span> <span class="u"></span>';
+    container.appendChild(tooltip);
+
+    container.addEventListener("mousemove", (event) => {
+      hoverPoint = map.mouseEventToContainerPoint(event);
+      scheduleHover();
+    });
+    container.addEventListener("mouseleave", () => { hoverPoint = null; hideTooltip(); });
+  }
+
+  /* One lookup per frame at most, however fast the mouse moves. */
+  function scheduleHover() {
+    if (!hoverPoint || hoverFrame || !map) return;
+    hoverFrame = requestAnimationFrame(updateTooltip);
+  }
+
+  function hideTooltip() { if (tooltip) tooltip.hidden = true; }
+
+  function cellKey(x, y) {
+    return Math.floor(x / HIT_RADIUS_PX) * 65536 + Math.floor(y / HIT_RADIUS_PX);
+  }
+
+  /* Cells are as wide as the hit radius, so a query touches at most the 3×3
+   * block around the cursor. Entries are flat quadruples (x, y, kind, i)
+   * rather than objects: tens of thousands of small objects per rebuild is
+   * the kind of garbage that makes a pan feel sticky. */
+  function buildIndex() {
+    index = new Map();
+    indexDirty = false;
+    if (!map) return;
+    const size = map.getSize();
+    const bounds = map.getBounds();
+    const west = bounds.getWest(), east = bounds.getEast();
+    const south = bounds.getSouth(), north = bounds.getNorth();
+
+    const add = (lon, lat, kind, i) => {
+      if (lon < west || lon > east || lat < south || lat > north) return;
+      const p = map.latLngToContainerPoint([lat, lon]);
+      if (p.x < 0 || p.y < 0 || p.x > size.x || p.y > size.y) return;
+      const key = cellKey(p.x, p.y);
+      let cell = index.get(key);
+      if (!cell) { cell = []; index.set(key, cell); }
+      cell.push(p.x, p.y, kind, i);
+    };
+
+    if (data?.lon?.length) {
+      for (let i = 0; i < data.lon.length; i++) add(data.lon[i], data.lat[i], 0, i);
+    }
+    if (overlay?.lon?.length) {
+      for (let i = 0; i < overlay.lon.length; i++) add(overlay.lon[i], overlay.lat[i], 1, i);
+    }
+  }
+
+  function nearest(x, y) {
+    if (indexDirty) buildIndex();
+    if (!index?.size) return null;
+    const cx = Math.floor(x / HIT_RADIUS_PX), cy = Math.floor(y / HIT_RADIUS_PX);
+    const limit = HIT_RADIUS_PX * HIT_RADIUS_PX;
+    const tie = 0.25;   // a quarter of a pixel squared: the same record twice
+    let best = null;
+    for (let dx = -1; dx <= 1; dx++) {
+      for (let dy = -1; dy <= 1; dy++) {
+        const cell = index.get((cx + dx) * 65536 + (cy + dy));
+        if (!cell) continue;
+        for (let k = 0; k < cell.length; k += 4) {
+          const ex = cell[k] - x, ey = cell[k + 1] - y;
+          const d2 = ex * ex + ey * ey;
+          if (d2 > limit) continue;
+          const kind = cell[k + 2];
+          // A removed point sits exactly on the kept one it came from and is
+          // drawn on top of it, so on a tie the removal reason is what the
+          // eye is pointing at.
+          const closer = !best || d2 < best.d2 - tie;
+          const onTop = best && kind > best.kind && d2 <= best.d2 + tie;
+          if (closer || onTop) best = { d2, kind, i: cell[k + 3] };
+        }
+      }
+    }
+    return best;
+  }
+
+  function updateTooltip() {
+    hoverFrame = 0;
+    if (!map || !tooltip || !hoverPoint || moving) { hideTooltip(); return; }
+    const hit = nearest(hoverPoint.x, hoverPoint.y);
+    if (!hit) { hideTooltip(); return; }
+
+    let value, unit;
+    if (hit.kind === 1) {
+      value = "Removed";
+      unit = overlay?.groups?.[hit.i] || "";
+    } else {
+      const raw = data?.values?.[hit.i];
+      value = raw == null ? "no value" : Units.num((data._convert || ((v) => v))(raw));
+      unit = raw == null ? "" : unitLabel;
+    }
+    tooltip.querySelector(".v").textContent = value;
+    tooltip.querySelector(".u").textContent = unit;
+    tooltip.hidden = false;
+
+    // Keep the box inside the pane: near the right or bottom edge it flips
+    // to the other side of the cursor instead of being clipped.
+    const size = map.getSize();
+    const w = tooltip.offsetWidth, h = tooltip.offsetHeight;
+    let left = hoverPoint.x + 14, top = hoverPoint.y + 14;
+    if (left + w > size.x - 4) left = hoverPoint.x - w - 10;
+    if (top + h > size.y - 4) top = hoverPoint.y - h - 10;
+    tooltip.style.left = `${Math.max(0, left)}px`;
+    tooltip.style.top = `${Math.max(0, top)}px`;
+  }
+
+  /* ---------------------------------------------------------- polygons --- */
 
   /* Polygons: boundary, trial strips, prescription grid. */
   function setPolygons(rings, options = {}) {
@@ -263,7 +459,7 @@ const MapView = (() => {
   function clearOverlays() { overlayGroup?.clearLayers(); }
 
   function fit(bounds) {
-    if (!bounds || bounds.length !== 4) return;
+    if (!map || !bounds || bounds.length !== 4) return;
     const [west, south, east, north] = bounds;
     if (![west, south, east, north].every(Number.isFinite)) return;
     map.fitBounds([[south, west], [north, east]], { padding: [30, 30], maxZoom: 19 });
@@ -282,8 +478,35 @@ const MapView = (() => {
   function instance() { return map; }
 
   return {
-    init, setPoints, clearPoints, setOverlay, clearOverlay,
+    init, destroy, invalidateSize, setPoints, clearPoints, setOverlay, clearOverlay,
     setPolygons, setFeatures, addLine, clearOverlays,
     fit, fitOverlays, setBasemap, rampCss, rampColor, draw, onClick, offClick, instance,
   };
-})();
+}
+
+/* Lock two views together: pan or zoom either one and the other follows.
+ * The shared flag stops the echo — A moves B, B fires 'move', B would move A,
+ * which would fire again. Returns the function that unlinks them. */
+function linkMapViews(a, b) {
+  let syncing = false;
+  const follow = (source, target) => () => {
+    const from = source.instance(), to = target.instance();
+    if (syncing || !from || !to) return;
+    syncing = true;
+    // `reset` sets the exact centre; a plain pan truncates to whole pixels
+    // and the two maps drift apart by a pixel on every move.
+    try { to.setView(from.getCenter(), from.getZoom(), { animate: false, reset: true }); }
+    finally { syncing = false; }
+  };
+  const ab = follow(a, b), ba = follow(b, a);
+  a.instance().on("move", ab);
+  b.instance().on("move", ba);
+  return () => {
+    a.instance()?.off("move", ab);
+    b.instance()?.off("move", ba);
+  };
+}
+
+/* The main map. App.init calls MapView.init("map", "point-canvas"), which
+ * these defaults also cover. */
+const MapView = createMapView("map", "point-canvas");
