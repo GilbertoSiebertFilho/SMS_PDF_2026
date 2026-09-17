@@ -72,6 +72,7 @@ from . import contours as contours_mod
 from . import derivatives as deriv
 from . import hydrology as hydro_mod
 from . import landforms as lf
+from . import notes as notes_mod
 from .grid import QUANTISED_SMOOTH_STEPS as _QUANTISED_SMOOTH_STEPS
 from .grid import ElevationGrid, connected_components, gaussian_smooth, grid_from_points
 
@@ -143,9 +144,6 @@ _EIGHT = np.ones((3, 3), dtype=bool)
 #: value step; defined with the grid, which applies it to points too.
 QUANTISED_SMOOTH_STEPS = _QUANTISED_SMOOTH_STEPS
 
-#: Thin space, the thousands separator the findings use ("2 900 m³").
-_THIN = "\u2009"
-
 #: The map layers in the order the interface lists them: key, label, unit,
 #: palette. The landform layer is categorical; every other one continuous.
 LAYER_SPECS: list[tuple[str, str, str, str]] = [
@@ -214,25 +212,69 @@ class TerrainOptions:
         return cls(**data)
 
 
-def _positive_or_none(value: Any, name: str) -> float | None:
+#: What a unit is called in a sentence about typing one in. The picker's
+#: own labels ("foot (ft)") are for a dropdown, not for the middle of a
+#: refusal, and "a positive number of ft" is not English.
+_LENGTH_WORDS = {"m": "metres", "ft": "feet", "cm": "centimetres",
+                 "in": "inches", "yd": "yards"}
+_AREA_WORDS = {"ha": "hectares", "ac": "acres", "alq": "alqueires",
+               "m2": "square metres", "km2": "square kilometres"}
+
+
+def _length_word(say: Phrase) -> str:
+    return _LENGTH_WORDS.get(say.length_unit, say.length_unit)
+
+
+def _area_word(say: Phrase) -> str:
+    return _AREA_WORDS.get(say.area_unit, say.area_unit)
+
+
+def _compact(value_m: float, say: Phrase) -> str:
+    """A length in the reader's unit, kept as short as ``%g`` would.
+
+    These refusals quote numbers nobody meant — a smoothing scale of a
+    million metres, typed or sent by a slipped decimal point. Spelled out
+    in full ("1 000 000 m") it reads like a plausible figure with too many
+    digits; the exponent says at a glance that it is not one. A sane value
+    still reads as itself, and in the reader's unit, because a user who
+    typed feet cannot act on a refusal quoted in metres.
+    """
+    return f"{say.to_length(value_m):g} {say.length_unit}"
+
+
+def _positive_or_none(value: Any, name: str, units: dict[str, Any] | None = None) -> float | None:
     if value is None:
         return None
     value = float(value)
     if not np.isfinite(value) or value <= 0:
-        raise ValueError(f"{name} must be a positive number of metres, or left empty.")
+        raise ValueError(
+            f"{name} must be a positive number of {_length_word(Phrase(units))}, "
+            "or left empty."
+        )
     return value
 
 
-def _within_field(value: float | None, name: str, across_m: float) -> None:
+def _within_field(
+    value: float | None,
+    name: str,
+    across_m: float,
+    units: dict[str, Any] | None = None,
+) -> None:
     """Refuse a scale wider than the field: the kernel it would build is
     (2 r / cell)² cells, so a stray 1 000 000 m is a terabyte, and no radius
-    beyond the field's own span means anything anyway."""
+    beyond the field's own span means anything anyway.
+
+    Said in the reader's unit set: the box this number was typed into is
+    in feet when the picker is, so a refusal in metres is a refusal the
+    user cannot act on — they would have to convert it back to find out
+    what to type instead.
+    """
     if value is not None and value > across_m:
-        span = f"{across_m:,.0f}".replace(",", _THIN)
+        say = Phrase(units)
         raise ValueError(
-            f"{name} of {value:g} m is wider than the field, which is about "
-            f"{span} m across. Use a smaller value, or leave it empty to have it "
-            "chosen from the grid."
+            f"{name} of {_compact(value, say)} is wider than the field, which is about "
+            f"{say.length(across_m, 0)} across. Use a smaller value, or leave it "
+            "empty to have it chosen from the grid."
         )
 
 
@@ -349,12 +391,12 @@ class TerrainResult:
         """The JSON summary (cached): every number a plain Python type.
 
         The sentences it carries — the findings, the character's reason,
-        the note under the share tables — are written in metric, like every
-        number stored in this app, and :func:`restate` writes them again
-        for a reader working in another unit set. The one exception is the
-        notes the grid builder and the raster reader wrote while the file
-        was being read: they are in the unit set :func:`analyze` was given,
-        because saying them again would mean reading the file again.
+        the note under the share tables, the notes the grid builder and the
+        raster reader wrote while the file was being read — are written in
+        metric, like every number stored in this app, and :func:`restate`
+        writes them all again for a reader working in another unit set.
+        The reading's notes manage it because ``source['note_facts']``
+        keeps what each one states, not only how it was said.
         """
         if self._summary is not None:
             return self._summary
@@ -520,20 +562,24 @@ def analyze(
     stops and says so rather than quietly gridding the sample as if it were
     a GPS survey. Anything else is gridded from its GPS altitude.
 
-    ``units`` is the reader's unit set, and it reaches one thing only: the
-    notes the grid builder and the raster reader write while the file is
-    being read, which are sentences and cannot be converted afterwards.
-    Every number the analysis produces is metric, and so are the findings
-    it writes — :func:`restate` says them again for whoever is reading.
+    ``units`` is the reader's unit set, and it decides how the answer is
+    said, never what it holds: every number the analysis produces is
+    metric, the findings and the reading's own notes are written from
+    those numbers, and :func:`restate` writes them again for whoever
+    reads next. Passing nothing here costs a caller nothing but a metric
+    first reading.
     """
     options = options or TerrainOptions()
     if isinstance(options, dict):
         options = TerrainOptions.from_dict(options)
     options = _coerced(options)
-    cell_m = _positive_or_none(options.cell_m, "The cell size")
+    cell_m = _positive_or_none(options.cell_m, "The cell size", units)
     smooth_m = None if options.smooth_m is None else float(options.smooth_m)
     if smooth_m is not None and (not np.isfinite(smooth_m) or smooth_m < 0):
-        raise ValueError("The smoothing scale must be zero or a positive number of metres.")
+        raise ValueError(
+            "The smoothing scale must be zero or a positive number of "
+            f"{_length_word(Phrase(units))}."
+        )
     max_cells = int(options.max_cells) if options.max_cells else 400_000
     if max_cells < 100:
         raise ValueError("max_cells must allow at least 100 cells.")
@@ -567,7 +613,7 @@ def analyze(
             units=units,
         )
     else:
-        _within_field(smooth_m, "The smoothing scale", _points_across_m(dataset))
+        _within_field(smooth_m, "The smoothing scale", _points_across_m(dataset), units)
         grid, report = grid_from_points(
             dataset,
             cell_m=cell_m,
@@ -588,6 +634,7 @@ def analyze(
             "detrended": bool(report["detrended"]),
             "dem_path": None,
             "notes": list(report.get("notes", [])),
+            "note_facts": list(report.get("note_facts", [])),
             "smooth_m": float(report["smooth_m"]),
             "value_step_m": float(report.get("value_step_m") or 0.0),
             "passes_dropped": int(report.get("passes_dropped") or 0),
@@ -615,7 +662,7 @@ def analyze(
     timing["grid"] = time.perf_counter() - t0
 
     # ---- resolved options
-    resolved = _resolve_options(options, grid, source)
+    resolved = _resolve_options(options, grid, source, units)
     resolved.cell_m = grid.cell
     resolved.smooth_m = source.get("smooth_m", smooth_m)
     resolved.max_cells = max_cells
@@ -712,7 +759,7 @@ def analyze(
 
     # ---- contours and drainage lines
     t4 = time.perf_counter()
-    interval = _positive_or_none(resolved.contour_interval_m, "The contour interval")
+    interval = _positive_or_none(resolved.contour_interval_m, "The contour interval", units)
     if level:
         contour_features: list[dict[str, Any]] = []
         interval_used = None
@@ -792,32 +839,31 @@ def _grid_from_dem(
     """
     from ..formats import raster as raster_mod
 
-    say = Phrase(units)
     grid, info = raster_mod.read_dem(path, target_cell_m=cell_m, units=units)
-    notes = list(info.get("notes", []))
+    facts = list(info.get("note_facts") or [notes_mod.plain(n) for n in info.get("notes", [])])
     if elevation_factor != 1.0:
         grid = grid.with_values(grid.z * elevation_factor)
         unit = elevation_unit_in or "the declared unit"
-        notes.append(
+        # The unit named here is the one the file declared, not the one the
+        # reader works in, so the sentence is the same for every reader.
+        facts.append(notes_mod.plain(
             f"Elevations were converted from {unit} to metres, as declared when the "
             "file was opened."
-        )
+        ))
     step = float(info.get("value_step_m") or 0.0) * abs(elevation_factor)
     total_cells = grid.rows * grid.cols
     if total_cells > max_cells:
         factor = int(math.ceil(math.sqrt(total_cells / max_cells)))
         grid = grid.coarsen(factor)
-        notes.append(
-            f"The DEM's {say.length(info['cell_m'])} cells were averaged "
-            f"{factor} x {factor} into {say.length(grid.cell)} cells to keep the "
-            f"analysis under {say.number(max_cells)} cells."
-        )
+        facts.append(notes_mod.fact(
+            "dem_coarsened", cell_in_m=float(info["cell_m"]), factor=factor,
+            cell_m=float(grid.cell), max_cells=max_cells))
     if smooth_m is None and step > 0:
         # At least one cell: a sigma under half a cell changes nothing.
         smooth_m = max(QUANTISED_SMOOTH_STEPS * step, grid.cell)
         smooth_m = min(smooth_m, _across_m(grid) / 4.0)
     if smooth_m:
-        _within_field(smooth_m, "The smoothing scale", _across_m(grid))
+        _within_field(smooth_m, "The smoothing scale", _across_m(grid), units)
         smoothed = gaussian_smooth(grid.z, smooth_m / grid.cell)
         if step > 0:
             smoothed = np.round(smoothed, 6)
@@ -833,7 +879,8 @@ def _grid_from_dem(
         "vertical_noise_m": None,
         "detrended": False,
         "dem_path": str(path),
-        "notes": notes,
+        "notes": notes_mod.render(facts, units),
+        "note_facts": facts,
         "smooth_m": float(smooth_m or 0.0),
         "value_step_m": step,
         # A raster carries no reading noise the analysis can measure.
@@ -845,17 +892,28 @@ def _grid_from_dem(
     }
 
 
-def _resolve_options(options: TerrainOptions, grid: ElevationGrid, source: dict) -> TerrainOptions:
-    """Fill the ``None`` options from the grid."""
+def _resolve_options(
+    options: TerrainOptions,
+    grid: ElevationGrid,
+    source: dict,
+    units: dict[str, Any] | None = None,
+) -> TerrainOptions:
+    """Fill the ``None`` options from the grid.
+
+    ``units`` reaches the refusals only — every option it resolves is
+    metric — so that a scale the user typed is refused in the unit they
+    typed it in.
+    """
+    say = Phrase(units)
     resolved = TerrainOptions(**options.to_dict())
     cell = grid.cell
     xmin, xmax, ymin, ymax = lf._valid_extent(grid)
     shorter = max(min(xmax - xmin, ymax - ymin) + cell, 3.0 * cell)
     across = _across_m(grid)
-    large = _positive_or_none(options.tpi_large_m, "The large TPI radius")
-    small = _positive_or_none(options.tpi_small_m, "The small TPI radius")
-    _within_field(large, "The large TPI radius", across)
-    _within_field(small, "The small TPI radius", across)
+    large = _positive_or_none(options.tpi_large_m, "The large TPI radius", units)
+    small = _positive_or_none(options.tpi_small_m, "The small TPI radius", units)
+    _within_field(large, "The large TPI radius", across, units)
+    _within_field(small, "The small TPI radius", across, units)
     if large is None:
         large = max(10.0 * cell, 150.0)
         large = max(min(large, shorter / 4.0), 3.0 * cell)
@@ -867,10 +925,10 @@ def _resolve_options(options: TerrainOptions, grid: ElevationGrid, source: dict)
         small = max(min(small, large / 2.0), cell)
     if not small < large:
         raise ValueError(
-            f"The small TPI radius ({small:g} m) must be smaller than the large one "
-            f"({large:g} m): the small scale tells knolls from hollows, the large one "
-            "the hill from the valley. Set both, or leave them empty to have them "
-            "chosen from the grid."
+            f"The small TPI radius ({_compact(small, say)}) must be smaller than the "
+            f"large one ({_compact(large, say)}): the small scale tells knolls from "
+            "hollows, the large one the hill from the valley. Set both, or leave them "
+            "empty to have them chosen from the grid."
         )
     resolved.tpi_small_m = float(small)
     resolved.tpi_large_m = float(large)
@@ -883,12 +941,15 @@ def _resolve_options(options: TerrainOptions, grid: ElevationGrid, source: dict)
     else:
         resolved.min_feature_height_m = float(options.min_feature_height_m)
         if not np.isfinite(resolved.min_feature_height_m) or resolved.min_feature_height_m < 0:
-            raise ValueError("The minimum feature height must be zero or a positive number of metres.")
+            raise ValueError(
+                "The minimum feature height must be zero or a positive number of "
+                f"{_length_word(say)}."
+            )
     upstream = float(options.min_upstream_ha)
     if not np.isfinite(upstream) or upstream <= 0:
         raise ValueError(
             "The upstream area for a drainage line must be a positive number of "
-            "hectares: with no threshold every cell is a channel."
+            f"{_area_word(say)}: with no threshold every cell is a channel."
         )
     resolved.min_upstream_ha = upstream
     altitude = float(options.hillshade_altitude)
@@ -1288,7 +1349,7 @@ def findings(
                 f"The relief was read from the elevation raster at {say.length(cell, None)} "
                 "cells; no GPS noise or pass offsets apply."
             ))
-    for note in source_notes(source):
+    for note in source_notes(source, units):
         out.append(_info(note))
 
     # (9) closing line
@@ -1315,16 +1376,28 @@ def _character(summary: dict[str, Any], units: dict[str, Any] | None) -> dict[st
     )
 
 
-def source_notes(source: dict[str, Any]) -> list[str]:
-    """What the grid builder and the raster reader had to say.
+def source_notes(source: dict[str, Any], units: dict[str, Any] | None = None) -> list[str]:
+    """What the grid builder and the raster reader had to say, in ``units``.
 
     These come from the reading of the file rather than from the analysis
-    of the ground, and they are written once, while the file is being
-    read, in the unit set :func:`analyze` was given: the sentence is all
-    that survives the reading, so saying it again in another unit set
-    would mean reading the file again. They are passed through here as
-    they were written, which is why :func:`restate` leaves them alone.
+    of the ground, but they are sentences about ground all the same — a
+    smoothing scale, the spacing between readings, two blocks so far
+    apart they cannot be one field — and a reader working in feet cannot
+    check them against a relief quoted in feet. So the reading keeps the
+    *fact* each one states (``source['note_facts']``, see
+    :mod:`agrosuite.terrain.notes`) and the sentence is written here,
+    every time, from the same metric numbers. Nothing is read again.
+
+    A summary written before the facts existed, or by a version that knows
+    a note this one does not, still has its sentences: they are given back
+    as they were written rather than lost.
     """
+    facts = source.get("note_facts")
+    if facts:
+        try:
+            return notes_mod.render(facts, units)
+        except ValueError:
+            pass
     return [str(note) for note in source.get("notes", [])]
 
 
@@ -1345,10 +1418,11 @@ def restate(summary: dict[str, Any], units: dict[str, Any] | None = None) -> dic
 
     Every number in the summary stays exactly as it was stored — metric,
     to the last decimal — and only the prose is written again: the
-    findings, the reason under the field's character, and the note under
-    the share tables. That is what lets the unit picker change every
-    sentence on screen without re-running an analysis, and a project saved
-    in one unit set open in another.
+    findings, the reason under the field's character, the note under the
+    share tables, and the notes the file's own reading left behind. That
+    is what lets the unit picker change every sentence on screen without
+    re-running an analysis, and a project saved in one unit set open in
+    another.
 
     The copy is shallow where nothing changed and fresh where it did, so
     the stored summary is never edited underneath its owner.
@@ -1358,6 +1432,10 @@ def restate(summary: dict[str, Any], units: dict[str, Any] | None = None) -> dic
     out = dict(summary)
     out["grid"] = {**summary.get("grid", {})}
     out["grid"]["shares_note"] = shares_note(out["grid"], units)
+    # The notes the file's reading left behind travel as the facts they
+    # state, so they move with the picker like everything else on screen.
+    out["source"] = {**summary.get("source", {}),
+                     "notes": source_notes(summary.get("source", {}), units)}
     character = _character(summary, units)
     out["character"] = {**summary.get("character", {}), "why": character["why"]}
     out["findings"] = findings(out, units=units)

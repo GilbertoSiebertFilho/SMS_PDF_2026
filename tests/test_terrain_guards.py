@@ -10,11 +10,13 @@ bins"). The analyser must refuse in a sentence or answer honestly.
 from __future__ import annotations
 
 import os
+import re
 
 import numpy as np
 import pytest
 
 from agrosuite.core import schema as sch
+from agrosuite.core.units import UNIT_PRESETS
 from agrosuite.formats import raster, registry
 from agrosuite.terrain import analysis as an
 from agrosuite.terrain.analysis import TerrainOptions, analyze, zones_polygons
@@ -58,6 +60,31 @@ def test_nonsense_options_are_refused_in_a_sentence(field, options, words):
         analyze(field, options)
     assert words in str(err.value)
     assert "allocate" not in str(err.value)  # never numpy's MemoryError text
+
+
+@pytest.mark.parametrize("options, words", [
+    ({"smooth_m": 1e6}, "smoothing scale of 3.28084e+06 ft is wider than the field"),
+    ({"tpi_large_m": 1e6}, "large TPI radius of 3.28084e+06 ft is wider than the field"),
+    ({"tpi_small_m": 500, "tpi_large_m": 30},
+     "small TPI radius (1640.42 ft) must be smaller than the large one (98.4252 ft)"),
+    ({"cell_m": -2}, "cell size must be a positive number of feet"),
+    ({"min_upstream_ha": 0}, "must be a positive number of acres"),
+])
+def test_a_refusal_is_written_in_the_units_it_was_typed_in(field, options, words):
+    """The box this number came out of is in feet when the picker is.
+
+    Refused in metres, the user has to convert the app's own answer back
+    before they can tell what to type instead — and the number they typed
+    does not appear anywhere in the sentence about it. The absurd ones
+    keep their exponent: 3.28084e+06 ft is plainly not a scale anyone
+    meant, where "3 280 840 ft" reads like a figure with a typo.
+    """
+    with pytest.raises(ValueError) as err:
+        analyze(field, options, UNIT_PRESETS["canada"])
+    said = str(err.value)
+    assert words in said
+    # Not one quantity left in the store's own units.
+    assert not re.search(r"\d\s?(?:m|ha|km|cm|m²)\b", said), said
 
 
 def test_huge_smoothing_is_refused_on_a_dem_too(tmp_path):

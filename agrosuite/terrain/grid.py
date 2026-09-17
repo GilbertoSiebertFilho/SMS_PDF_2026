@@ -38,7 +38,7 @@ from scipy import ndimage
 from scipy.spatial import cKDTree
 
 from ..core import schema as sch
-from ..core.units import Phrase
+from . import notes as notes_mod
 
 #: Weight below which a normalized convolution has no valid support.
 _MIN_WEIGHT = 1e-9
@@ -504,8 +504,8 @@ def _group_median(keys: np.ndarray, values: np.ndarray, n_groups: int) -> np.nda
     return out
 
 
-def _median_swath(df) -> tuple[float, str | None]:
-    """Median swath width, or the fallback used when the file carries none.
+def _median_swath(df) -> tuple[float, dict | None]:
+    """Median swath width, and the note about it as the fact it states.
 
     The width is capped at :data:`_MAX_SWATH_M`: a column that reads
     thousands of metres is a mis-mapped field (a total width, centimetres),
@@ -519,16 +519,10 @@ def _median_swath(df) -> tuple[float, str | None]:
         if swath.size:
             median = float(np.median(swath))
             if median > _MAX_SWATH_M:
-                return _MAX_SWATH_M, (
-                    f"The file's swath width reads {median:g} m, wider than any "
-                    f"implement; {_MAX_SWATH_M:g} m was used for the cell size and "
-                    "the gap tolerance. Check the swath column's unit."
-                )
+                return _MAX_SWATH_M, notes_mod.fact(
+                    "swath_capped", declared_m=median, used_m=_MAX_SWATH_M)
             return max(median, _MIN_SWATH_M), None
-    return 10.0, (
-        "The file carries no swath width; 10 m was assumed for the cell size "
-        "and the gap tolerance."
-    )
+    return 10.0, notes_mod.fact("swath_assumed", swath_m=10.0)
 
 
 def _coordinate_problem(df) -> str:
@@ -908,8 +902,8 @@ def _extrapolate_band(
     return np.where(near, continued, fallback[r, c])
 
 
-def _block_note(mask: np.ndarray, cell: float, x0: float, y0: float) -> str | None:
-    """A remark when the readings form separate blocks of ground.
+def _block_note(mask: np.ndarray, cell: float, x0: float, y0: float) -> dict | None:
+    """The fact behind the remark that the readings form separate blocks.
 
     One export often holds two fields worked in the same job. Gridded as
     one, the fall, relief and features of both are mixed and the cell is
@@ -928,11 +922,12 @@ def _block_note(mask: np.ndarray, cell: float, x0: float, y0: float) -> str | No
     (r_a, c_a), (r_b, c_b) = centres
     apart = math.hypot((c_a - c_b) * cell, (r_a - r_b) * cell)
     blocks = int((area >= max(1.0, 0.05 * float(area.sum()))).sum())
-    return (
-        f"The readings form {blocks} separate blocks of ground ({area[order[0]]:.1f} ha "
-        f"and {area[order[1]]:.1f} ha, about {apart / 1000:.1f} km apart): this file seems "
-        "to hold more than one field. The relief, fall and features below mix them; "
-        "open each field on its own for a clean answer."
+    return notes_mod.fact(
+        "blocks",
+        blocks=blocks,
+        largest_ha=float(area[order[0]]),
+        second_ha=float(area[order[1]]),
+        apart_m=float(apart),
     )
 
 
@@ -992,23 +987,23 @@ def grid_from_points(
     max_cells:
         Upper bound on ``rows * cols``; the cell grows until it fits.
     units:
-        The reader's unit set, which reaches the notes that measure ground
-        — the smoothing scale, the spacing between readings, the width of
-        a strip — so they are written in the unit the reader works in.
-        ``None``, the default, is the metric store. The notes that quote
-        what the file itself declares (a swath column reading 5000, an
-        altitude stepped in whole metres, a fill value of exactly 0 m, a
-        cell size that was asked for) keep the file's own numbers: they
-        say what is written in the file, not how big the ground is.
+        The unit set the notes are written in for *this* answer; ``None``,
+        the default, is the metric store. It decides nothing else: every
+        number in the report is metric, and ``report['note_facts']`` lets
+        the notes be written again for a reader who works in another set,
+        which is why nothing here depends on getting this right.
 
     Returns
     -------
     (ElevationGrid, report)
         The smoothed grid and a JSON-safe report of what was done and how
         trustworthy the result is. ``report['notes']`` carries the remarks
-        the user should read alongside the numbers: an assumed swath, a
+        the user should read alongside the numbers — an assumed swath, a
         widened cell, smoothing applied, readings forming a strip or
-        several blocks.
+        several blocks — as finished sentences, and
+        ``report['note_facts']`` carries the same remarks as the facts
+        they state, for :func:`agrosuite.terrain.notes.render` to say
+        again when the unit picker moves.
     """
     df = dataset.df
     non_numeric = 0
@@ -1053,13 +1048,17 @@ def grid_from_points(
     x = df[sch.X].to_numpy(dtype="float64", na_value=np.nan)
     y = df[sch.Y].to_numpy(dtype="float64", na_value=np.nan)
 
-    say = Phrase(units)
-    notes: list[str] = []
+    # The notes are collected as the facts they state and written at the
+    # end, so the same list can be said again in another unit set without
+    # reading the file again. A note whose numbers are counts and a sample
+    # of the column's own text has nothing in it that moves with the
+    # reader, so it is kept as written.
+    facts: list[dict[str, Any]] = []
     if non_numeric:
-        notes.append(
+        facts.append(notes_mod.plain(
             f"{non_numeric} of the {len(df)} records carry an altitude that is not a "
             f"number ({non_numeric_sample!r}); they were counted as missing."
-        )
+        ))
     finite = np.isfinite(x) & np.isfinite(y) & np.isfinite(elev)
     if int(finite.sum()) < _MIN_POINTS:
         raise ValueError(_coordinate_problem(df))
@@ -1073,9 +1072,9 @@ def grid_from_points(
         except (TypeError, ValueError):
             pass_id = np.unique(raw.astype(str), return_inverse=True)[1]
 
-    swath, swath_note = _median_swath(df)
-    if swath_note:
-        notes.append(swath_note)
+    swath, swath_fact = _median_swath(df)
+    if swath_fact:
+        facts.append(swath_fact)
 
     # ---- readings that are no height at all: a lost fix, a fill value
     passes_before = int(np.unique(pass_id).size) if pass_id is not None else 0
@@ -1094,11 +1093,7 @@ def grid_from_points(
                 "describe the relief. The receiver had no fix; open another export, "
                 "or a DEM GeoTIFF of the field."
             )
-        notes.append(
-            f"{fill_removed} readings carried an altitude of exactly 0 m or a no-data "
-            "value while the field lies far from it (the receiver had no fix there); "
-            "they were left out."
-        )
+        facts.append(notes_mod.fact("fill_values", readings=fill_removed))
     stray_removed = 0
     if pass_id is not None:
         passes_ids, medians, stray = _stray_passes(z, pass_id)
@@ -1115,15 +1110,16 @@ def grid_from_points(
                     "DEM GeoTIFF of the field."
                 )
             n_stray = int(stray.sum())
-            shown = ", ".join(f"{int(p)} ({m:.0f} m)" for p, m in zip(passes_ids[stray][:5], medians[stray][:5]))
-            more = f" and {n_stray - 5} more" if n_stray > 5 else ""
-            notes.append(
-                f"{n_stray} of the {passes_ids.size} passes {'was' if n_stray == 1 else 'were'} "
-                f"logged at an altitude far from the rest of the field (pass {shown}{more}, "
-                f"against about {float(np.nanmedian(medians[~stray])):.0f} m elsewhere): the "
-                f"receiver had lost its fix there. {'Its' if n_stray == 1 else 'Their'} "
-                f"{stray_removed} readings were left out rather than blended into the relief."
-            )
+            facts.append(notes_mod.fact(
+                "stray_passes",
+                passes=n_stray,
+                of=int(passes_ids.size),
+                shown=[[int(p), float(m)]
+                       for p, m in zip(passes_ids[stray][:5], medians[stray][:5])],
+                more=max(n_stray - 5, 0),
+                elsewhere_m=float(np.nanmedian(medians[~stray])),
+                readings=stray_removed,
+            ))
     passes_dropped = passes_before - (int(np.unique(pass_id).size) if pass_id is not None else 0)
 
     # ---- altitude spikes
@@ -1163,17 +1159,17 @@ def grid_from_points(
             break
         cell = round((cell + 0.5) * 2.0) / 2.0
     if requested and cell != float(requested):
-        notes.append(
-            f"A {requested:g} m cell would make more than {max_cells:,} cells; "
-            f"{cell:g} m was used instead.".replace(",", " ")
-        )
+        facts.append(notes_mod.fact(
+            "cell_capped", requested_m=float(requested), cell_m=cell, max_cells=max_cells))
     elif not requested and cell != auto_cell:
-        limit = f"{max_cells:,}".replace(",", " ")
-        notes.append(
-            f"The readings span {(xmax - xmin) / 1000:.1f} km by {(ymax - ymin) / 1000:.1f} km, "
-            f"so the cell was widened from {auto_cell:g} m to {cell:g} m to stay within "
-            f"{limit} cells. Small features are averaged out at that size."
-        )
+        facts.append(notes_mod.fact(
+            "cell_widened",
+            span_x_m=xmax - xmin,
+            span_y_m=ymax - ymin,
+            auto_cell_m=auto_cell,
+            cell_m=cell,
+            max_cells=max_cells,
+        ))
 
     # ---- too sparse to be a survey of the ground
     spacing = float(np.median(tree.query(tree.data, k=2, workers=-1)[0][:, 1])) if points_used > 1 else 0.0
@@ -1190,10 +1186,10 @@ def grid_from_points(
     pass_offset_sd = None
     detrended = False
     if detrend_passes and pass_id is not None and passes > _MAX_PASSES:
-        notes.append(
+        facts.append(notes_mod.plain(
             f"The file has {passes:,} passes, too many to estimate an altitude "
             "offset for each; the pass offsets were left in.".replace(",", " ")
-        )
+        ))
     elif detrend_passes and pass_id is not None and passes >= 2:
         # The radius only has to reach the adjacent passes (with a floor so a
         # narrow implement still gathers enough neighbours per point). It
@@ -1289,20 +1285,9 @@ def grid_from_points(
     if smooth > 0:
         surface_noise = min(surface_noise, 0.7 * noise / (2.0 * math.sqrt(math.pi) * smooth / cell))
     if step > 0:
-        notes.append(
-            f"The altitude is recorded in steps of {step:g} m rather than continuously, "
-            f"which cuts a gentle slope into terraces; the surface was smoothed over "
-            f"{smooth:g} m before reading slopes, and features smaller than {step:g} m "
-            "cannot be told from a single step."
-        )
+        facts.append(notes_mod.fact("quantised", step_m=step, smooth_m=smooth))
     if smooth > 0 and not (step > 0 and smooth <= QUANTISED_SMOOTH_STEPS * step):
-        notes.append(
-            f"The surface was smoothed over {say.length(smooth)} to take out the "
-            f"{say.length(noise, 2)} of altitude noise in the readings. Hollows and "
-            f"bumps narrower than about {say.length(4 * smooth)} read shallower than "
-            "they are, so small potholes hold more water than the figures say; set the "
-            "smoothing to 0 to read the raw surface."
-        )
+        facts.append(notes_mod.fact("smoothing", smooth_m=smooth, noise_m=noise))
 
     sampled = grid.sample(x, y)
     residual = z - sampled
@@ -1312,21 +1297,14 @@ def grid_from_points(
     # ---- how much ground the answer rests on
     if spacing > cell:
         extent_ha = max((xmax - xmin) * (ymax - ymin) / 10_000.0, 1e-9)
-        notes.append(
-            f"The readings are about {say.length(spacing, 0)} apart, farther than the "
-            f"{say.length(cell, 0)} cell ({say.per_area(points_used / extent_ha)} of "
-            "extent): the relief between them is interpolated, not measured."
-        )
+        facts.append(notes_mod.fact(
+            "spacing", spacing_m=spacing, cell_m=cell, per_ha=points_used / extent_ha))
     width = _strip_width(x, y)
     if width < 1.5 * swath:
-        notes.append(
-            f"The readings lie along a strip only about {say.length(width + swath, 0)} "
-            "wide, one or two passes rather than a field. The relief across the strip is "
-            "not measured, so only the profile along it means much."
-        )
-    block_note = _block_note(mask, cell, x0, y0)
-    if block_note:
-        notes.append(block_note)
+        facts.append(notes_mod.fact("strip", width_m=width + swath))
+    block_fact = _block_note(mask, cell, x0, y0)
+    if block_fact:
+        facts.append(block_fact)
 
     report: dict[str, Any] = {
         "points_total": points_total,
@@ -1352,6 +1330,10 @@ def grid_from_points(
         "non_numeric_elevations": non_numeric,
         "spacing_m": spacing,
         "crs": crs,
-        "notes": notes,
+        # The sentences, in the unit set this call was given, for whoever
+        # is reading now; the facts beside them, so a later reader in
+        # another unit set is not stuck with this one's.
+        "notes": notes_mod.render(facts, units),
+        "note_facts": facts,
     }
     return grid, report

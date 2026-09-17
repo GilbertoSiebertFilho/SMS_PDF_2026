@@ -143,16 +143,11 @@ def test_the_relief_says_the_same_numbers_in_two_unit_sets(relief):
     # Every sentence the analyser wrote and that measures something differs;
     # the ones that measure nothing ("2 distinct hills rise above the
     # surrounding ground") read the same in every unit set, and should.
-    #
-    # The notes the grid builder wrote while it read the file are left out:
-    # they are written once, as the file is gridded, in the unit set the
-    # analysis was given, because saying them again would mean reading the
-    # file again. This analysis was run with none, so they are metric in
-    # both — which is what the exclusion below is.
-    notes = set(terrain.source_notes(stored["source"]))
+    # The notes the grid builder wrote while it read the file are in here
+    # too, and are held to the same standard: they measure ground.
     measured = [
         (a, b) for a, b in zip(canadian_text, metric_text)
-        if METRIC_QUANTITY.search(b) and b not in notes
+        if METRIC_QUANTITY.search(b)
     ]
     assert len(measured) >= 5
     assert all(a != b for a, b in measured)
@@ -198,6 +193,57 @@ def test_an_imperial_sentence_carries_the_converted_value(relief):
     assert f"{relief_m:.1f} m" in metric
     # The relief itself never moved.
     assert terrain.restate(stored, CANADA)["elevation"]["relief_m"] == relief_m
+
+
+def test_the_notes_from_reading_the_file_follow_the_reader(relief):
+    """The last sentences on the Terrain tab that did not move with the picker.
+
+    A note is written while the file is gridded — the smoothing, the
+    spacing between readings, a strip, two blocks of ground in one export
+    — and it used to be finished prose the moment it was written:
+    analysed on the Canadian preset and read back in metric, every
+    finding around it changed and the smoothing note stayed in feet. It
+    is stored as the fact it states now, so it is written again like
+    every other sentence, from the same metric numbers.
+    """
+    stored = relief.summary()  # analysed with no unit set: metric throughout
+    facts = stored["source"]["note_facts"]
+    assert facts, "a file with GPS noise in it is smoothed, and says so"
+
+    canadian = terrain.restate(stored, CANADA)
+    metric = terrain.restate(stored, METRIC)
+    assert canadian["source"]["notes"] != metric["source"]["notes"]
+    assert metric["source"]["notes"] == stored["source"]["notes"]
+    for note in canadian["source"]["notes"]:
+        assert_no_metric(note)
+    # They reach the reader as findings, and those carry the same words.
+    said = [f["text"] for f in canadian["findings"]]
+    for note in canadian["source"]["notes"]:
+        assert note in said
+    # Saying them again moved nothing: the facts are what they were.
+    assert canadian["source"]["note_facts"] == facts == stored["source"]["note_facts"]
+
+
+def test_the_relief_notes_move_with_the_picker_over_the_wire(client):
+    """Analysed in one preset, read in the other: one analysis, no re-run."""
+    client.post("/api/session/new")
+    client.put("/api/units/display", json={"units": CANADA})
+    dataset_id = client.post("/api/terrain/demo").json()["id"]
+    analysed = client.post("/api/terrain/analyze", json={"dataset_id": dataset_id})
+    assert analysed.status_code == 200, analysed.text
+    canadian = analysed.json()["summary"]
+    smoothing = next(f for f in canadian["source"]["note_facts"] if f["key"] == "smoothing")
+    assert f"smoothed over {smoothing['smooth_m'] / 0.3048:.1f} ft" in \
+        " ".join(canadian["source"]["notes"])
+
+    # The picker moves. Nothing is gridded, smoothed or measured again.
+    assert client.put("/api/units/display", json={"units": METRIC}).status_code == 200
+    metric = client.get(f"/api/terrain/{dataset_id}").json()["summary"]
+
+    assert metric["source"]["note_facts"] == canadian["source"]["note_facts"]
+    assert f"smoothed over {smoothing['smooth_m']:.1f} m" in " ".join(metric["source"]["notes"])
+    assert metric["grid"]["cell_m"] == canadian["grid"]["cell_m"]
+    client.put("/api/units/display", json={"units": CANADA})
 
 
 # ==========================================================================

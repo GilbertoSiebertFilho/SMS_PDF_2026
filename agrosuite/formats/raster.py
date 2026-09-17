@@ -33,7 +33,6 @@ import pandas as pd
 from ..core import crs as crs_mod
 from ..core import schema as sch
 from ..core.dataset import Dataset, DatasetMeta
-from ..core.units import Phrase
 from . import brands as brands_mod
 
 if TYPE_CHECKING:  # pragma: no cover - the grid is imported lazily at runtime
@@ -411,10 +410,12 @@ def read_dem(
     target_cell_m:
         Cell size to resample to. ``None`` keeps the native resolution.
     units:
-        The reader's unit set, which reaches the notes only: they are
-        sentences with a cell size written into them, and a sentence
-        cannot be converted after the fact. ``None`` is metric, and every
-        number in ``info`` is metric whatever is passed.
+        The unit set ``info['notes']`` is written in for this answer;
+        ``None`` is metric, and every number in ``info`` is metric
+        whatever is passed. It decides nothing that lasts:
+        ``info['note_facts']`` holds the same remarks as the facts they
+        state, so a reader who moves the unit picker gets them in the set
+        on screen rather than the one the file was opened in.
 
     Returns
     -------
@@ -429,8 +430,9 @@ def read_dem(
         ``resampled``, ``coarsened``, ``value_step_m`` (1.0 for whole-metre
         elevations — every integer raster, and SRTM converted to float —
         0.5 for half metres, 0.0 when the values are not quantised,
-        ``None`` for a constant surface) and ``notes`` (remarks for the
-        user).
+        ``None`` for a constant surface), ``notes`` (remarks for the
+        user, as sentences) and ``note_facts`` (the same remarks as facts,
+        for :func:`agrosuite.terrain.notes.render`).
 
     Raises
     ------
@@ -443,10 +445,12 @@ def read_dem(
     from affine import Affine
     from rasterio.warp import Resampling, reproject, transform_bounds
 
+    # Imported here, like the grid: the terrain package reads rasters
+    # through this module, so importing it at the top would close the ring.
     from ..terrain.grid import ElevationGrid
+    from ..terrain.notes import fact, plain, render
 
     path = Path(path)
-    say = Phrase(units)
     if target_cell_m is not None and not (float(target_cell_m) > 0):
         raise ValueError("The target cell size must be a positive number of metres.")
 
@@ -477,7 +481,13 @@ def read_dem(
         cell_in = math.sqrt(cell_x * cell_y)
         metric, reason = _in_ground_metres(src.crs)
         native_cells = src.width * src.height
-        notes: list[str] = _band_notes(src, path.name)
+        # Every remark is collected as the fact it states and written at
+        # the end (see :mod:`agrosuite.terrain.notes`), so a reader who
+        # moves the unit picker gets them in the set on screen instead of
+        # the one this raster happened to be opened in. The ones whose
+        # numbers are counts, shares or a CRS name are kept as written:
+        # nothing in them moves with the reader.
+        facts: list[dict[str, Any]] = [plain(n) for n in _band_notes(src, path.name)]
 
         info: dict[str, Any] = {
             "path": str(path),
@@ -494,7 +504,7 @@ def read_dem(
             "coarsened": False,
         }
         if nodata is not None and not math.isfinite(nodata):
-            notes.append("NaN marks the cells without elevation in this raster.")
+            facts.append(plain("NaN marks the cells without elevation in this raster."))
 
         keep_native = (
             metric
@@ -512,14 +522,15 @@ def read_dem(
                 if fill is not None:
                     z[z == fill] = np.nan
                     info["nodata_detected"] = fill
-                    notes.append(_nodata_note(path.name, fill, share))
+                    facts.append(plain(_nodata_note(path.name, fill, share)))
                     nodata = fill
             _require_elevation(z, path.name, nodata)
             grid = ElevationGrid(z, t.c, t.f, t.a, crs_in)
             info.update({
                 "crs": crs_in, "cell_m": grid.cell, "rows": grid.rows, "cols": grid.cols,
                 "value_step_m": _value_step(z, integer=not is_float),
-                "notes": notes,
+                "notes": render(facts, units),
+                "note_facts": facts,
             })
             return grid, info
 
@@ -537,7 +548,7 @@ def read_dem(
             if fill is not None:
                 sample[sample == fill] = np.nan
                 info["nodata_detected"] = fill
-                notes.append(_nodata_note(path.name, fill, share))
+                facts.append(plain(_nodata_note(path.name, fill, share)))
                 nodata = fill
         value_step = _value_step(sample, integer=not is_float)
 
@@ -549,10 +560,10 @@ def read_dem(
             dst_crs = crs_mod.utm_epsg(lon_c, lat_c)
             bounds = transform_bounds(src.crs, dst_crs, *_corner_bounds(src), densify_pts=21)
             info["reprojected"] = True
-            notes.append(
+            facts.append(plain(
                 f"Reprojected from {crs_in} ({reason}) to {dst_crs}, so that the cells "
                 "are square and in metres and slopes come out right."
-            )
+            ))
         west, south, east, north = bounds
 
         if target_cell_m is not None:
@@ -562,24 +573,16 @@ def read_dem(
         else:
             cell = _nice_cell(cell_in)
             if not _north_up_square(t) and metric:
-                notes.append(
-                    f"The raster is rotated or has rectangular cells; it was resampled "
-                    f"onto {say.length(cell)} square cells."
-                )
+                facts.append(fact("raster_square_cells", cell_m=cell))
 
         cell, coarsened = _cap_cell(cell, east - west, north - south)
         if coarsened:
             info["coarsened"] = True
             out_cells = math.ceil((east - west) / cell) * math.ceil((north - south) / cell)
-            notes.append(
-                f"The raster has {_thousands(native_cells)} cells, more than a relief "
-                f"question needs; it was coarsened to {say.length(cell)} cells (about "
-                f"{_thousands(out_cells)}) so the analysis stays responsive."
-            )
+            facts.append(fact("raster_coarsened", native_cells=native_cells,
+                              cell_m=cell, out_cells=out_cells))
         elif target_cell_m is not None:
-            notes.append(
-                f"Resampled from {say.length(cell_in, 2)} to {say.length(cell)} cells."
-            )
+            facts.append(fact("raster_resampled", cell_in_m=cell_in, cell_m=cell))
 
         # Snap the origin to a multiple of the cell, as grid_from_points does,
         # so two rasters of the same field at the same cell line up exactly.
@@ -620,7 +623,8 @@ def read_dem(
         grid = ElevationGrid(z, x0, y0, cell, dst_crs)
         info.update({
             "crs": dst_crs, "cell_m": grid.cell, "rows": grid.rows, "cols": grid.cols,
-            "resampled": True, "value_step_m": value_step, "notes": notes,
+            "resampled": True, "value_step_m": value_step,
+            "notes": render(facts, units), "note_facts": facts,
         })
         return grid, info
 
@@ -846,7 +850,11 @@ def dataset_from_dem(
             "dem_crs": grid.crs,
             "dem_area_ha": float(grid.area_ha()),
             "dem_stride": int(stride),
-            "dem_info": {k: v for k, v in info.items() if k != "notes"},
+            # The notes are already on ``meta.notes`` as sentences; the
+            # facts behind them belong to the analysis that says them
+            # again, not to the layer's own record of the raster.
+            "dem_info": {k: v for k, v in info.items()
+                         if k not in ("notes", "note_facts")},
         },
     )
     dataset = Dataset(df, meta)

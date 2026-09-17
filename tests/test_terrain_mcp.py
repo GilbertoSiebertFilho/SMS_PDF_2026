@@ -15,10 +15,17 @@ ones.
 What matters here is the text, not the JSON: ``analyse_terrain`` exists to
 turn a dozen nested tables into sentences a person can act on, and a number
 whose unit was left for the assistant to guess is worse than no number.
+
+The unit is the one the app is showing — the session opens on the Canadian
+default, so these tests read in feet and acres. The tool asks the app for
+the set rather than choosing one, because the findings it quotes are
+already written in it and an answer in two systems about one field is
+worse than either.
 """
 
 from __future__ import annotations
 
+import re
 import sys
 from pathlib import Path
 
@@ -157,27 +164,36 @@ def test_the_terrain_summary_reads_as_sentences_with_their_units(terrain):
     _dataset_id, text = terrain
 
     assert "{" not in text and "[]" not in text, "the summary must not leak raw JSON"
-    # The character of the field and its total relief.
-    assert "Gently undulating field of 60.5 ha" in text
-    assert "10.5 m of total relief" in text
+    # The set is named once, at the top, so the conversation can convert
+    # from it if it is asked for something else.
+    assert text.startswith("Measurements below are in the units AgroSuite is showing:")
+    # The character of the field and its total relief — 60.5 ha and 10.5 m
+    # in the store, read to someone working in acres and feet.
+    assert "Gently undulating field of 149.5 ac" in text
+    assert "34.6 ft of total relief" in text
     # The trend: how much it falls, which way, how steeply.
-    assert "falls 8.1 m towards the south-west" in text
+    assert "falls 26.6 ft towards the south-west" in text
     assert "average gradient of 0.7 %" in text
-    # Every unit is named rather than left to be guessed.
-    for unit in (" m", " ha", " %", "cubic metres"):
+    # Every unit is named rather than left to be guessed, and all of them
+    # belong to the one set: a percentage is the same in every set.
+    for unit in (" ft", " ac", " %", " ft³"):
         assert unit in text
+    # ...and not one quantity is left in the store's own units. A number
+    # then the unit as a word of its own: " ha" alone is inside "had".
+    assert not re.search(r"\d\s?(?:ha|m|m³|km|cm)\b", text), text
 
 
 def test_the_hills_lows_and_depressions_are_placed_and_measured(terrain):
     _dataset_id, text = terrain
 
-    assert "Hill 1 in the south-west part: 3.5 m over 2.6 ha" in text
+    assert "Hill 1 in the south-west part: 11.5 ft over 6.5 ac" in text
     assert "Hill 2 in the eastern part" in text
-    assert "Low 1 in the southern part: 2.3 m below over 5.4 ha" in text
+    assert "Low 1 in the southern part: 7.5 ft below over 13.3 ac" in text
     assert "water ponds there" in text
-    # A closed depression is quoted with the volume it holds before it spills.
+    # A closed depression is quoted with the volume it holds before it
+    # spills, in the cube of the reader's own length unit.
     assert "Depression 1 in the north-east part" in text
-    assert "cubic metres before it spills" in text
+    assert "ft³ before it spills" in text
     # And the hollows too shallow to list are still accounted for.
     assert "within the measurement noise" in text
 
@@ -186,7 +202,7 @@ def test_the_steep_share_and_the_wet_area_are_reported(terrain):
     _dataset_id, text = terrain
 
     assert "is above 10 % slope" in text
-    assert "Likely wet: 5.9 ha" in text
+    assert "Likely wet: 14.6 ac" in text
     # The shares leave out the outer ring of cells, and say so, because a
     # ring whose slope leans on copied values would inflate them.
     assert "outermost ring of cells" in text
@@ -194,7 +210,13 @@ def test_the_steep_share_and_the_wet_area_are_reported(terrain):
 
 def test_the_findings_travel_verbatim(app, terrain):
     """The findings are already the sentences a farmer acts on; a tool that
-    paraphrased them would be re-deciding what matters."""
+    paraphrased them would be re-deciding what matters.
+
+    Word for word against what the screen is showing, which is what the
+    tool speaking the app's own unit set buys: the same sentence reaches
+    the person whether they read it in the browser or hear it back from
+    the assistant.
+    """
     dataset_id, text = terrain
     summary = app.get(f"/api/terrain/{dataset_id}").json()["summary"]
 

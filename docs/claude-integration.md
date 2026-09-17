@@ -81,10 +81,16 @@ what the export tools take. [terrain.md](terrain.md) has the whole surface.
 
 ## Units, when asking
 
-The tools speak the app's internal units: **kg/ha** for rates and yields,
+The tools take the app's internal units: **kg/ha** for rates and yields,
 **metres** for distances and every height, depth and cell size the terrain
 tools take, **price per kilogram**. Claude converts on the way in, but it
 helps to state what your numbers are in.
+
+What comes back out of `analyse_terrain` is the other way round: it is
+written in the unit set the app is showing — the picker at the top of the
+window — and its first line says which. That is so the sentence Claude
+reads back to you is the sentence on your screen, word for word, rather
+than the same field described in two systems at once.
 
 Prices convert like this:
 

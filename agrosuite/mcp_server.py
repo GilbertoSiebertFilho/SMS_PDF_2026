@@ -34,6 +34,11 @@ import urllib.parse
 import urllib.request
 from typing import Any
 
+# The one import from the app itself, and it is the app's own renderer
+# rather than a second one: this server writes sentences about the same
+# field the person has on screen, so it has to write them the same way.
+from .core.units import Phrase
+
 PROTOCOL_VERSION = "2024-11-05"
 SERVER_NAME = "agrosuite"
 SERVER_VERSION = "1.0.0"
@@ -300,19 +305,39 @@ def tool_analyse_terrain(dataset_id: str, cell_m: float | None = None,
     # caller unchanged, like every other error here, rather than being
     # wrapped in a summary of nothing.
     summary = APP.call("POST", "/api/terrain/analyze", body)["summary"]
-    return _terrain_text(summary)
+    # The set the app has just written this summary's findings in. Asked
+    # for rather than assumed: it is the session's, and the session is the
+    # one the person is looking at.
+    units = APP.call("GET", "/api/units").get("display") or {}
+    return _terrain_text(summary, units)
 
 
-def _terrain_text(summary: dict[str, Any]) -> str:
+def _terrain_text(summary: dict[str, Any], units: dict[str, Any] | None = None) -> str:
     """The terrain summary as the paragraphs a person would read out.
 
     The JSON summary is a dozen nested tables, several of them histograms;
     handed over raw it would be relayed as a paraphrase, and a height whose
     unit was guessed is worse than no height. So every number is written
-    here with its unit — metres, hectares, percent, cubic metres — and the
-    findings, which are already the sentences a farmer acts on, travel
-    verbatim.
+    here with its unit, and the findings, which are already the sentences a
+    farmer acts on, travel verbatim.
+
+    **Which unit is the app's decision, not this tool's.** The summary
+    arrives with its findings already written in the set on screen, so a
+    tool that wrote its own lines in metric would put two systems in one
+    answer about one field — "60.5 ha of field ... over 34.6 ft of relief"
+    — while the person asking has the second set in front of them. The
+    alternative, metric throughout, would mean restating the findings
+    against the screen: the assistant would then be the only voice in the
+    room speaking metric, and the app's own promise is that what it says
+    follows the picker. So everything here is written through the same
+    :class:`~agrosuite.core.units.Phrase` the app writes with, from the
+    same stored metric numbers, and the first line names the set once so
+    a conversation can convert from it if it is asked to.
+
+    A percentage and a bearing are the same in every unit set and are
+    written plainly.
     """
+    say = Phrase(units)
     grid = summary["grid"]
     elevation = summary["elevation"]
     slope = summary["slope"]
@@ -321,22 +346,26 @@ def _terrain_text(summary: dict[str, Any]) -> str:
     wetness = summary["wetness"]
 
     lines = [
+        f"Measurements below are in the units AgroSuite is showing: "
+        f"{say.length_unit} for heights and distances, {say.area_unit} for area, "
+        f"{say.volume_unit} for the water a hollow holds. The unit picker at the top "
+        "of the app changes them, and this tool follows it.",
         f"{summary['character']['label'].capitalize()} field of "
-        f"{grid['area_ha']:.1f} ha with {elevation['relief_m']:.1f} m of total relief "
-        f"(the fall in metres from its highest ground, {elevation['max_m']:.1f} m, to "
-        f"its lowest, {elevation['min_m']:.1f} m). {summary['character']['why']}",
+        f"{say.area(grid['area_ha'])} with {say.length(elevation['relief_m'])} of total "
+        f"relief (the fall from its highest ground, {say.length(elevation['max_m'])}, to "
+        f"its lowest, {say.length(elevation['min_m'])}). {summary['character']['why']}",
     ]
     if elevation["level"]:
         lines.append(
             f"Nothing in this field rises or falls by more than the "
-            f"{elevation['relief_floor_m']:.2f} m of measurement noise, so it is "
-            "reported as level: no contours, drainage lines, wet ground or features "
+            f"{say.length(elevation['relief_floor_m'], 2)} of measurement noise, so it "
+            "is reported as level: no contours, drainage lines, wet ground or features "
             "are drawn, because every one of them would be drawn from the noise."
         )
 
     if trend["drop_m"] >= 0.1:
         lines.append(
-            f"Trend: the field falls {trend['drop_m']:.1f} m towards the "
+            f"Trend: the field falls {say.length(trend['drop_m'])} towards the "
             f"{trend['direction_label']} ({trend['direction_deg']:.0f} degrees "
             f"clockwise from north), an average gradient of "
             f"{trend['gradient_pct']:.1f} %."
@@ -344,17 +373,18 @@ def _terrain_text(summary: dict[str, Any]) -> str:
     else:
         lines.append("Trend: no consistent fall across the field.")
 
-    lines.append(_terrain_features(features))
+    lines.append(_terrain_features(features, say))
 
     steep_pct = sum(c["pct"] for c in slope["classes"] if (c["from_pct"] or 0.0) >= STEEP_PCT)
     steep_ha = sum(c["area_ha"] for c in slope["classes"] if (c["from_pct"] or 0.0) >= STEEP_PCT)
     lines.append(
-        f"Steep ground: {steep_pct:.1f} % of the field ({steep_ha:.1f} ha) is above "
+        f"Steep ground: {steep_pct:.1f} % of the field ({say.area(steep_ha)}) is above "
         f"{STEEP_PCT:g} % slope; the slope averages {slope['mean_pct']:.1f} % and "
         f"reaches {slope['max_pct']:.1f} % at its steepest.\n"
-        f"Likely wet: {wetness['wet_area_ha']:.1f} ha, {wetness['wet_pct']:.0f} % of the "
-        "field. (Every share is read inside the field's outermost ring of cells, whose "
-        "slope leans on copied values; the ring is still drawn on the map layers.)"
+        f"Likely wet: {say.area(wetness['wet_area_ha'])}, {wetness['wet_pct']:.0f} % of "
+        "the field. (Every share is read inside the field's outermost ring of cells, "
+        "whose slope leans on copied values; the ring is still drawn on the map "
+        "layers.)"
     )
 
     lines.append("Findings:\n" + "\n".join(
@@ -363,21 +393,26 @@ def _terrain_text(summary: dict[str, Any]) -> str:
     return "\n\n".join(lines)
 
 
-def _terrain_features(features: dict[str, Any]) -> str:
-    """Hills, low ground and closed depressions, each with where it is."""
+def _terrain_features(features: dict[str, Any], say: Phrase) -> str:
+    """Hills, low ground and closed depressions, each with where it is.
+
+    The headings no longer name a unit — every quantity under them carries
+    its own, in the set the reader is in — so there is nothing left to go
+    stale when the picker moves.
+    """
     blocks = []
     hills = features.get("hills") or []
     if hills:
-        blocks.append("Hills (height in metres above the ground around them):\n" + "\n".join(
-            f"  {h['label']} in the {h['position']}: {h['height_m']:.1f} m over "
-            f"{h['area_ha']:.1f} ha, summit at {h['summit_m']:.1f} m."
+        blocks.append("Hills (height above the ground around them):\n" + "\n".join(
+            f"  {h['label']} in the {h['position']}: {say.length(h['height_m'])} over "
+            f"{say.area(h['area_ha'])}, summit at {say.length(h['summit_m'])}."
             for h in hills
         ))
     lows = features.get("lows") or []
     if lows:
-        blocks.append("Low ground (depth in metres below the ground around it):\n" + "\n".join(
-            f"  {l['label']} in the {l['position']}: {l['depth_m']:.1f} m below over "
-            f"{l['area_ha']:.1f} ha, bottom at {l['bottom_m']:.1f} m"
+        blocks.append("Low ground (depth below the ground around it):\n" + "\n".join(
+            f"  {l['label']} in the {l['position']}: {say.length(l['depth_m'])} below "
+            f"over {say.area(l['area_ha'])}, bottom at {say.length(l['bottom_m'])}"
             + ("; part of it is closed, so water ponds there." if l["closed"]
                else "; it drains out, so water runs through rather than standing.")
             for l in lows
@@ -386,9 +421,10 @@ def _terrain_features(features: dict[str, Any]) -> str:
     if depressions:
         blocks.append(
             "Closed depressions (water ponds here until it spills):\n" + "\n".join(
-                f"  {d['label']} in the {d['position']}: {d['area_ha']:.1f} ha, up to "
-                f"{d['max_depth_m']:.2f} m deep, holding {d['volume_m3']:,.0f} cubic metres "
-                f"before it spills at {d['spill_m']:.1f} m."
+                f"  {d['label']} in the {d['position']}: {say.area(d['area_ha'])}, up to "
+                f"{say.length(d['max_depth_m'], 2)} deep, holding "
+                f"{say.volume(d['volume_m3'])} before it spills at "
+                f"{say.length(d['spill_m'])}."
                 for d in depressions
             )
         )
@@ -398,7 +434,7 @@ def _terrain_features(features: dict[str, Any]) -> str:
             f"{unlisted} shallower "
             + ("hollow was" if unlisted == 1 else "hollows were")
             + " within the measurement noise (under "
-            f"{float(features['depression_floor_m']):.2f} m deep) and not listed; the "
+            f"{say.length(features['depression_floor_m'], 2)} deep) and not listed; the "
             "ponding-depth layer still shows them."
         )
     if not blocks:

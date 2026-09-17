@@ -205,7 +205,8 @@ fourteen top-level keys:
       "smooth_m": 10.0, "value_step_m": 0.0,
       "missing_elevations": 0, "non_numeric_elevations": 0,
       "dem_path": null, "unit_doubt": null,
-      "notes": ["The surface was smoothed over 10 m to take out the 30 cm of altitude noise in the readings. ..."]
+      "notes": ["The surface was smoothed over 10 m to take out the 30 cm of altitude noise in the readings. ..."],
+      "note_facts": [{"key": "smoothing", "smooth_m": 10.0, "noise_m": 0.296}]
     },
     "grid": {
       "rows": 162, "cols": 161, "cell_m": 5.0, "crs": "EPSG:32612",
@@ -962,6 +963,15 @@ rewriting it would mean re-deciding what it says. Show them as they come.
 Every number in them also exists in the structured summary for a panel that
 converts.
 
+The same goes for `source.notes` — the remarks the gridding and the raster
+reader left behind, which reach the panel as `info` findings. They come in
+the unit set the request was made in, because the analysis keeps what each
+one *states* in `source.note_facts` (`{"key": "smoothing", "smooth_m":
+10.0, …}`) and writes the sentence again on every read. Show them as they
+come too; if something outside the app needs to say them itself,
+`agrosuite.terrain.notes.render(facts, units)` is the one place that
+turns a fact into its sentence.
+
 Which is why the unit set travels the other way instead. `POST
 /api/terrain/{id}/yield` and the profile's `values_meta.note` take a
 `units` body field — the shape of `UNIT_PRESETS['canada']` — and write
@@ -985,9 +995,15 @@ character of the field and its total relief, which way it falls and how
 steeply, the hills, the low ground and the closed depressions with their
 positions, sizes, heights or depths and the volume a depression holds, the
 share above 10 % slope, the likely wet area, and the findings verbatim.
-Every number is written with its unit — metres, hectares, percent, cubic
-metres — because a height whose unit was left for the assistant to guess is
-worse than no height. Each option defaults to unset rather than 0, since
+Every number is written with its unit, because a height whose unit was left
+for the assistant to guess is worse than no height — **and the unit is the
+one the app is showing**, not the metric store. The tool reads the set from
+`GET /api/units`, names it in its first line, and writes its own lines
+through the same `Phrase` the findings it quotes were written with: an
+answer that said "60.5 ha" above a finding saying "34.6 ft of relief" would
+be describing one field in two systems, to someone who has one of them on
+screen. The options still go **in** in metres, like every other endpoint
+here. Each option defaults to unset rather than 0, since
 `smooth_m: 0` is a real request to read the raw surface. A file with no
 usable altitude comes back as the analyser's own sentence, which already
 names what to open instead.

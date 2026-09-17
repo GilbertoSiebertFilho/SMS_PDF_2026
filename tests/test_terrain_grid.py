@@ -24,6 +24,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from agrosuite.core import schema as sch
 from agrosuite.core.dataset import Dataset, DatasetMeta
+from agrosuite.core.units import UNIT_PRESETS, Phrase
 from agrosuite.terrain import (
     ElevationGrid,
     connected_components,
@@ -35,12 +36,13 @@ from agrosuite.terrain import (
     synthetic_terrain,
 )
 from agrosuite.terrain import grid as grid_mod
+from agrosuite.terrain import notes as notes_mod
 from agrosuite.terrain.grid import fill_nearest
 
 REPORT_KEYS = {
     "points_total", "points_used", "outliers_removed", "passes", "pass_offset_sd_m",
     "detrended", "cell_m", "rows", "cols", "area_ha", "max_gap_m", "edge_gap_m", "smooth_m",
-    "point_noise_m", "vertical_noise_m", "spacing_m", "crs", "notes",
+    "point_noise_m", "vertical_noise_m", "spacing_m", "crs", "notes", "note_facts",
     "fill_values_removed", "passes_dropped", "value_step_m",
     "surface_noise_m", "missing_elevations", "non_numeric_elevations",
 }
@@ -359,7 +361,9 @@ def test_auto_cell_size_and_cap(field):
     capped, capped_report = grid_from_points(wide, cell_m=1.0, max_cells=50_000)
     assert capped_report["rows"] * capped_report["cols"] <= 50_000
     assert capped.cell > 1.0 and capped_report["cell_m"] == capped.cell
-    assert any("50 000" in note for note in capped_report["notes"])
+    # The note says which limit was hit, in the reader's own thousands.
+    assert any(f"more than {Phrase().number(50_000)} cells" in note
+               for note in capped_report["notes"])
     explicit, explicit_report = grid_from_points(wide, cell_m=8.0, smooth_m=0.0, max_gap_m=20.0)
     assert explicit.cell == 8.0 and explicit_report["max_gap_m"] == 20.0
     assert explicit_report["smooth_m"] == 0.0
@@ -450,8 +454,11 @@ def test_default_smoothing_follows_the_noise():
     assert quiet_report["point_noise_m"] == pytest.approx(0.1, rel=0.3)
     assert noisy_report["point_noise_m"] == pytest.approx(0.3, rel=0.3)
     assert 0 < quiet_report["smooth_m"] < noisy_report["smooth_m"]
-    # The user is told that the surface was smoothed and what it costs.
-    assert any("smoothed over" in note and "potholes" in note for note in noisy_report["notes"])
+    # The user is told that the surface was smoothed and what it costs,
+    # with the scale the report holds, written in the set this call asked
+    # for (none, so the metric store).
+    smoothing = next(n for n in noisy_report["notes"] if "potholes" in n)
+    assert f"smoothed over {Phrase().length(noisy_report['smooth_m'])}" in smoothing
     # An explicit value is taken as given, and a coarse cell needs less
     # smoothing in cells because it already spans more relief.
     _, coarse = grid_from_points(noisy, cell_m=20.0)
@@ -507,7 +514,8 @@ def test_large_cells_and_dense_files_do_not_exhaust_memory(monkeypatch):
     wrong.df[sch.SWATH] = 5000.0
     _, wrong_report = grid_from_points(wrong)
     assert wrong_report["cell_m"] <= 25.0 and wrong_report["max_gap_m"] <= 90.0
-    assert any("swath width reads 5000 m" in note for note in wrong_report["notes"])
+    assert any(f"swath width reads {Phrase().length(5000.0, None)}" in note
+               for note in wrong_report["notes"])
     # When the pairs would not fit, the offsets are estimated on a sample
     # and still remove the bulk of the pass-to-pass shift.
     monkeypatch.setattr(grid_mod, "_MAX_PAIRS", 50_000)
@@ -558,11 +566,41 @@ def test_notes_on_a_strip_and_on_separate_blocks():
     two.project()
     _, report = grid_from_points(two)
     assert report["cell_m"] > 5.0
-    assert any("widened from 5 m" in note for note in report["notes"])
-    assert any("2 separate blocks" in note and "km apart" in note for note in report["notes"])
+    assert any(f"widened from {Phrase().length(5.0, None)}" in note for note in report["notes"])
+    blocks = next(f for f in report["note_facts"] if f["key"] == "blocks")
+    assert blocks["blocks"] == 2 and blocks["apart_m"] > 30_000.0
+    said = next(n for n in report["notes"] if "separate blocks" in n)
+    assert f"about {Phrase().length(blocks['apart_m'], 0)} apart" in said
     # A whole field has neither note.
     _, plain = grid_from_points(ds)
     assert not any("strip" in note or "blocks" in note for note in plain["notes"])
+
+
+def test_a_note_is_written_again_in_the_reader_s_units():
+    """The same gridding, two readers: the unit moves, the ground does not.
+
+    A note is stored as the fact it states, so saying it in another unit
+    set is writing it again from the same metric numbers — not measuring
+    anything again, and not touching what was measured.
+    """
+    ds, _ = synthetic_terrain(size_m=400, noise_m=0.3, pass_offset_m=0.0)
+    _, report = grid_from_points(ds)
+    facts = report["note_facts"]
+    smooth_m = next(f for f in facts if f["key"] == "smoothing")["smooth_m"]
+    assert smooth_m > 0
+
+    metric = notes_mod.render(facts, UNIT_PRESETS["metric"])
+    canadian = notes_mod.render(facts, UNIT_PRESETS["canada"])
+    assert len(metric) == len(canadian) == len(report["notes"])
+
+    assert f"smoothed over {smooth_m:.1f} m" in next(n for n in metric if "potholes" in n)
+    assert f"smoothed over {smooth_m / 0.3048:.1f} ft" in \
+        next(n for n in canadian if "potholes" in n)
+    # Nothing in the Canadian reading is left in metres, and the fact the
+    # two sentences were written from is untouched by either.
+    assert not any(" m " in n or n.endswith(" m") for n in canadian)
+    assert next(f for f in report["note_facts"] if f["key"] == "smoothing")["smooth_m"] \
+        == smooth_m
 
 
 # ==========================================================================
