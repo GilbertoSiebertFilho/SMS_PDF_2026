@@ -1440,7 +1440,9 @@ Object.assign(App, {
 
       <div class="panel">
         <button class="primary wide" id="btn-run-package">Build the package</button>
-      </div>`;
+      </div>
+
+      ${this.qgisPanel()}`;
 
     const showAccepts = () => {
       const monitor = monitors.find((m) => m.key === this.value("pkg-monitor"));
@@ -1479,7 +1481,87 @@ Object.assign(App, {
         `<option value="${u.key}">${this.escape(u.label)}</option>`).join("");
     });
     document.getElementById("btn-run-package").addEventListener("click", () => this.runPackage());
+    this.bindQgisPanel();
     showAccepts();
+  },
+
+  /* QGIS is where the layers get looked at properly — against imagery, against
+   * soil maps, with zones drawn by hand. The GeoPackage is the reliable half of
+   * the bridge; the project file just saves adding each layer by hand. */
+  qgisPanel() {
+    return `
+      <div class="panel">
+        <h3>QGIS</h3>
+        <div class="row tight">
+          <button id="btn-qgis-export">Write layers for QGIS</button>
+          <button id="btn-qgis-import">Open a QGIS project</button>
+        </div>
+        <p class="hint tight">Export writes one GeoPackage with every loaded layer,
+        plus a .qgs project that opens them all at once. Import reads a .qgs or .qgz
+        and brings its layers in — which is how zones drawn in QGIS reach the monitor.</p>
+        <div id="qgis-result"></div>
+      </div>`;
+  },
+
+  bindQgisPanel() {
+    document.getElementById("btn-qgis-export")?.addEventListener("click", async () => {
+      const result = await this.busy(document.getElementById("qgis-result"), () =>
+        this.api("/api/qgis/export", {
+          method: "POST",
+          body: { name: this.state.project?.name || "agrosuite" },
+        }));
+      if (!result) return;
+      document.getElementById("qgis-result").innerHTML = `
+        <div class="note ok" style="margin-top:8px">
+          <b>${result.geopackage.layers.length} layer(s) written.</b><br>
+          <span style="font:11px var(--mono)">${this.escape(result.folder)}</span>
+        </div>
+        <div class="scroll-x" style="margin-top:8px"><table class="data">
+          <tr><th>Layer</th><th>Features</th><th>Type</th></tr>
+          ${result.geopackage.layers.map((l) => `<tr>
+            <td>${this.escape(l.layer)}</td>
+            <td class="num">${Units.num(l.features, 0)}</td>
+            <td>${this.escape(l.geometry)}</td></tr>`).join("")}
+        </table></div>
+        <p class="hint tight">${this.escape(result.note)}</p>
+        <a class="btn wide" style="display:block;text-decoration:none;margin-top:8px"
+           href="${result.download_url}" download>Download the GeoPackage</a>`;
+      this.toast("Written for QGIS", `${result.geopackage.layers.length} layer(s).`);
+    });
+
+    document.getElementById("btn-qgis-import")?.addEventListener("click", () => {
+      this.state.qgisImport = true;
+      document.getElementById("dlg-path").showModal();
+      document.getElementById("path-input").value = "";
+      this.browse("");
+      this.toast("Pick a project", "Choose a .qgs or .qgz file, then press Open.");
+    });
+  },
+
+  async importQgisProject(path) {
+    const project = await this.api(
+      `/api/qgis/project?path=${encodeURIComponent(path)}`
+    ).catch((err) => { this.toast("That did not work", err.message, "error"); return null; });
+    if (!project) return;
+
+    const importable = project.layers.filter((l) => l.importable);
+    if (!importable.length) {
+      this.toast("Nothing to import",
+        "None of the project's layers are file-based layers on this machine.", "warn");
+      return;
+    }
+    const result = await this.busy(document.querySelector("aside.left"), () =>
+      this.api("/api/qgis/import", { method: "POST", body: { path } }));
+    if (!result) return;
+
+    await this.refreshDatasets();
+    await this.selectDataset(result.imported[0].id);
+    this.toast(
+      `Imported from ${result.project}`,
+      result.imported.map((d) => d.label).join(", ") +
+      (result.skipped.length ? `\nSkipped: ${result.skipped.map((s) =>
+        `${s.name} (${s.reason})`).join(", ")}` : ""),
+    );
   },
 
   async runPackage() {
@@ -1753,7 +1835,9 @@ Object.assign(App, {
       </div>
       <div class="panel">
         <button class="primary wide" id="btn-run-export">Generate files</button>
-      </div>`;
+      </div>
+
+      ${this.qgisPanel()}`;
 
     document.getElementById("exp-source").addEventListener("change", (e) => {
       this.state.exportSource = e.target.value;
@@ -1766,6 +1850,7 @@ Object.assign(App, {
         `<option value="${u.key}">${this.escape(u.label)}</option>`).join("");
     });
     document.getElementById("btn-run-export").addEventListener("click", () => this.runExport());
+    this.bindQgisPanel();
   },
 
   async runExport() {
@@ -1909,6 +1994,14 @@ Object.assign(App, {
     document.getElementById("btn-path-open").addEventListener("click", async () => {
       const path = this.value("path-input");
       if (!path) return;
+      // A .qgs or .qgz is a project, not a data file: it names layers rather
+      // than holding them.
+      if (this.state.qgisImport || /\.(qgs|qgz)$/i.test(path)) {
+        this.state.qgisImport = false;
+        document.getElementById("dlg-path").close();
+        await this.importQgisProject(path);
+        return;
+      }
       const result = await this.busy(document.getElementById("dlg-path"), () =>
         this.api("/api/import/path", { method: "POST", body: { path } }));
       if (!result) return;

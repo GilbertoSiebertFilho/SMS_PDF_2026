@@ -42,6 +42,35 @@ Bushel units depend on the crop, because a bushel measures volume: a bushel
 of canola weighs 22.68 kg and one of wheat 27.22 kg. Pick the crop in the
 same panel.
 
+## How the work flows
+
+The app walks the job in the order it actually happens, and says at every
+point where it stands and what is missing. That order is not a preference:
+cleaning before knowing the units bakes the wrong units into the clean copy,
+and analysing before cleaning fits a curve to overlap and headland turns.
+
+A **project** is the set of files describing one field and season. A DIFM
+analysis needs several — the plan that was made, the as-applied log of what
+the machine did, the yield map of what came of it, and the prices that turn
+yield into money. The panel on the left names whichever is absent, instead of
+failing three screens later.
+
+Every file gets a **first look** the moment it opens: coverage, timeline,
+completeness, data quality, and above all whether the units are what they
+seem. A median yield of 55 on a canola map is bu/ac, not kg/ha, and reading it
+wrong puts every number downstream out by a factor of fifty. The check judges
+the value, the speed and the width together, because a monitor is configured
+as one system and agreement between three quantities is far stronger evidence
+than any one alone.
+
+Layers from separate files are **joined on a shared grid** rather than point
+to point. Three passes over the same ground never line up, and matching
+nearest neighbours would pair a yield reading with whichever rate record
+happened to be closest. Two details make the join trustworthy: every grid is
+anchored to the same origin, and a cell takes the rate level most of its
+records agree on rather than their mean — a cell half at 60 and half at 120
+would otherwise come out at 90, a treatment nobody applied.
+
 ## The five steps
 
 ### 1 · Data
@@ -139,6 +168,39 @@ screen** and **blocker**. Nothing claims "this will work" — the check claims
 that the known causes of failure have been ruled out. Firmware version and
 import menus cannot be tested from here.
 
+## Straight to the USB stick
+
+The Export tab finds the removable drives, shows what is already on each one,
+and copies the package to the root — which is where the terminal looks.
+Anything already on the drive is left alone unless you say to replace it: a
+stick normally carries other jobs, and wiping them because the app assumed it
+was scratch space would be unforgivable.
+
+## QGIS
+
+Two directions, both of which come up.
+
+**Out of AgroSuite:** the Export tab writes every loaded layer into one
+GeoPackage plus a `.qgs` project. Open the project to get all the layers at
+once; if your QGIS version does not take the project file, open the `.gpkg`
+directly — it is a standard format and holds the same layers.
+
+**Into AgroSuite:** *Open a QGIS project* reads a `.qgs` or `.qgz`, lists its
+layers and brings in the ones you pick. That is how zones drawn by hand in
+QGIS reach the monitor.
+
+There is also a **QGIS plugin** in `qgis_plugin/`, which adds three toolbar
+buttons: send the active layer across, bring a dataset back, and open the
+AgroSuite window. See `qgis_plugin/README.md` for installation. It is a
+convenience — the round trip above needs no plugin at all.
+
+## Asking Claude to do it
+
+AgroSuite ships an MCP server, so Claude can drive it: load the files, clean,
+join, analyse, and report the optimum, from one sentence. See
+[docs/claude-integration.md](docs/claude-integration.md) for the setup and
+what it will and will not do.
+
 ## What is proprietary and what is not
 
 AgroSuite reads and writes open formats: shapefile, GeoJSON, CSV, KML and
@@ -158,7 +220,7 @@ any other monitor without redrawing anything.
 ## Development
 
 ```
-python -m pytest tests/ -q          # 67 tests
+python -m pytest tests/ -q          # 97 tests
 python tests/fixtures.py samples    # sample files for every monitor
 python -m agrosuite --reload        # server with auto-reload
 ```
@@ -171,12 +233,15 @@ column name, the matching test breaks and the alias is updated in one place.
 
 ```
 agrosuite/
-  core/       data model, column schema, units, CRS, AB lines
+  core/       data model, column schema, units, CRS, AB lines,
+              preliminary analysis, the workflow
   formats/    per-format reading and writing, monitor identification,
-              per-platform packages, verification
+              per-platform packages, verification, USB, QGIS
   clean/      cleaning filters and report
-  difm/       response models, economics, trial layout
+  difm/       response models, economics, trial layout, layer joining
   app/        local server and interface
+  mcp_server  the tool surface Claude drives
+qgis_plugin/  optional QGIS plugin
 ```
 
 ## Licence

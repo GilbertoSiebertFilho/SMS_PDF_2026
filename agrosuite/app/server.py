@@ -37,6 +37,7 @@ from ..core import guidance as guidance_mod
 from ..core import preflight as preflight_mod
 from ..core import workflow as workflow_mod
 from ..difm import join as join_mod
+from ..formats import qgis as qgis_mod
 from ..formats import usb as usb_mod
 from ..formats import johndeere as jd_mod
 from ..formats import packages as packages_mod
@@ -132,6 +133,21 @@ class JoinRequest(BaseModel):
     min_points_per_cell: int = 1
     min_purity: float = 0.8
     carry: list[str] = Field(default_factory=list)
+
+
+class QgisExportRequest(BaseModel):
+    """Writing the session's layers out for QGIS."""
+
+    dataset_ids: list[str] = Field(default_factory=list)
+    name: str = "agrosuite"
+    metric: bool = False
+
+
+class QgisImportRequest(BaseModel):
+    """Pulling layers out of a QGIS project."""
+
+    path: str
+    layers: list[str] = Field(default_factory=list)
 
 
 class UsbRequest(BaseModel):
@@ -462,6 +478,78 @@ def join_project(request: JoinRequest) -> dict[str, Any]:
     state.get(summary["id"]).role = None
     state.get(summary["id"]).reports["join"] = report
     return {"dataset": summary, "report": report, "cell_m": cell_m}
+
+
+@app.post("/api/qgis/export")
+def qgis_export(request: QgisExportRequest) -> dict[str, Any]:
+    """Write the chosen datasets as one GeoPackage plus a QGIS project."""
+    ids = request.dataset_ids or [e["id"] for e in state.list()]
+    layers: dict[str, Any] = {}
+    for dataset_id in ids:
+        try:
+            entry = state.get(dataset_id)
+        except KeyError:
+            continue
+        layers[entry.label] = entry.dataset
+    if not layers:
+        raise _fail("No dataset to export.")
+
+    index = len(list(state.exports.iterdir())) + 1
+    out_dir = state.exports / f"qgis_{index}"
+    try:
+        result = qgis_mod.export_for_qgis(
+            layers, out_dir, name=request.name, metric=request.metric
+        )
+    except Exception as exc:
+        raise _fail(f"Could not write for QGIS: {exc}")
+
+    token = state.register_file(Path(result["geopackage"]["path"]))
+    result["download_url"] = f"/api/download/{token}"
+    return result
+
+
+@app.get("/api/qgis/project")
+def qgis_project(path: str) -> dict[str, Any]:
+    """List the layers of a QGIS project, without loading their data."""
+    try:
+        return qgis_mod.read_project(Path(path).expanduser())
+    except Exception as exc:
+        raise _fail(str(exc))
+
+
+@app.post("/api/qgis/import")
+def qgis_import(request: QgisImportRequest) -> dict[str, Any]:
+    """Import the chosen layers of a QGIS project."""
+    try:
+        project = qgis_mod.read_project(Path(request.path).expanduser())
+    except Exception as exc:
+        raise _fail(str(exc))
+
+    wanted = set(request.layers) if request.layers else None
+    imported, skipped = [], []
+    for layer in project["layers"]:
+        if wanted is not None and layer["name"] not in wanted:
+            continue
+        if not layer["importable"]:
+            skipped.append({
+                "name": layer["name"],
+                "reason": "not on this machine" if not layer["exists"]
+                          else f"provider '{layer['provider']}' is not a file layer",
+            })
+            continue
+        try:
+            dataset = qgis_mod.read_project_layer(layer)
+        except Exception as exc:
+            skipped.append({"name": layer["name"], "reason": str(exc)})
+            continue
+        imported.append(_register(dataset, layer["name"], "qgis"))
+
+    if not imported:
+        raise _fail(
+            "No layer could be imported. "
+            + (f"Reasons: {'; '.join(s['reason'] for s in skipped)}." if skipped else "")
+        )
+    return {"imported": imported, "skipped": skipped, "project": project["title"]}
 
 
 @app.get("/api/usb")

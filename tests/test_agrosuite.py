@@ -755,3 +755,121 @@ def test_usb_refuses_a_missing_drive(tmp_path):
     package.mkdir()
     with pytest.raises(ValueError, match="Drive not found"):
         usb.plan_write(package, str(tmp_path / "no-such-drive"))
+
+
+# ==========================================================================
+# QGIS
+# ==========================================================================
+
+def test_qgis_round_trip(tmp_path):
+    """Layers out to a GeoPackage and a project, and back in by name.
+
+    The GeoPackage is the reliable half of the bridge, so the test asserts on
+    it: the project file is a convenience whose schema belongs to QGIS.
+    """
+    from agrosuite.formats import qgis
+
+    layers = {"yield 2025": synthetic_harvest(), "difm trial": synthetic_trial()}
+    result = qgis.export_for_qgis(layers, tmp_path, name="NW-14-32-W2")
+
+    assert Path(result["geopackage"]["path"]).exists()
+    assert len(result["geopackage"]["layers"]) == 2
+    assert all(layer["crs"] == "EPSG:4326" for layer in result["geopackage"]["layers"])
+
+    project = qgis.read_project(Path(result["project"]["path"]))
+    assert len(project["importable"]) == 2
+
+    dataset = qgis.read_project_layer(project["importable"][0])
+    assert len(dataset) == len(layers["yield 2025"])
+    assert "QGIS project layer" in dataset.meta.notes[-1]
+
+
+def test_qgis_layer_names_survive_the_round_trip(tmp_path):
+    """A name with spaces has to come back recognizable, not as 'layer1'."""
+    from agrosuite.formats import qgis
+
+    result = qgis.export_for_qgis(
+        {"NW 14-32 W2 yield": synthetic_harvest()}, tmp_path, name="field"
+    )
+    project = qgis.read_project(Path(result["project"]["path"]))
+    assert project["layers"][0]["name"] == "NW_14-32_W2_yield"
+
+
+def test_qgis_reports_a_layer_stored_elsewhere(tmp_path):
+    """A project written on another machine points at paths that are not here."""
+    from agrosuite.formats import qgis
+
+    project = tmp_path / "elsewhere.qgs"
+    project.write_text(
+        '<?xml version="1.0"?><qgis version="3.28.0"><title>Elsewhere</title>'
+        '<projectlayers><maplayer><datasource>/not/here/soil.shp</datasource>'
+        '<layername>Soil</layername><provider>ogr</provider></maplayer>'
+        "</projectlayers></qgis>",
+        encoding="utf-8",
+    )
+    read = qgis.read_project(project)
+    assert read["layers"][0]["exists"] is False
+    assert read["importable"] == []
+
+
+def test_qgis_project_is_refused_as_a_data_file(tmp_path):
+    """A project names layers; it does not hold them. Saying so beats a parse error."""
+    project = tmp_path / "field.qgs"
+    project.write_text("<qgis/>", encoding="utf-8")
+    with pytest.raises(ValueError, match="QGIS project"):
+        registry.read_any(project)
+
+
+# ==========================================================================
+# The MCP surface
+# ==========================================================================
+
+def test_mcp_declares_its_tools():
+    from agrosuite import mcp_server
+
+    listing = mcp_server.handle({"jsonrpc": "2.0", "id": 1, "method": "tools/list"})
+    tools = listing["result"]["tools"]
+    assert {t["name"] for t in tools} >= {
+        "open_file", "project_status", "clean_dataset", "analyse_difm",
+        "list_usb_drives", "plan_usb_write", "write_to_usb",
+    }
+    for tool in tools:
+        assert tool["description"].strip()
+        assert tool["inputSchema"]["type"] == "object"
+
+
+def test_mcp_initialize_declares_the_protocol():
+    from agrosuite import mcp_server
+
+    response = mcp_server.handle({"jsonrpc": "2.0", "id": 1, "method": "initialize"})
+    assert response["result"]["protocolVersion"] == mcp_server.PROTOCOL_VERSION
+    assert response["result"]["serverInfo"]["name"] == "agrosuite"
+
+
+def test_mcp_reports_a_bad_tool_as_an_error_not_a_crash():
+    from agrosuite import mcp_server
+
+    response = mcp_server.handle({
+        "jsonrpc": "2.0", "id": 2, "method": "tools/call",
+        "params": {"name": "no_such_tool", "arguments": {}},
+    })
+    assert "error" in response
+
+
+def test_mcp_ignores_notifications():
+    from agrosuite import mcp_server
+
+    assert mcp_server.handle({"jsonrpc": "2.0", "method": "notifications/initialized"}) is None
+
+
+def test_mcp_write_to_usb_requires_explicit_replacement():
+    """The assistant must not be able to overwrite a stick by accident."""
+    from agrosuite import mcp_server
+
+    tool = mcp_server.TOOLS_BY_NAME["write_to_usb"]
+    assert "replace" in tool["schema"]["properties"]
+    assert "replace" not in tool["schema"]["required"]
+    assert "left alone" in tool["description"].lower()
+
+    planner = mcp_server.TOOLS_BY_NAME["plan_usb_write"]
+    assert "writes nothing" in planner["description"].lower()

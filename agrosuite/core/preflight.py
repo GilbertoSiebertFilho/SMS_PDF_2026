@@ -146,11 +146,13 @@ def _check_time(ds) -> tuple[list[Finding], dict[str, Any]]:
     info: dict[str, Any] = {}
 
     if sch.TIMESTAMP not in ds.df.columns:
-        findings.append(_warn(
-            "No timestamp",
-            "The file carries no date or time.",
-            "Filters that depend on sequence — flow delay, pass ends — cannot run.",
-        ))
+        # A prescription has no timeline: it was never driven.
+        if ds.meta.operation not in ("prescription", "boundary", "guidance"):
+            findings.append(_warn(
+                "No timestamp",
+                "The file carries no date or time.",
+                "Filters that depend on sequence — flow delay, pass ends — cannot run.",
+            ))
         return findings, info
 
     stamps = pd.to_datetime(ds.df[sch.TIMESTAMP], errors="coerce").dropna()
@@ -190,6 +192,16 @@ def _check_columns(ds) -> tuple[list[Finding], dict[str, Any]]:
     present = set(ds.df.columns)
     info = {"present": sorted(present & set(sch.LABELS)), "missing": []}
     findings: list[Finding] = []
+
+    # A plan or a boundary is a map, not a log. It never carries a speed or a
+    # swath width, and saying so would be noise dressed up as a warning.
+    if ds.meta.operation in ("prescription", "boundary", "guidance"):
+        if sch.VALUE in present or sch.TARGET_RATE in present or ds.geometry:
+            findings.append(_ok(
+                "Columns",
+                "A map layer: it carries geometry and a value, which is all it needs.",
+            ))
+            return findings, info
 
     blocking = {
         sch.SPEED: "the speed and speed-change filters",

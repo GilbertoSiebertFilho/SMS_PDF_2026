@@ -29,7 +29,14 @@ ARCHIVE_EXT = {".zip"}
 #: Extensions that make up a shapefile, used when extracting from a ZIP.
 SHAPEFILE_SIDECARS = {".shp", ".shx", ".dbf", ".prj", ".cpg", ".sbn", ".sbx", ".qix"}
 
-ALL_IMPORT_EXT = VECTOR_EXT | TABULAR_EXT | EXCEL_EXT | ARCHIVE_EXT | {".xml", ".iso"}
+#: QGIS projects are listed so they show up in the file browser, but they are
+#: handled by :mod:`agrosuite.formats.qgis` rather than by a reader here: a
+#: project names layers, it does not hold them.
+QGIS_EXT = {".qgs", ".qgz"}
+
+ALL_IMPORT_EXT = (
+    VECTOR_EXT | TABULAR_EXT | EXCEL_EXT | ARCHIVE_EXT | QGIS_EXT | {".xml", ".iso"}
+)
 
 
 @dataclass
@@ -94,6 +101,12 @@ def detect(path: str | Path) -> DetectedSource:
         if found:
             return DetectedSource("isoxml", found, "ISOXML in the same folder")
         raise ValueError(f"XML not recognized as ISOXML: {path.name}")
+
+    if suffix in QGIS_EXT:
+        raise ValueError(
+            "That is a QGIS project. Use 'Open a QGIS project' on the Export tab, "
+            "which lists its layers and lets you pick which ones to bring in."
+        )
 
     raise ValueError(
         f"Extension '{suffix or path.name}' is not supported on import. "
