@@ -741,6 +741,120 @@ def _terrain_section(summary: dict, units: _Units, st: dict, width: float) -> li
     return flow
 
 
+def _terrain_yield_section(summary: dict, units: _Units, st: dict, width: float) -> list:
+    """Yield against the relief: the findings, the elevation bands and the
+    landform classes.
+
+    The same intent as the relief section above it — compact, and only what
+    is acted on. The screen has a chart with a quartile band under it and
+    three tables; the page has the two tables that answer the question the
+    relief raises (does the height cost me anything, and which part of the
+    field is it), plus the findings, which carry the caveats. The slope and
+    wetness splits stay on screen: on a page this wide a third table would
+    cost the findings their room, and the landform classes already say
+    where on the field the difference sits.
+
+    The value follows the operation, as everywhere else: a harvest prints
+    in the yield unit and anything else in the input-rate unit, because
+    lb/ac of fertilizer printed as bu/ac of grain is a gross error. So do
+    the findings: they are written again here, from the stored numbers, in
+    the unit set the page was asked for, so the prose and the tables around
+    it never quote the same figure in two different units.
+    """
+    values = summary.get("values") or {}
+    overall = summary.get("overall") or {}
+    points = summary.get("points") or {}
+    convert, unit = units.for_column(
+        str(values.get("column") or "value"), values.get("operation"))
+    # The stored findings were written in whatever units the screen was in
+    # when Compare was pressed; the page was asked for its own. They are
+    # rewritten from the same numbers rather than converted, because a
+    # sentence cannot be restated in another unit without re-deciding what
+    # it says — the analyser is the one entitled to decide.
+    from .terrain import yieldrelief as _yieldrelief
+
+    written = _yieldrelief.findings(summary, units.prefs)
+
+    flow = _heading("Yield against the relief", st)
+    flow.append(_stats([
+        ("Compared", _t(values.get("label") or "—"), "against the relief above"),
+        ("Field average", _num(convert(overall.get("mean")), 1), unit),
+        ("Spread", _pct(overall.get("cv_pct"), 0),
+         f"of the average · {_num(overall.get('points'), 0)} readings"),
+        ("Points matched", _num(points.get("matched"), 0),
+         f"of {_num(points.get('total'), 0)} · {_num(points.get('off_grid'), 0)} off the field"),
+    ], st, width))
+
+    bands = summary.get("elevation_bands") or []
+    band_rows = [
+        [f"{_num(units.length(band.get('from_m')), 1)}–{_num(units.length(band.get('to_m')), 1)}",
+         _num(units.area(band.get("area_ha")), 1),
+         _num(convert(band.get("mean")), 1),
+         _signed_pct(band.get("delta_pct")),
+         _num(band.get("points"), 0)]
+        for band in bands
+    ]
+    landforms = [cls for cls in summary.get("landforms") or [] if cls.get("points")]
+    landform_rows = [
+        [cls.get("label", ""),
+         _num(convert(cls.get("mean")), 1),
+         _signed_pct(cls.get("delta_pct")),
+         _num(cls.get("points"), 0)]
+        for cls in landforms
+    ]
+
+    left_width = width * 0.56
+    right_width = width - left_width - 12
+    left = [_table(
+        [f"Height ({units.length_unit})", f"Ground ({units.area_unit})",
+         f"Mean ({unit})", "vs field", "Readings"],
+        band_rows or [["—", "", "", "", ""]], st,
+        [left_width * f for f in (0.28, 0.18, 0.2, 0.17, 0.17)],
+    )]
+    right = [_table(
+        ["Landform", f"Mean ({unit})", "vs field", "Readings"],
+        landform_rows or [["—", "", "", ""]], st,
+        [right_width * f for f in (0.4, 0.22, 0.2, 0.18)],
+    )]
+    flow.append(Spacer(1, 4))
+    flow.append(_columns(left, right, (left_width + 6, right_width + 6)))
+
+    # The bands are equal-count, which is why the height ranges are uneven
+    # and the ground each holds is not: worth one line, because a reader
+    # comparing the first band's hectares with the last one's otherwise
+    # reads the difference as a mistake.
+    flow.append(Spacer(1, 2))
+    flow.append(Paragraph(
+        "The bands hold the same number of readings each, so their height ranges differ "
+        "and the ground in each is what the field actually has at that height.",
+        st["muted"]))
+
+    for finding in written:
+        if finding.get("level") != "warning":
+            continue
+        flow.append(Spacer(1, 3))
+        flow.append(_note(_t(finding.get("text", "")), "warning", st, width))
+    rest = [f for f in written if f.get("level") != "warning"]
+    if rest:
+        flow.append(Spacer(1, 3))
+        flow.append(Paragraph(
+            "\u2022 " + "<br/>\u2022 ".join(_t(f.get("text", "")) for f in rest), st["note"]))
+    return flow
+
+
+def _signed_pct(value, decimals: int = 1) -> str:
+    """A difference from the field average, with its sign written in.
+
+    A bare "3.2" in a column headed "vs field" is read as above average by
+    everyone and as below average by no one; the plus sign is what makes
+    the minus sign mean something.
+    """
+    number = _f(value)
+    if number is None:
+        return "—"
+    return f"{'+' if number > 0 else ''}{_num(number, decimals)} %"
+
+
 def _clean_section(report: dict, operation: str | None, units: _Units, st: dict,
                    width: float) -> list:
     totals = report.get("totals") or {}
@@ -1126,6 +1240,14 @@ def build_pdf(
         story.append(Spacer(1, 5))
         story += _terrain_section(reports["terrain"], resolved, st, width)
         sections.append("terrain")
+
+    # The comparison belongs under the relief that raised the question, and
+    # only when both have been run: without the relief above it, a table of
+    # yield by elevation band has nothing to be read against.
+    if reports.get("terrain") and reports.get("terrain_yield"):
+        story.append(Spacer(1, 5))
+        story += _terrain_yield_section(reports["terrain_yield"], resolved, st, width)
+        sections.append("terrain_yield")
 
     if reports.get("clean"):
         story.append(Spacer(1, 5))

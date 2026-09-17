@@ -38,6 +38,7 @@ from ...formats import writers
 from ...terrain import analysis as analysis_mod
 from ...terrain import landforms as lf
 from ...terrain import render as render_mod
+from ...terrain import yieldrelief
 from ...terrain.analysis import LAYER_SPECS, ZONE_KINDS, TerrainOptions, TerrainResult
 from ...terrain.contours import contours as contour_lines
 from ...terrain.contours import contours_to_geodataframe
@@ -84,6 +85,11 @@ RASTER_EXPORTS: list[tuple[str, str]] = [
 EXPORT_PARTS = ("geotiff", "contours", "features", "drainage")
 VECTOR_FORMATS = ("shapefile", "geojson")
 
+#: The origin of a dataset that came out of the cleaning as the kept half.
+#: Only that one: ``clean_removed`` is the discards, which is the opposite
+#: of a cleaned layer, and every other origin is a file as it arrived.
+CLEANED_ORIGINS = ("clean",)
+
 ZONE_LABELS = {
     "landform": "landform",
     "slope_class": "slope class",
@@ -118,8 +124,45 @@ class AnalyzeRequest(BaseModel):
 
 
 class ProfileRequest(BaseModel):
+    """A line across the field, and optionally a layer to read along it.
+
+    ``values_dataset_id`` is left out by every caller that only wants the
+    ground, and the response then has exactly the shape it always had.
+
+    ``units`` is the reader's unit set, and it reaches only the one
+    sentence the answer carries (``values_meta.note``); every number stays
+    metric.
+    """
+
     points: list[list[float]]
     n: int = 200
+    values_dataset_id: str | None = None
+    value_column: str | None = None
+    units: dict[str, Any] | None = None
+
+
+class YieldReliefRequest(BaseModel):
+    """The value layer to read against an analysed relief.
+
+    ``yield_dataset_id`` may be the analysed dataset itself — a yield map
+    whose own GPS altitude was gridded, which is the common case — or a
+    separate layer, a DEM having been analysed with the yield map loaded
+    beside it. Unknown keys are refused, as on the analysis itself, so a
+    typo cannot silently fall back to a default.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    yield_dataset_id: str
+    bands: int = yieldrelief.DEFAULT_BANDS
+    value_column: str | None = None
+    #: The unit set on screen, the shape of ``UNIT_PRESETS['canada']``. It
+    #: reaches the findings only — every number in the answer stays metric
+    #: — because a sentence with its numbers written into it cannot be
+    #: restated in another unit at display time without re-deciding what it
+    #: says. The interface posts again when the reader switches preset,
+    #: which is cheaper than it sounds: the grid is already in memory.
+    units: dict[str, Any] | None = None
 
 
 class ZonesRequest(BaseModel):
@@ -499,7 +542,13 @@ def features(dataset_id: str) -> dict[str, Any]:
 
 @router.post("/{dataset_id}/profile")
 def profile(dataset_id: str, request: ProfileRequest) -> dict[str, Any]:
-    """Elevation along a line drawn on the map."""
+    """Elevation along a line drawn on the map, and optionally a value with it.
+
+    With no ``values_dataset_id`` the answer is exactly what it has always
+    been. With one, two keys are added — ``values``, aligned station for
+    station with ``distance_m``, and ``values_meta`` — and nothing else
+    changes, so a caller that ignores them reads the same response.
+    """
     server_mod = _server()
     result = _cached(dataset_id).result
     if request.n > MAX_PROFILE_STATIONS:
@@ -510,9 +559,64 @@ def profile(dataset_id: str, request: ProfileRequest) -> dict[str, Any]:
             "reads every cell it crosses."
         )
     try:
-        return profile_along(result.grid, request.points, n=request.n)
+        line = profile_along(result.grid, request.points, n=request.n)
     except ValueError as exc:
         raise server_mod._fail(str(exc), 400)
+    if not request.values_dataset_id:
+        return line
+
+    values_entry = _entry(request.values_dataset_id)
+    try:
+        series, meta = yieldrelief.profile_values(
+            result.grid, line, values_entry.dataset,
+            value_column=request.value_column, values_label=values_entry.label,
+            units=request.units,
+        )
+    except ValueError as exc:
+        raise server_mod._fail(str(exc), 400)
+    line["values"] = series
+    line["values_meta"] = meta
+    return line
+
+
+# ==========================================================================
+# Yield against the relief
+# ==========================================================================
+
+@router.post("/{dataset_id}/yield")
+def yield_against_relief(dataset_id: str, request: YieldReliefRequest) -> dict[str, Any]:
+    """Read a value layer against the relief of ``dataset_id``.
+
+    The relief has to be in memory, not merely reported: the comparison
+    samples the grid itself under every point, which the saved summary
+    cannot do. So an evicted analysis is refused with the sentence that
+    says to run it again, exactly as the map layers are.
+
+    The result is kept on the analysed dataset's entry, beside its terrain
+    report, so the printed page carries it and a reload brings it back.
+    The findings stored with it are the ones this call rendered, in the
+    unit set it was given; the printed page re-renders them in whatever
+    units it is asked for.
+    """
+    server_mod = _server()
+    entry = _entry(dataset_id)
+    result = _cached(dataset_id).result
+    values_entry = _entry(request.yield_dataset_id)
+    # Cleaning produces a new dataset rather than changing one, so a layer
+    # that has been cleaned is a layer whose origin is the cleaning.
+    cleaned = values_entry.origin in CLEANED_ORIGINS
+    try:
+        summary = yieldrelief.analyse(
+            result, values_entry.dataset,
+            terrain_id=dataset_id, terrain_label=entry.label,
+            values_id=request.yield_dataset_id, values_label=values_entry.label,
+            bands=request.bands, value_column=request.value_column,
+            cleaned=cleaned, units=request.units,
+        )
+    except ValueError as exc:
+        raise server_mod._fail(str(exc), 400)
+    entry.reports["terrain_yield"] = summary
+    return summary
 
 
 # ==========================================================================

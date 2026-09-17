@@ -147,6 +147,14 @@ their numbers in a popup, a slope histogram against the agronomic classes,
 an aspect rose, and the profile of the ground along any line you click
 across the field.
 
+**Yield against the relief** answers the question the relief raises: the
+yield map read at the height each reading was harvested at, band by band,
+by landform, by slope class and by wet or well-drained ground — with the
+correlation that says, honestly, how much of the season the relief explains
+at all, and a line saying that one season on one field is not a cause. The
+yield map can be the same file whose altitude was analysed, or a separate
+one beside a DEM.
+
 **Make zones from this** turns the relief into an ordinary dataset — by
 landform, slope class, elevation band or wetness, as points or polygons —
 which exports to the monitor like any other map; give it a rate per zone

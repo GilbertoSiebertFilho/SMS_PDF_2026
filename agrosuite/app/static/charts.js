@@ -1,9 +1,17 @@
 /* Inline SVG charts.
  *
  * There are only a few, and they are specific — a comparative histogram, a
- * response curve, an elevation profile and an aspect rose — so drawing the
- * SVG by hand comes out smaller and more controllable than loading a whole
- * charting library into an app that has to open offline. */
+ * response curve, an elevation profile, a value across the height of the
+ * field and an aspect rose — so drawing the SVG by hand comes out smaller
+ * and more controllable than loading a whole charting library into an app
+ * that has to open offline.
+ *
+ * Two rules hold across all of them. Nothing here converts a unit: every
+ * number arrives in the unit already on screen, so a chart can never
+ * disagree with the table beside it. And no chart draws two scales on one
+ * plot — two measures that share no zero and no step are stacked on a
+ * common x-axis instead, because where two lines on two scales cross is
+ * decided by where the scales were put, not by the field. */
 
 const Charts = (() => {
   const NS = "http://www.w3.org/2000/svg";
@@ -173,79 +181,318 @@ const Charts = (() => {
       `— yield (${options.yieldUnit})   ╌ profit   ·   rate in ${options.rateUnit || ""}`;
   }
 
-  /* Elevation along a line drawn on the map: height against distance, both
-   * in the unit the panel beside it uses.
+  /* Elevation along a line drawn on the map — and, when a value layer is
+   * picked, that value along the same line under it.
+   *
+   * Two panels stacked on one distance axis, never two y-scales on one
+   * plot. A height in feet and a yield in bushels share no zero and no
+   * step, so where two lines drawn against two scales cross is decided by
+   * where the scales were put, not by the field: the chart would show a
+   * relation the data never claimed. Stacked, the same two series are read
+   * against the same distance and the reader compares shapes, which is the
+   * comparison that is actually there.
    *
    * Stations that fall outside the field come back null, and the path
    * breaks there rather than joining across the gap — a straight segment
    * over ground that was never measured is an invention, and it is exactly
-   * where a line clipping the corner of a field would draw one. */
+   * where a line clipping the corner of a field would draw one. The value
+   * series breaks the same way, wherever no reading fell near the line. */
   function profile(container, series, options = {}) {
     container.innerHTML = "";
     const distance = series?.distance || [];
     const elevation = series?.elevation || [];
+    const values = series?.values || null;
     const points = distance
-      .map((d, i) => ({ d, z: elevation[i] }))
+      .map((d, i) => ({ d, z: elevation[i], v: values ? values[i] : null }))
       .filter((p) => Number.isFinite(p.d));
     const measured = points.filter((p) => Number.isFinite(p.z));
     if (measured.length < 2) {
       container.innerHTML = '<div class="empty">The line crosses too little of the field to draw.</div>';
       return;
     }
+    // One panel is worth drawing only when two stations of it were
+    // measured; a single point is a dot nobody can read a shape off.
+    const twoPanels = points.filter((p) => Number.isFinite(p.v)).length >= 2;
 
     const width = container.clientWidth || 360;
-    const height = options.height || 170;
-    const pad = { t: 14, r: 10, b: 24, l: 44 };
+    const legendHeight = twoPanels ? 16 : 0;
+    const height = options.height || (twoPanels ? 258 : 170);
+    const pad = { t: 14 + legendHeight, r: 10, b: 24, l: 44 };
     const svg = el("svg", { class: "chart", viewBox: `0 0 ${width} ${height}`, height }, container);
 
     const xMin = 0, xMax = Math.max(...points.map((p) => p.d)) || 1;
-    let zMin = Math.min(...measured.map((p) => p.z));
-    let zMax = Math.max(...measured.map((p) => p.z));
-    // A profile along a contour is flat, not an error: a band around the
-    // height keeps the line in the middle instead of magnifying millimetres.
-    if (zMax - zMin < 1e-6) { zMin -= 0.5; zMax += 0.5; }
-    const span = zMax - zMin;
     const sx = (v) => pad.l + ((v - xMin) / (xMax - xMin || 1)) * (width - pad.l - pad.r);
-    const sy = (v) => height - pad.b - ((v - zMin) / span) * (height - pad.t - pad.b);
+
+    const available = height - pad.t - pad.b;
+    const gap = 20;
+    const heightPanel = twoPanels ? (available - gap) * 0.55 : available;
+    const panels = [{
+      get: (p) => p.z, top: pad.t, bottom: pad.t + heightPanel,
+      color: css("--accent"), unit: options.elevationUnit || "",
+      label: options.elevationLabel || "Height", decimals: 1,
+    }];
+    if (twoPanels) {
+      panels.push({
+        get: (p) => p.v, top: pad.t + heightPanel + gap, bottom: height - pad.b,
+        color: css("--series-value"), unit: options.valueUnit || "",
+        label: options.valueLabel || "Value", decimals: 1,
+      });
+    }
+
+    for (const panel of panels) {
+      const seen = points.map(panel.get).filter((v) => Number.isFinite(v));
+      let low = Math.min(...seen);
+      let top = Math.max(...seen);
+      // A profile along a contour is flat, not an error: a band around the
+      // height keeps the line in the middle instead of magnifying millimetres.
+      if (top - low < 1e-6) { low -= 0.5; top += 0.5; }
+      const span = top - low;
+      const sy = (v) => panel.bottom - ((v - low) / span) * (panel.bottom - panel.top);
+
+      el("line", {
+        x1: pad.l, y1: panel.bottom, x2: width - pad.r, y2: panel.bottom,
+        stroke: css("--border-strong"), "stroke-width": 1,
+      }, svg);
+
+      // One path per measured run, so a gap stays a gap.
+      let run = [];
+      const flush = () => {
+        if (run.length >= 2) {
+          el("path", {
+            d: run.map((p, i) =>
+              `${i ? "L" : "M"}${sx(p.d).toFixed(1)},${sy(panel.get(p)).toFixed(1)}`).join(" "),
+            fill: "none", stroke: panel.color, "stroke-width": 2,
+            "stroke-linejoin": "round", "stroke-linecap": "round",
+          }, svg);
+        } else if (run.length === 1) {
+          el("circle", {
+            cx: sx(run[0].d), cy: sy(panel.get(run[0])), r: 2, fill: panel.color,
+          }, svg);
+        }
+        run = [];
+      };
+      for (const point of points) {
+        if (Number.isFinite(panel.get(point))) run.push(point);
+        else flush();
+      }
+      flush();
+
+      // The unit rides on the top tick of each axis rather than on a
+      // floating label, which on a line that ends high would sit over the
+      // ground it describes. The ticks are ink, not series colour: the
+      // line key in the legend carries which series they belong to.
+      const unit = panel.unit ? ` ${panel.unit}` : "";
+      tick(svg, 4, panel.top + 4, `${Units.num(top, panel.decimals)}${unit}`, "start",
+           css("--text-faint"));
+      tick(svg, 4, panel.bottom, Units.num(low, panel.decimals), "start", css("--text-faint"));
+    }
+
+    const distanceUnit = options.distanceUnit ? ` ${options.distanceUnit}` : "";
+    tick(svg, pad.l, height - 7, "0", "start", css("--text-faint"));
+    tick(svg, width - pad.r, height - 7, `${Units.num(xMax, 0)}${distanceUnit}`, "end",
+         css("--text-faint"));
+
+    if (twoPanels) {
+      legend(svg, pad.l, 10, panels.map((panel) => ({
+        color: panel.color,
+        text: panel.unit ? `${panel.label} (${panel.unit})` : panel.label,
+      })));
+    }
+
+    // One hit target per station, the full height of the chart and at least
+    // as wide as the gap to its neighbour, so the pointer only has to be
+    // over the right distance rather than on a 2 px line. It reads out
+    // every panel at that distance at once — the reader should never have
+    // to land on a particular series to get its number — and each of those
+    // numbers is in the station table under the chart as well.
+    const step = (width - pad.l - pad.r) / Math.max(points.length - 1, 1);
+    for (const point of points) {
+      const hit = el("rect", {
+        x: sx(point.d) - step / 2, y: pad.t, width: Math.max(step, 2),
+        height: height - pad.b - pad.t, fill: "transparent",
+      }, svg);
+      const lines = [`${Units.num(point.d, 0)}${distanceUnit} along the line`];
+      for (const panel of panels) {
+        const value = panel.get(point);
+        lines.push(`${panel.label}: ${Number.isFinite(value)
+          ? `${Units.num(value, panel.decimals)}${panel.unit ? ` ${panel.unit}` : ""}`
+          : "nothing measured here"}`);
+      }
+      el("title", {}, hit).textContent = lines.join("\n");
+    }
+  }
+
+  /* A text tick. Every number on a chart wears an ink colour, never its
+   * series' — a light hue is unreadable as text, and identity comes from
+   * the coloured key beside the label instead. */
+  function tick(svg, x, y, text, anchor, color) {
+    const node = el("text", { x, y, "text-anchor": anchor, "font-size": 10, fill: color }, svg);
+    node.textContent = text;
+    return node;
+  }
+
+  /* A row of short coloured strokes with their names: the dependable way
+   * to tell two series apart, since colour alone fails a reader who cannot
+   * separate the two hues. Mirrors the mark — a line for a line. */
+  function legend(svg, x, y, entries) {
+    let cursor = x;
+    for (const entry of entries) {
+      el("line", {
+        x1: cursor, y1: y - 3, x2: cursor + 12, y2: y - 3,
+        stroke: entry.color, "stroke-width": 2, "stroke-linecap": "round",
+      }, svg);
+      const label = tick(svg, cursor + 16, y, entry.text, "start", css("--text-muted"));
+      cursor += 16 + entry.text.length * 5.6 + 14;
+      label.setAttribute("font-size", 10);
+    }
+  }
+
+  /* The value against the height of the ground: the chart the relief
+   * raises the question for.
+   *
+   * One measure, one hue. The mean of each elevation band is a line across
+   * the height of the field, the quartiles behind it as a wash, and the
+   * field average as a rule so that "above or below average" is read
+   * without arithmetic. A second, thinner panel under it, on the same
+   * height axis, shows how much ground the field actually has at each
+   * height — the band at the top of a hill may be a hectare, and a mean
+   * drawn from a hectare is a thinner claim than one drawn from ten.
+   *
+   * The two panels share the x-axis rather than sharing a plot: the value
+   * and the hectares have nothing in common but the height they are read
+   * at, and stacking them says exactly that.
+   *
+   * Everything arrives converted — the caller has already put the value in
+   * the unit on screen and the heights in feet or metres — because a chart
+   * that converted its own numbers would disagree with the table beside
+   * it the first time one of them was changed. */
+  function valueAcrossElevation(container, data, options = {}) {
+    container.innerHTML = "";
+    const bands = (data?.bands || []).filter(
+      (b) => Number.isFinite(b.at) && Number.isFinite(b.mean));
+    if (bands.length < 2) {
+      container.innerHTML =
+        '<div class="empty">Too few bands to draw a shape across the field.</div>';
+      return;
+    }
+    const density = data?.density?.counts?.length ? data.density : null;
+
+    const width = container.clientWidth || 360;
+    const height = options.height || 250;
+    const strip = 30;
+    const gap = 16;
+    const pad = { t: 16, r: 12, b: 24, l: 48 };
+    const plotBottom = height - pad.b - (density ? strip + gap : 0);
+    const svg = el("svg", { class: "chart", viewBox: `0 0 ${width} ${height}`, height }, container);
+
+    const edges = bands.flatMap((b) => [b.from, b.to]).filter(Number.isFinite);
+    const xMin = Math.min(...edges, ...(density ? [density.edges[0]] : []));
+    const xMax = Math.max(...edges, ...(density ? [density.edges[density.edges.length - 1]] : []));
+    const sx = (v) => pad.l + ((v - xMin) / (xMax - xMin || 1)) * (width - pad.l - pad.r);
+
+    const spread = bands.flatMap((b) => [b.p25, b.p75, b.mean]).filter(Number.isFinite);
+    const fieldMean = Number.isFinite(data?.fieldMean) ? data.fieldMean : null;
+    if (fieldMean != null) spread.push(fieldMean);
+    let yMin = Math.min(...spread);
+    let yMax = Math.max(...spread);
+    // A little air above and below, so the top of the quartile band is not
+    // painted onto the frame and the reader can see it ends.
+    const margin = (yMax - yMin || Math.abs(yMax) || 1) * 0.08;
+    yMin -= margin;
+    yMax += margin;
+    const sy = (v) => plotBottom - ((v - yMin) / (yMax - yMin || 1)) * (plotBottom - pad.t);
+
+    // The quartiles behind the line: a wash of the series hue, never a
+    // block — it is context for the mean, not a second series.
+    const quartiles = bands.filter((b) => Number.isFinite(b.p25) && Number.isFinite(b.p75));
+    if (quartiles.length >= 2) {
+      const upper = quartiles.map((b) => `${sx(b.at).toFixed(1)},${sy(b.p75).toFixed(1)}`);
+      const lower = quartiles.slice().reverse()
+        .map((b) => `${sx(b.at).toFixed(1)},${sy(b.p25).toFixed(1)}`);
+      el("path", {
+        d: `M${upper.join("L")}L${lower.join("L")}Z`,
+        fill: css("--series-value"), opacity: 0.12, stroke: "none",
+      }, svg);
+    }
+
+    // The field average, so "above or below" needs no arithmetic. A solid
+    // hairline in ink: it is a reference the reader looks for, not a grid.
+    if (fieldMean != null) {
+      const y = sy(fieldMean);
+      el("line", {
+        x1: pad.l, y1: y, x2: width - pad.r, y2: y,
+        stroke: css("--text-faint"), "stroke-width": 1,
+      }, svg);
+      const note = tick(svg, width - pad.r, y - 4, "field average", "end", css("--text-muted"));
+      note.setAttribute("font-size", 9);
+    }
 
     el("line", {
-      x1: pad.l, y1: height - pad.b, x2: width - pad.r, y2: height - pad.b,
+      x1: pad.l, y1: plotBottom, x2: width - pad.r, y2: plotBottom,
       stroke: css("--border-strong"), "stroke-width": 1,
     }, svg);
 
-    // One path per measured run, so a gap stays a gap.
-    let run = [];
-    const flush = () => {
-      if (run.length >= 2) {
-        el("path", {
-          d: run.map((p, i) => `${i ? "L" : "M"}${sx(p.d).toFixed(1)},${sy(p.z).toFixed(1)}`).join(" "),
-          fill: "none", stroke: css("--accent"), "stroke-width": 2,
-          "stroke-linejoin": "round", "stroke-linecap": "round",
-        }, svg);
-      } else if (run.length === 1) {
-        el("circle", { cx: sx(run[0].d), cy: sy(run[0].z), r: 2, fill: css("--accent") }, svg);
-      }
-      run = [];
-    };
-    for (const point of points) {
-      if (Number.isFinite(point.z)) run.push(point);
-      else flush();
+    el("path", {
+      d: bands.map((b, i) =>
+        `${i ? "L" : "M"}${sx(b.at).toFixed(1)},${sy(b.mean).toFixed(1)}`).join(" "),
+      fill: "none", stroke: css("--series-value"), "stroke-width": 2,
+      "stroke-linejoin": "round", "stroke-linecap": "round",
+    }, svg);
+    for (const band of bands) {
+      // The surface ring keeps a marker legible where it crosses the wash
+      // or the average line, and it is part of what the pointer can hit.
+      el("circle", {
+        cx: sx(band.at), cy: sy(band.mean), r: 4,
+        fill: css("--series-value"), stroke: css("--surface"), "stroke-width": 2,
+      }, svg);
     }
-    flush();
 
-    const tick = (x, y, text, anchor, color) => {
-      const node = el("text", { x, y, "text-anchor": anchor, "font-size": 10, fill: color }, svg);
-      node.textContent = text;
-    };
-    // The unit rides on the top tick of each axis rather than on a floating
-    // label, which on a line that ends high would sit over the ground it
-    // describes.
-    const distanceUnit = options.distanceUnit ? ` ${options.distanceUnit}` : "";
-    const heightUnit = options.elevationUnit ? ` ${options.elevationUnit}` : "";
-    tick(pad.l, height - 7, "0", "start", css("--text-faint"));
-    tick(width - pad.r, height - 7, `${Units.num(xMax, 0)}${distanceUnit}`, "end", css("--text-faint"));
-    tick(4, pad.t + 4, `${Units.num(zMax, 1)}${heightUnit}`, "start", css("--accent"));
-    tick(4, height - pad.b, Units.num(zMin, 1), "start", css("--accent"));
+    // How much ground lies at each height, on the same axis: a band at the
+    // extreme that carries a hectare is a thinner claim than one carrying
+    // ten, and the strip is what shows it without a second chart.
+    if (density) {
+      const top = plotBottom + gap;
+      const most = Math.max(...density.counts) || 1;
+      for (let i = 0; i < density.counts.length; i++) {
+        const x0 = sx(density.edges[i]);
+        const x1 = sx(density.edges[i + 1]);
+        const barHeight = (density.counts[i] / most) * strip;
+        el("rect", {
+          x: x0, y: top + strip - barHeight,
+          width: Math.max(0.6, x1 - x0 - 2), height: Math.max(0, barHeight),
+          fill: css("--text-faint"), opacity: 0.45,
+        }, svg);
+      }
+      el("line", {
+        x1: pad.l, y1: top + strip, x2: width - pad.r, y2: top + strip,
+        stroke: css("--border-strong"), "stroke-width": 1,
+      }, svg);
+      const caption = tick(svg, 4, top + 8, options.densityLabel || "ground", "start",
+                           css("--text-faint"));
+      caption.setAttribute("font-size", 9);
+    }
+
+    const valueUnit = options.valueUnit ? ` ${options.valueUnit}` : "";
+    const lengthUnit = options.lengthUnit ? ` ${options.lengthUnit}` : "";
+    tick(svg, 4, pad.t + 4, `${Units.num(yMax, 0)}${valueUnit}`, "start", css("--text-faint"));
+    tick(svg, 4, plotBottom, Units.num(yMin, 0), "start", css("--text-faint"));
+    tick(svg, pad.l, height - 7, Units.num(xMin, 0), "start", css("--text-faint"));
+    tick(svg, width - pad.r, height - 7, `${Units.num(xMax, 0)}${lengthUnit}`, "end",
+         css("--text-faint"));
+
+    // The hit target is the whole column of the band, top to bottom, so
+    // the pointer only has to be over the right height rather than on the
+    // 2 px line. Every number it shows is in the table under the chart
+    // too: the hover adds, it never gates.
+    for (const band of bands) {
+      const x0 = sx(Number.isFinite(band.from) ? band.from : band.at);
+      const x1 = sx(Number.isFinite(band.to) ? band.to : band.at);
+      const hit = el("rect", {
+        x: Math.min(x0, x1), y: pad.t, width: Math.max(2, Math.abs(x1 - x0)),
+        height: height - pad.b - pad.t, fill: "transparent",
+      }, svg);
+      el("title", {}, hit).textContent = band.tooltip || "";
+    }
   }
 
   /* The aspect rose: which way the field faces, as eight petals whose
@@ -338,5 +585,5 @@ const Charts = (() => {
     container.appendChild(list);
   }
 
-  return { histogram, responseCurve, profile, rose, bars };
+  return { histogram, responseCurve, profile, valueAcrossElevation, rose, bars };
 })();

@@ -428,3 +428,204 @@ UNIT_PRESETS = {
 
 #: Preset applied when the app first opens.
 DEFAULT_PRESET = "canada"
+
+
+# ==========================================================================
+# Numbers inside a sentence
+# ==========================================================================
+
+#: Thin space: the thousands separator the findings use ("2 900 m³"), which
+#: reads as a group break without the comma's decimal ambiguity abroad.
+THIN_SPACE = " "
+
+
+class Phrase:
+    """Quantities rendered for a sentence, in the unit set the reader chose.
+
+    Every finding in this app is a sentence with its numbers written into
+    it, and the sentence *is* the finding: an interface cannot restate it
+    in another unit at display time without re-deciding what it says. So
+    the unit set has to travel into the writing of it, and this is what
+    carries it — one object, built once per report, asked for a rendered
+    quantity wherever a number goes into prose.
+
+    ``units`` is the same dictionary the interface and the printed report
+    already pass around, the shape of :data:`UNIT_PRESETS`\\ ``['canada']``:
+    ``yield_unit``, ``input_rate_unit``, ``area_unit``, ``length_unit``,
+    ``speed_unit`` and ``crop``. Missing keys fall back to the app's
+    default preset. ``None`` — the default — is the internal metric store
+    itself, so a caller that passes nothing gets metres, hectares and kg/ha
+    exactly as before.
+
+    An unknown unit is refused here, by name, rather than quietly printing
+    numbers in a unit nobody asked for; the caller turns that into the
+    message the user sees.
+
+    >>> Phrase({"length_unit": "ft", "area_unit": "ac"}).length(10.5365)
+    '34.6 ft'
+    >>> Phrase().length(10.5365)
+    '10.5 m'
+    """
+
+    #: The metric store, which is what "no unit set" means.
+    METRIC = {
+        "yield_unit": "kg/ha", "input_rate_unit": "kg/ha", "area_unit": "ha",
+        "length_unit": "m", "speed_unit": "km/h", "crop": None,
+    }
+    GROUPS = {
+        "yield_unit": "rate_mass", "input_rate_unit": "rate_mass",
+        "area_unit": "area", "length_unit": "length", "speed_unit": "speed",
+    }
+
+    def __init__(self, units: dict | None = None, crop: str | None = None) -> None:
+        given = dict(units or {})
+        preset = UNIT_PRESETS[DEFAULT_PRESET]
+        resolved = dict(self.METRIC)
+        if units:
+            for key in resolved:
+                value = given.get(key)
+                if key == "crop":
+                    # A bushel is a volume, so what it weighs depends on the
+                    # crop. The dataset's own crop beats the preset's guess.
+                    resolved[key] = str(value or crop or preset[key])
+                elif value:
+                    resolved[key] = str(value).strip()
+                else:
+                    resolved[key] = preset[key]
+        elif crop:
+            resolved["crop"] = crop
+        for key, group in self.GROUPS.items():
+            try:
+                unit_factor(group, resolved[key], resolved["crop"])
+            except ValueError:
+                valid = ", ".join(u["key"] for u in UNIT_GROUPS[group]["units"])
+                raise ValueError(
+                    f"'{resolved[key]}' is not a valid {key.replace('_', ' ')}. "
+                    f"Use one of: {valid}."
+                )
+        self.units = resolved
+
+    # -- labels ----------------------------------------------------------
+    @property
+    def length_unit(self) -> str:
+        return self.units["length_unit"]
+
+    @property
+    def area_unit(self) -> str:
+        return self.units["area_unit"]
+
+    @property
+    def speed_unit(self) -> str:
+        return self.units["speed_unit"]
+
+    @property
+    def volume_unit(self) -> str:
+        """The length unit cubed. There is no volume group in the catalogue
+        — nothing else in the app measures one — so the label is built here
+        and the factor is cubed below."""
+        return f"{self.length_unit}³"
+
+    def rate_unit(self, operation: str | None = None) -> str:
+        """The unit the main variable takes: a harvest is a yield, anything
+        else an input rate. Showing lb/ac of fertilizer as bu/ac of grain
+        would be a gross error, so the operation decides, not the caller."""
+        is_yield = operation is None or operation == "harvest"
+        return self.units["yield_unit" if is_yield else "input_rate_unit"]
+
+    # -- conversions, as numbers -----------------------------------------
+    def to_length(self, metres):
+        return self._from(metres, "length", self.length_unit)
+
+    def to_area(self, hectares):
+        return self._from(hectares, "area", self.area_unit)
+
+    def to_speed(self, kmh):
+        return self._from(kmh, "speed", self.speed_unit)
+
+    def to_volume(self, cubic_metres):
+        if cubic_metres is None:
+            return None
+        factor = unit_factor("length", self.length_unit, self.units["crop"])
+        return float(cubic_metres) / (factor ** 3)
+
+    def to_rate(self, kg_ha, operation: str | None = None):
+        return self._from(kg_ha, "rate_mass", self.rate_unit(operation))
+
+    def _from(self, value, group: str, unit: str):
+        if value is None:
+            return None
+        return from_internal(float(value), group, unit, self.units["crop"])
+
+    # -- rendered, number and unit together ------------------------------
+    def length(self, metres, decimals: int = 1) -> str:
+        return self._render(self.to_length(metres), self.length_unit, decimals)
+
+    def area(self, hectares, decimals: int = 1) -> str:
+        return self._render(self.to_area(hectares), self.area_unit, decimals)
+
+    def speed(self, kmh, decimals: int = 1) -> str:
+        return self._render(self.to_speed(kmh), self.speed_unit, decimals)
+
+    def volume(self, cubic_metres) -> str:
+        """A volume to two significant figures: the one number on a relief
+        report nobody can sanity-check by eye, so the false precision of
+        "1 825.09 m³" would be the most misleading part of the sentence."""
+        value = self.to_volume(cubic_metres)
+        if value is None:
+            return f"— {self.volume_unit}"
+        if value <= 0:
+            return f"0 {self.volume_unit}"
+        if value < 10:
+            return self._render(value, self.volume_unit, 1)
+        import math as _math
+
+        digits = int(_math.floor(_math.log10(value)))
+        return self._render(round(value, -(digits - 1)), self.volume_unit, 0)
+
+    def rate(self, kg_ha, operation: str | None = None, decimals: int | None = None) -> str:
+        """The main variable — a yield, or an applied rate.
+
+        With no decimals asked for they follow the magnitude, because the
+        same quantity is 2 600 in kg/ha and 46.4 in bu/ac and one decimal
+        place is right for one and absurd for the other.
+        """
+        value = self.to_rate(kg_ha, operation)
+        if decimals is None:
+            decimals = self.decimals_for(value)
+        return self._render(value, self.rate_unit(operation), decimals)
+
+    def percent(self, value, decimals: int = 0) -> str:
+        """A percentage, which is a percentage in every unit set. Anything
+        under one percent is said in words: "0 %" of a field is none of it,
+        and a tenth of a hectare is not none of it."""
+        if value is None:
+            return "— %"
+        value = float(value)
+        if 0.0 < value < 1.0:
+            return "under 1 %"
+        return f"{value:.{decimals}f} %"
+
+    def number(self, value, decimals: int = 0) -> str:
+        """A bare count or number, thousands split by a thin space."""
+        if value is None:
+            return "—"
+        return f"{float(value):,.{decimals}f}".replace(",", THIN_SPACE)
+
+    @staticmethod
+    def decimals_for(value) -> int:
+        """Decimal places proportional to magnitude: 12 553 needs none,
+        46.4 needs one, 0.84 needs two.
+
+        One place from 1 upward rather than two, because these numbers go
+        into sentences: "a gap of 7.00 bu/ac" claims a hundredth of a
+        bushel that nothing in a yield map can measure.
+        """
+        if value is None:
+            return 0
+        magnitude = abs(float(value))
+        return 0 if magnitude >= 100 else 1 if magnitude >= 1 else 2
+
+    def _render(self, value, unit: str, decimals: int) -> str:
+        if value is None:
+            return f"— {unit}".strip()
+        return f"{self.number(value, decimals)} {unit}".strip()

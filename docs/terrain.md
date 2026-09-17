@@ -474,6 +474,135 @@ both lists. A line that crosses the field at fewer than two stations is
 refused: a chart of nothing looks like a flat field rather than a missed
 click.
 
+Add `values_dataset_id` (and, optionally, `value_column` and `units`) and
+the line carries a second series: the yield, the applied rate — whatever
+that layer measures — along the same stations.
+
+```json
+{
+  "distance_m": [0.0, 177.18, 354.36, 531.54, 708.72],
+  "elev_m": [698.213, 699.513, 697.660, 701.836, 701.861],
+  "slope_pct": [null, -0.734, 1.046, -2.357, -0.014],
+  "values": [2828.19, 2507.91, null, 2621.67, 2789.74],
+  "values_meta": {
+    "column": "value", "value_label": "Yield", "value_unit": "kg/ha",
+    "operation": "harvest", "crop": "canola",
+    "corridor_m": 10.0, "points_used": 208,
+    "note": "Each station is the mean of the yield readings within 10.0 m of the line; 208 of them were used. Where none was near, the line breaks."
+  },
+  "points": [[-113.5535987, 51.7477414], [-113.546363, 51.7522586]],
+  "length_m": 708.72
+}
+```
+
+The elevation is read off the grid, which has a value everywhere inside
+the field; the yield has not, because it exists only where the machine
+drove. So each station takes the mean of the readings within a corridor of
+`max(2 × cell, half the median swath)` around it, and a station with
+nothing in its corridor is `null` — **break the series there**, as with the
+elevation, rather than drawing across ground that was never harvested.
+
+Without `values_dataset_id` the response is exactly the five keys above it,
+so every existing caller reads the same answer.
+
+### POST /api/terrain/{dataset_id}/yield
+
+A value layer read against the relief of `dataset_id`. The relief must be
+in memory — the comparison samples the grid itself under every point — so
+it 404s with `Run the terrain analysis first: …` when it is not.
+
+```json
+{ "yield_dataset_id": "cf267138d452", "bands": 8, "value_column": null,
+  "units": {"yield_unit": "bu/ac", "area_unit": "ac", "length_unit": "ft", "crop": "canola"} }
+```
+
+| Field | Default | What it is |
+|---|---|---|
+| `yield_dataset_id` | required | The layer carrying the values |
+| `bands` | 8 | Elevation bands, 2 to 20 |
+| `value_column` | the `value` column | Another numeric column of that layer |
+| `units` | metric | The reader's unit set; it reaches **the findings only** |
+
+`yield_dataset_id` may be **the analysed dataset itself** — a yield map
+whose own GPS altitude was gridded, which is the common case — or a
+**separate layer**, a DEM having been analysed with the yield map loaded
+beside it. The two need not share a metric CRS: the points are reprojected
+to the grid's before they are sampled.
+
+```json
+{
+  "terrain": {"dataset_id": "cf267138d452", "label": "Terrain demo"},
+  "values": {"dataset_id": "cf267138d452", "label": "Terrain demo",
+             "column": "value", "value_label": "Yield", "value_unit": "kg/ha",
+             "operation": "harvest", "crop": "canola", "cleaned": false},
+  "points": {"total": 33400, "matched": 33400, "off_grid": 0},
+  "overall": {"mean": 2598.003, "median": 2593.235, "sd": 307.576,
+              "cv_pct": 11.839, "points": 33400},
+  "elevation_bands": [
+    {"index": 0, "from_m": 693.688, "to_m": 698.554, "mean_elev_m": 697.284,
+     "points": 8350, "area_ha": 15.2575, "mean": 2875.090, "median": 2871.719,
+     "p25": 2709.056, "p75": 3045.927, "sd": 262.203, "delta_pct": 10.665}
+  ],
+  "slope_classes": [
+    {"key": "gentle", "label": "Gentle (2-5 %)", "from_pct": 2.0, "to_pct": 5.0,
+     "points": 8671, "mean": 2646.760, "delta_pct": 1.877}
+  ],
+  "landforms": [
+    {"code": 1, "key": "hilltop", "label": "Hilltop / ridge", "color": "#a0522d",
+     "points": 1813, "mean": 2401.903, "delta_pct": -7.548}
+  ],
+  "wetness": [
+    {"key": "wet", "label": "Likely wet ground", "points": 2965,
+     "mean": 2651.284, "delta_pct": 2.051}
+  ],
+  "relations": {"elevation_r": -0.6873, "slope_r": 0.1144, "twi_r": 0.1108,
+                "elevation_r2": 0.4724,
+                "strongest": {"key": "elevation", "label": "the elevation",
+                              "r": -0.6873, "r2": 0.4724}},
+  "findings": [
+    {"level": "info", "text": "The lowest ground (693.7 m to 698.6 m) averaged 2 875 kg/ha, 11 % above the field average; …"}
+  ]
+}
+```
+
+*Trimmed: three of the four bands shown at `bands: 4`, four of the five
+slope classes, five of the six landform classes, the dry half of the
+wetness split, and six of the seven findings.*
+
+The bands are **equal-count** (quantile), not equal-width: a field's
+heights are not spread evenly, and equal-width bands put half the field in
+the middle two and thirty readings in the top one, whose mean then swings
+on a single combine pass. So each band carries its own range (`from_m` /
+`to_m`, the outer two opened to the grid's extremes so the areas add up to
+the field) and its `area_ha`, which is the field's ground at that height —
+not the points', or a strip driven twice would read as twice the hectares.
+`delta_pct` is the group's mean against the field mean, signed, in percent.
+
+`relations` are Pearson correlations over the matched points; `strongest`
+names which of the three explains most and how much, as r². Every class
+list is complete — an empty class is listed with `points: 0` and a `null`
+mean — and the class lists together account for every matched point.
+`wetness` is `[]`, not two rows, when the analysis made no wet ranking at
+all (a level field): two rows of which one is empty would read as a field
+with no wet ground, which is a claim the analysis did not make.
+
+Refusals carry a sentence:
+
+| Request | Status | `detail` |
+|---|---|---|
+| relief not analysed | 404 | `Run the terrain analysis first: 'Terrain demo' has not been analysed. …` |
+| unknown value layer | 404 | `Dataset 'nope' is not loaded in this session.` |
+| a layer with no value | 400 | `'Boundary' carries no value column to read against the relief. …` |
+| a zones dataset | 400 | `'Terrain zones (landform) — Terrain demo' is the terrain zone layer cut from 'Terrain demo': its values are zone codes, not a measurement …` |
+| another field | 400 | `Only 0 of 6800 points fall on the analysed field; check that the two files cover the same field.` |
+| `bands` outside 2–20 | 400 | `Cut the field into between 2 and 20 elevation bands; 50 is outside that. …` |
+| a unit that does not exist | 400 | `'furlong' is not a valid length unit. Use one of: m, ft, in, cm, yd.` |
+| a misspelled key | 422 | `[{"type": "extra_forbidden", "loc": ["body", "band"], …}]` |
+
+The result is kept on the **analysed** dataset's entry, under
+`reports['terrain_yield']`, so `GET /api/datasets/{id}/report/terrain_yield`
+answers after a reload and the printed page carries the section.
+
 ### POST /api/terrain/{dataset_id}/zones
 
 Turn the relief into a zone dataset the rest of the app already knows how to
@@ -828,10 +957,19 @@ label them with `Units.label.length()`, exactly as the Cleaning and Trial
 tabs do with their own lengths.
 
 **One thing the interface must not convert: the findings.** Their numbers
-are written into the sentence with a metric unit, because the sentence *is*
-the finding and rewriting it would mean re-deciding what it says. Show them
-as they come. Every number in them also exists in the structured summary for
-a panel that converts.
+are written into the sentence, because the sentence *is* the finding and
+rewriting it would mean re-deciding what it says. Show them as they come.
+Every number in them also exists in the structured summary for a panel that
+converts.
+
+Which is why the unit set travels the other way instead. `POST
+/api/terrain/{id}/yield` and the profile's `values_meta.note` take a
+`units` body field — the shape of `UNIT_PRESETS['canada']` — and write
+their sentences in it, so what comes back is already in the units it will
+be read in. Send `Units.get()` with the request and post again when the
+reader switches preset; the grid is already in memory, so it costs a
+round trip and nothing else. `agrosuite.core.units.Phrase` is what renders
+them, and it is the piece to reuse anywhere else sentences carry numbers.
 
 ---
 

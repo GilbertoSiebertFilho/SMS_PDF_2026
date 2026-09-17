@@ -170,6 +170,7 @@ const App = {
       this.toast("Units", this.state.units.presets[event.target.value].description);
       this.loadMap();
       this.renderTab();
+      this.refreshTerrainPhrasing();
     });
   },
 
@@ -975,6 +976,7 @@ Object.assign(App, {
       this.terrainFindingsPanel(summary) +
       this.terrainRunPanel(analysis) +
       this.terrainFieldPanel(summary) +
+      this.terrainYieldPanel(analysis) +
       this.terrainMapPanel(analysis) +
       this.terrainFeaturesPanel(summary) +
       this.terrainProfilePanel() +
@@ -988,6 +990,7 @@ Object.assign(App, {
     this.bindTerrainRun();
     this.bindTerrainMapControls();
     this.bindTerrainPanels();
+    this.bindTerrainYield();
     this.drawTerrainCharts();
     this.showTerrainLayer();
   },
@@ -1163,6 +1166,12 @@ Object.assign(App, {
       contours: null,
       features: null,
       profile: null,
+      // The value layer stays chosen across a re-run, like the map layer:
+      // running again is usually to see the same comparison under other
+      // options. The comparison itself does not — it was read off the grid
+      // that has just been replaced.
+      valuesId: previous?.valuesId || null,
+      yieldRelief: null,
       zones: previous?.zones || null,
       exported: null,
       fitted: false,
@@ -1199,6 +1208,14 @@ Object.assign(App, {
     this.state.terrainRestoring = null;
     if (!report || this.state.selectedId !== d.id || this.state.tab !== "terrain") return;
     this.rememberTerrain(d.id, report);
+    // The comparison is saved beside the relief and is just as complete:
+    // bringing back one without the other would ask the user to press
+    // Compare again on numbers the session still holds.
+    const comparison = await this.storedReport("terrain_yield");
+    if (comparison && this.state.terrain?.id === d.id) {
+      this.state.terrain.yieldRelief = comparison;
+      this.state.terrain.valuesId = comparison.values?.dataset_id || null;
+    }
     await this.afterTerrainRun(d.id);
     this.renderTab();
   },
@@ -1277,6 +1294,312 @@ Object.assign(App, {
         <h4>Heights across the field</h4>
         <div id="terrain-elevation-histogram"></div>
       </div>`;
+  },
+
+  /* ------------------------------------------- yield against the relief */
+
+  /* The layers that could be read against the relief: anything carrying a
+   * measured value. An elevation layer is left out because its value IS
+   * the height — comparing it with the relief would answer itself — and so
+   * are the zone layers this analyser cut, whose values are class codes. */
+  terrainValueCandidates() {
+    return (this.state.datasets || []).filter((d) => {
+      if (d.meta?.extra?.zones_by) return false;
+      if (d.meta?.operation === "elevation") return false;
+      return (d.columns || []).includes("value");
+    });
+  },
+
+  /* What the picker opens on: what was compared last, then the file the
+   * project calls its yield map, then the analysed file itself when that
+   * file is a yield map — which is the common case, one export carrying
+   * both the height and the tonnes. */
+  terrainValueDefault(analysis, candidates) {
+    const ids = new Set(candidates.map((d) => d.id));
+    if (analysis.valuesId && ids.has(analysis.valuesId)) return analysis.valuesId;
+    const roled = (this.state.project?.layers || [])
+      .find((layer) => layer.role === "yield" && ids.has(layer.dataset_id));
+    if (roled) return roled.dataset_id;
+    if (ids.has(analysis.id)) return analysis.id;
+    return candidates[0]?.id || null;
+  },
+
+  /* The conversion and the unit this comparison's value takes on screen —
+   * bushels for a harvest, pounds for an application. Read off the layer's
+   * own operation rather than assumed, or a fertilizer rate would be shown
+   * as a grain yield. */
+  terrainYieldUnit(comparison) {
+    return Units.forColumn(
+      comparison.values.column || "value", comparison.values.operation);
+  },
+
+  terrainYieldPanel(analysis) {
+    const candidates = this.terrainValueCandidates();
+    if (!candidates.length) {
+      return this.missingPanel(
+        "Yield against the relief",
+        "The relief says where the water sits and which way the field falls. "
+        + "What it costs needs the other half: a yield map, or an as-applied "
+        + "log, of the same field. None is open yet.",
+        { cta: "load", label: "Open the yield map of this field",
+          hint: "It can be the very file whose relief is on screen — one export "
+                + "usually carries both the height and the tonnes — or a separate "
+                + "file, in which case it need not even share a map projection." });
+    }
+
+    const chosen = this.terrainValueDefault(analysis, candidates);
+    const comparison = analysis.yieldRelief;
+    return `
+      <div class="panel">
+        <h3>Yield against the relief</h3>
+        <p class="hint tight">The same points, read at the height they were
+        harvested at: what each band of the field returned, and how much of the
+        season's variation the relief explains at all.</p>
+        <div class="row tight" style="align-items:flex-end">
+          ${this.field("Value layer", this.selectInput("terrain-yield-dataset",
+            candidates.map((d) => [d.id, d.label]), chosen))}
+          <button class="primary" id="btn-terrain-yield"
+                  style="flex:none;margin-bottom:11px">Compare</button>
+        </div>
+        ${comparison ? this.terrainYieldResult(comparison) : `
+          <p class="hint tight">Press Compare and the chart below draws the
+          value across the height of the field.</p>`}
+      </div>`;
+  },
+
+  terrainYieldResult(comparison) {
+    const info = this.terrainYieldUnit(comparison);
+    const lengthUnit = Units.label.length();
+    // Every finding but the one about cleaning: that one is about where the
+    // numbers came from rather than about what they say, so it goes at the
+    // foot of the section, beside the line naming what was compared.
+    const findings = (comparison.findings || [])
+      .filter((f) => !f.text.includes("has not been cleaned"));
+    const uncleaned = (comparison.findings || [])
+      .find((f) => f.text.includes("has not been cleaned"));
+    const noteClass = { ok: "ok", warning: "warning" };
+    const points = comparison.points;
+
+    return `
+      ${findings.map((f) => `
+        <div class="note ${noteClass[f.level] || ""}" style="margin-bottom:6px">
+          ${this.escape(f.text)}</div>`).join("")}
+
+      <h4>${this.escape(comparison.values.value_label || "Value")} across the
+        height of the field</h4>
+      <div id="terrain-yield-chart"></div>
+      <p class="hint tight">The line is each band's mean and the shading the
+      middle half of its readings; the rule is the field average. The strip
+      underneath is how much ground the field has at each height — a band at
+      either extreme carries less of it, so its mean is a thinner claim.
+      Hovering a band gives its range, its mean, its spread and how many
+      readings it holds.</p>
+
+      ${this.terrainYieldBandTable(comparison, info, lengthUnit)}
+      ${this.terrainYieldTables(comparison, info)}
+
+      <p class="hint tight" style="margin-top:10px">
+        ${this.escape(comparison.values.label)}
+        (${this.escape(comparison.values.value_label || "value")}, ${this.escape(info.unit)})
+        read against the relief of ${this.escape(comparison.terrain.label)}:
+        ${Units.num(points.matched, 0)} of ${Units.num(points.total, 0)} readings fell on
+        the analysed field${points.off_grid
+          ? `, ${Units.num(points.off_grid, 0)} outside it` : ""}.</p>
+      ${uncleaned ? `<div class="note warning">${this.escape(uncleaned.text)}</div>` : ""}`;
+  },
+
+  /* Every band, in a fold: the chart's own numbers written out, so nothing
+   * it shows is reachable only by hovering it. */
+  terrainYieldBandTable(comparison, info, lengthUnit) {
+    const areaUnit = Units.label.area();
+    const length = (v) => Units.num(Units.convert.length(v), 1);
+    const rows = (comparison.elevation_bands || []).map((band) => `
+      <tr><td>${length(band.from_m)}–${length(band.to_m)}</td>
+        <td class="num">${Units.num(Units.convert.area(band.area_ha), 1)}</td>
+        <td class="num">${Units.num(info.conv(band.mean), 1)}</td>
+        <td class="num">${Units.num(info.conv(band.p25), 1)}–${
+          Units.num(info.conv(band.p75), 1)}</td>
+        <td class="num">${this.terrainYieldDelta(band.delta_pct)}</td>
+        <td class="num">${Units.num(band.points, 0)}</td></tr>`).join("");
+    return `
+      <details class="fold"><summary>Every band</summary>
+        <div class="inner scroll-x"><table class="data">
+          <tr><th>Height (${lengthUnit})</th><th>Ground (${areaUnit})</th>
+            <th>Mean (${this.escape(info.unit)})</th><th>Middle half</th>
+            <th>vs field</th><th>Readings</th></tr>${rows}
+        </table></div>
+      </details>`;
+  },
+
+  /* The three splits the relief offers, each as a small table. The
+   * landform classes are sorted by their mean, best first: they have no
+   * natural order, so the ranking is the whole point of the table. The
+   * slope classes keep the agronomic order — flat to steep is a scale, and
+   * reordering it would hide the trend the order itself carries — and the
+   * wet ground leads its table, because it is the row being asked about. */
+  terrainYieldTables(comparison, info) {
+    const landforms = (comparison.landforms || [])
+      .filter((cls) => cls.points)
+      .slice()
+      .sort((a, b) => b.mean - a.mean);
+    const slopes = (comparison.slope_classes || []).filter((cls) => cls.points);
+    const wetness = comparison.wetness || [];
+
+    const row = (label, cls) => `
+      <tr><td>${label}</td>
+        <td class="num">${Units.num(info.conv(cls.mean), 1)}</td>
+        <td class="num">${this.terrainYieldDelta(cls.delta_pct)}</td>
+        <td class="num">${Units.num(cls.points, 0)}</td></tr>`;
+    const table = (title, rows, note) => (rows ? `
+      <h4>${title}</h4>
+      <div class="scroll-x"><table class="data">
+        <tr><th>Class</th><th>Mean (${this.escape(info.unit)})</th>
+          <th>vs field</th><th>Readings</th></tr>${rows}
+      </table></div>
+      ${note ? `<p class="hint tight">${note}</p>` : ""}` : "");
+
+    const chip = (color) => `<span style="display:inline-block;width:10px;height:10px;
+      border-radius:2px;margin-right:6px;background:${this.escape(color)}"></span>`;
+
+    return `
+      ${table("By landform", landforms.map((cls) =>
+        row(`${chip(cls.color)}${this.escape(cls.label)}`, cls)).join(""),
+        "Best first: the classes have no order of their own, so the ranking is "
+        + "what the table is for. The colours are the landform map's.")}
+      ${table("By slope class", slopes.map((cls) =>
+        row(this.escape(cls.label), cls)).join(""),
+        "In the agronomic order, flat to steep, because the order is a scale: "
+        + "read down the column and the trend, if there is one, is the shape.")}
+      ${table("Wet against well-drained", wetness.filter((w) => w.points).map((w) =>
+        row(this.escape(w.label), w)).join(""),
+        "The wet ground first. It can cost yield or gain it — in a dry year the "
+        + "low ground holds the water the rest of the field wanted — and which "
+        + "one it is decides whether drainage is worth pricing.")}`;
+  },
+
+  /* A difference from the field average, with its sign written in: a bare
+   * "3.2" under "vs field" is read as above average by everyone and as
+   * below average by no one. */
+  terrainYieldDelta(deltaPct) {
+    if (deltaPct == null || !isFinite(deltaPct)) return "—";
+    return `${deltaPct > 0 ? "+" : ""}${Units.num(deltaPct, 1)} %`;
+  },
+
+  bindTerrainYield() {
+    document.getElementById("terrain-yield-dataset")?.addEventListener("change", (event) => {
+      const analysis = this.terrainAnalysis();
+      if (analysis) analysis.valuesId = event.target.value;
+    });
+    document.getElementById("btn-terrain-yield")?.addEventListener("click", (event) =>
+      this.runTerrainYield(event.currentTarget));
+  },
+
+  async runTerrainYield(button) {
+    const analysis = this.terrainAnalysis();
+    if (!analysis) {
+      this.toast("Nothing to compare against",
+        "Run the analysis above first; the value is read on its grid.", "warn");
+      return;
+    }
+    const chosen = this.value("terrain-yield-dataset") || analysis.valuesId;
+    if (!chosen) {
+      this.toast("No value layer", "Open a yield map of this field first.", "warn");
+      return;
+    }
+    const comparison = await this.busy(button, () =>
+      this.api(`/api/terrain/${analysis.id}/yield`, {
+        method: "POST",
+        // The unit set travels with the request because the findings are
+        // sentences with their numbers written in: they come back in the
+        // units they will be read in, and are shown exactly as they come.
+        body: { yield_dataset_id: chosen, units: Units.get() },
+      }));
+    if (!comparison) return;
+
+    analysis.valuesId = chosen;
+    analysis.yieldRelief = comparison;
+    // A profile already drawn gains its value series straight away, rather
+    // than waiting for the line to be drawn a second time.
+    if (analysis.profile?.points) await this.runProfile(analysis.profile.points);
+    this.renderTab();
+
+    const strongest = comparison.relations?.strongest;
+    const info = this.terrainYieldUnit(comparison);
+    this.toast("Read against the relief",
+      `${Units.num(comparison.points.matched, 0)} readings, averaging ` +
+      `${Units.num(info.conv(comparison.overall.mean), 1)} ${info.unit}. ` +
+      (strongest
+        ? `${strongest.label[0].toUpperCase()}${strongest.label.slice(1)} explains ` +
+          `${Units.num(100 * strongest.r2, 0)} % of the variation.`
+        : "The relief varies too little here to explain anything."));
+  },
+
+  drawTerrainYieldChart() {
+    const analysis = this.terrainAnalysis();
+    const comparison = analysis?.yieldRelief;
+    const box = document.getElementById("terrain-yield-chart");
+    if (!box || !comparison) return;
+    const info = this.terrainYieldUnit(comparison);
+    const lengthUnit = Units.label.length();
+    const areaUnit = Units.label.area();
+    const length = (v) => Units.num(Units.convert.length(v), 1);
+
+    const bands = (comparison.elevation_bands || []).map((band) => ({
+      from: Units.convert.length(band.from_m),
+      to: Units.convert.length(band.to_m),
+      at: Units.convert.length(band.mean_elev_m),
+      mean: info.conv(band.mean),
+      p25: info.conv(band.p25),
+      p75: info.conv(band.p75),
+      tooltip:
+        `${length(band.from_m)}–${length(band.to_m)} ${lengthUnit}\n` +
+        `Mean ${Units.num(info.conv(band.mean), 1)} ${info.unit} ` +
+        `(${this.terrainYieldDelta(band.delta_pct)} against the field)\n` +
+        `Middle half ${Units.num(info.conv(band.p25), 1)}–` +
+        `${Units.num(info.conv(band.p75), 1)} ${info.unit}\n` +
+        `${Units.num(band.points, 0)} readings over ` +
+        `${Units.num(Units.convert.area(band.area_ha), 1)} ${areaUnit}`,
+    }));
+
+    Charts.valueAcrossElevation(box, {
+      bands,
+      fieldMean: info.conv(comparison.overall.mean),
+      // The same histogram the field panel draws, on the same axis: it is
+      // the ground the bands are cut out of.
+      density: this.terrainHistogram(
+        analysis.summary.elevation.histogram, Units.convert.length),
+    }, {
+      valueUnit: info.unit,
+      lengthUnit,
+      densityLabel: `ground (${areaUnit})`,
+    });
+  },
+
+  /* The third thing a unit change touches, after the map and the panel.
+   *
+   * The findings and the profile note carry their numbers inside the
+   * sentence, in the unit set the server was given, so a reader who
+   * switches from acres to hectares needs them written again — a redraw
+   * cannot do it, because converting a sentence would mean re-deciding
+   * what it says. Only the prose: every number in a table, a legend or a
+   * chart is converted here and needs no round trip. */
+  async refreshTerrainPhrasing() {
+    const analysis = this.terrainAnalysis();
+    if (!analysis?.yieldRelief) return;
+    const comparison = await this.api(`/api/terrain/${analysis.id}/yield`, {
+      method: "POST",
+      body: {
+        yield_dataset_id: analysis.yieldRelief.values.dataset_id,
+        units: Units.get(),
+      },
+    }).catch(() => null);
+    // The tab may have moved on while the request was out; rewriting the
+    // sentences of an analysis nobody is looking at would be harmless but
+    // redrawing over the one on screen would not.
+    if (!comparison || this.terrainAnalysis() !== analysis) return;
+    analysis.yieldRelief = comparison;
+    if (analysis.profile?.points) await this.runProfile(analysis.profile.points);
+    if (this.state.tab === "terrain") this.renderTab();
   },
 
   /* ---------------------------------------------------------- the map */
@@ -1775,6 +2098,11 @@ Object.assign(App, {
           : "Click two points on the map and the ground between them is drawn "
             + "below, height against distance."}</p>
         <div id="terrain-profile-chart"></div>
+        ${profile?.values_meta ? `<p class="hint tight">${
+          this.escape(profile.values_meta.note)} The two panels share the
+          distance axis rather than sharing a plot: a height and a yield have
+          no common scale, so where two lines drawn against two scales crossed
+          would be decided by the axes, not by the field.</p>` : ""}
         ${numbers}
       </div>`;
   },
@@ -1866,8 +2194,16 @@ Object.assign(App, {
     if (!analysis) return;
     // Two hundred stations read every cell a line crosses on any field this
     // app grids, and a chart a panel wide has fewer pixels than that.
+    // The value layer rides along once it has been compared, so the chart
+    // under the map gains its second panel without a second click. Before
+    // that the request is the one it has always been.
+    const body = { points, n: 200 };
+    if (analysis.yieldRelief) {
+      body.values_dataset_id = analysis.yieldRelief.values.dataset_id;
+      body.units = Units.get();
+    }
     const profile = await this.api(`/api/terrain/${analysis.id}/profile`, {
-      method: "POST", body: { points, n: 200 },
+      method: "POST", body,
     }).catch((err) => {
       this.setProfileStatus(err.message);
       return null;
@@ -1984,12 +2320,27 @@ Object.assign(App, {
 
     const chart = document.getElementById("terrain-profile-chart");
     if (chart && analysis.profile) {
+      const meta = analysis.profile.values_meta;
+      const value = meta
+        ? Units.forColumn(meta.column || "value", meta.operation)
+        : null;
       Charts.profile(chart, {
         distance: analysis.profile.distance_m.map(Units.convert.length),
         elevation: analysis.profile.elev_m.map(
           (z) => (z == null ? null : Units.convert.length(z))),
-      }, { distanceUnit: lengthUnit, elevationUnit: lengthUnit });
+        values: value && analysis.profile.values
+          ? analysis.profile.values.map((v) => (v == null ? null : value.conv(v)))
+          : null,
+      }, {
+        distanceUnit: lengthUnit,
+        elevationUnit: lengthUnit,
+        elevationLabel: "Height",
+        valueUnit: value?.unit,
+        valueLabel: meta?.value_label || "Value",
+      });
     }
+
+    this.drawTerrainYieldChart();
   },
 
   /* A histogram's edges in the displayed unit; the counts are counts. */
@@ -4271,6 +4622,7 @@ Object.assign(App, {
       Units.set("currency", this.value("u-currency"));
       this.loadMap();
       this.renderTab();
+      this.refreshTerrainPhrasing();
     };
     for (const id of ["u-yield", "u-input", "u-area", "u-length", "u-speed", "u-mass",
                       "u-crop", "u-currency"]) {

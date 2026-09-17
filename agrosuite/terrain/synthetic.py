@@ -431,10 +431,18 @@ def synthetic_terrain(
     seconds = np.cumsum(dt + turn)
     timestamp = pd.Timestamp("2025-08-20 09:00:00") + pd.to_timedelta(seconds, unit="s")
 
-    # A plausible canola yield: poorer on the dry hilltops, better in the
-    # valley, drowned at the bottom of the bowl.
-    relief = truth["relief"](x, y)
-    yield_kg = 2_600.0 - 110.0 * relief + rng.normal(0.0, 220.0, n)
+    # A plausible canola yield for a dry year, following the whole height of
+    # the ground rather than only the bumps in it: water runs down the
+    # field's general fall as well as off its hilltops, so the yield is set
+    # against the height above the field's own mean — thinnest on the
+    # hilltops, best on the low ground — and the closed bowl is drowned out
+    # on top of that. Against the local relief alone the yield came out
+    # uncorrelated with the elevation the same file carries (r = -0.1), and
+    # a demo whose yield-against-relief chart is a flat line teaches the
+    # user nothing about a tool built to find that relation.
+    height = surface(x, y)
+    height = height - height.mean()
+    yield_kg = 2_600.0 - 110.0 * height + rng.normal(0.0, 220.0, n)
     if depression is not None:
         fx, fy, _depth, radius = depression
         d2 = (x - (ox + fx * size_m)) ** 2 + (y - (oy + fy * size_m)) ** 2
