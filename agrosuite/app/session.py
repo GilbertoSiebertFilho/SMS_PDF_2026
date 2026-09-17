@@ -140,7 +140,12 @@ class Session:
             self.project["reviewed"].discard(dataset_id)
 
     def list(self) -> list[dict[str, Any]]:
-        return [entry.summary() for entry in self._entries.values()]
+        # The snapshot is taken under the lock and summarized outside it: a
+        # request that clears or adds a dataset while this one is building
+        # its answer must not make the iteration itself fail.
+        with self._lock:
+            entries = list(self._entries.values())
+        return [entry.summary() for entry in entries]
 
     def clear(self) -> None:
         # Whatever replaces the datasets — a new project, a reopened file —

@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "agrosuite"
 version = "1.0.0"
-description = "Agricultural monitor data: import, cleaning, DIFM analysis and prescriptions"
+description = "Agricultural monitor data: import, cleaning, trial design, economics and prescriptions"
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }

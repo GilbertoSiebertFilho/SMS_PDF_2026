@@ -94,19 +94,39 @@ nav.steps button[aria-selected="true"] {
 .topbar .spacer { flex: 1; }
 
 /* -------------------------------------------------------- stage strip */
-/* The five steps, always visible, with the current one marked. The point is
-   that the order is not a preference: each step needs the one before it. */
+/* The stages of whichever track the project is on, always visible, with the
+   current one marked. They guide and do not gate: every stage is a button,
+   a stage that was passed over is marked as skipped rather than as failed,
+   and the two-way choice at the head of the strip says which track the
+   stages belong to. */
 
 .stage-strip {
-  display: flex; align-items: stretch; gap: 0; flex: none;
+  display: flex; align-items: center; gap: 0; flex: none;
   background: var(--surface); border-bottom: 1px solid var(--border);
   padding: 0 12px; overflow-x: auto;
+}
+.stage-strip .tracks {
+  display: flex; gap: 2px; flex: none; margin-right: 14px;
+  padding: 5px 14px 5px 0; border-right: 1px solid var(--border);
+}
+.stage-strip .tracks .track {
+  border: 1px solid var(--border-strong); background: none; color: var(--text-muted);
+  padding: 4px 10px; border-radius: var(--radius-sm); cursor: pointer;
+  font: inherit; font-size: 12px; white-space: nowrap;
+}
+.stage-strip .tracks .track:hover { background: var(--surface-2); color: var(--text); }
+.stage-strip .tracks .track.on {
+  background: var(--accent-soft); color: var(--accent-strong); border-color: var(--accent);
+  font-weight: 600;
 }
 .stage-strip .stage {
   display: flex; align-items: center; gap: 7px;
   padding: 7px 14px 7px 10px; font-size: 12px; color: var(--text-faint);
   white-space: nowrap; position: relative;
+  border: none; background: none; font-family: inherit; cursor: pointer;
 }
+.stage-strip .stage:hover { color: var(--text); }
+.stage-strip .stage.skippable .dot { border-style: dashed; }
 .stage-strip .stage + .stage::before {
   content: ""; position: absolute; left: 0; top: 50%;
   width: 6px; height: 6px; margin-top: -3px;
@@ -133,6 +153,21 @@ nav.steps button[aria-selected="true"] {
   padding: 5px 0 5px 16px; font-size: 12px;
 }
 .stage-strip .next .what { color: var(--text-muted); }
+/* The other half of the answer: the current stage already produces something,
+   and the tooltip says what and how to take it away. */
+.stage-strip .next .stop {
+  color: var(--text-faint); font-size: 11px; border-bottom: 1px dotted var(--border-strong);
+  cursor: help;
+}
+
+/* ------------------------------------------- what a tab produces alone */
+/* Set apart from the working panels above it: this is the way out, not
+   another step. */
+
+.panel.produces {
+  background: var(--surface-2); border-top: 1px dashed var(--border-strong);
+}
+.panel.produces > h3 { color: var(--text-muted); }
 
 /* ------------------------------------------------------- role chooser */
 

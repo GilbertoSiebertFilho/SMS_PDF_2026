@@ -1,7 +1,13 @@
 /* AgroSuite — user interface.
  *
- * A five-step flow, one per tab: load the data, clean it, analyse it, lay out
- * a trial, export. State lives in a single object; each tab redraws the right
+ * Two tracks share one set of tabs. Plan a trial: a field comes in, the
+ * strips and the AB line go out to the monitor. Evaluate a trial: the
+ * as-applied and the yield map come in, the optimum rate and what it is
+ * worth come out. Neither is an order that has to be followed — every tab is
+ * clickable at any time, a tab that cannot do its work yet says what is
+ * missing and offers the one button that fixes it, and every tab ends with
+ * what it can produce on its own, because stopping there is a legitimate way
+ * to finish. State lives in a single object; each tab redraws the right
  * panel from it. */
 
 const App = {
@@ -367,6 +373,143 @@ const App = {
     return [...extra, ...columns.map((c) => [c, labels[c] || c])];
   },
 
+  /* ------------------------------------------------------- tab navigation */
+
+  goToTab(tab) {
+    this.state.tab = tab;
+    for (const b of document.querySelectorAll("#steps button")) {
+      b.setAttribute("aria-selected", String(b.dataset.tab === tab));
+    }
+    this.renderTab();
+  },
+
+  /* --------------------------------------- what a tab needs, what it gives */
+
+  /* A tab that cannot do its work yet says so in its own panel and offers the
+   * one button that fixes it. Greying the tab out, or drawing an empty panel,
+   * would leave the user to guess which of the missing pieces is the one this
+   * tab is waiting for. */
+  missingPanel(title, what, action) {
+    return `
+      <div class="panel">
+        <h3>${this.escape(title)}</h3>
+        <div class="note">${this.escape(what)}</div>
+        <button class="primary wide" style="margin-top:10px" data-cta="${action.cta}">
+          ${this.escape(action.label)}</button>
+        ${action.hint ? `<p class="hint tight">${this.escape(action.hint)}</p>` : ""}
+      </div>`;
+  },
+
+  /* The end of every tab: what it produces on its own and how to take it
+   * away. The buttons are never disabled — one pressed too early answers
+   * with the step that would fill it, which is more use than a dead control. */
+  producesPanel(rows, note = "") {
+    return `
+      <div class="panel produces">
+        <h3>If you stop here</h3>
+        ${note ? `<p class="hint tight">${this.escape(note)}</p>` : ""}
+        ${rows.map((row) => `
+          <button class="wide" style="margin-bottom:4px" data-cta="${row.cta}">
+            ${this.escape(row.label)}</button>
+          <p class="hint tight">${this.escape(row.hint)}</p>`).join("")}
+      </div>`;
+  },
+
+  /* One place where every call to action in a panel is wired, so a panel only
+   * has to name the step it wants rather than repeat the handler. */
+  bindPanelActions(panel) {
+    for (const button of panel.querySelectorAll("[data-cta]")) {
+      button.addEventListener("click", (event) =>
+        this.callToAction(button.dataset.cta, event.currentTarget));
+    }
+  },
+
+  async callToAction(action, button) {
+    const [name, argument] = String(action).split(":");
+    const selected = this.state.selectedId;
+
+    if (name === "load") { document.getElementById("btn-open-file").click(); return; }
+    if (name === "pick") {
+      const id = argument || this.state.datasets[0]?.id;
+      if (!id) { this.toast("Nothing to pick", "Load a file first.", "warn"); return; }
+      await this.selectDataset(id);
+      return;
+    }
+    if (name === "draw") { this.goToTab("ensaio"); this.startDrawing(); return; }
+    if (name === "prices") {
+      const field = document.getElementById("difm-price") || document.getElementById("price-value");
+      if (!field) { this.goToTab("difm"); return; }
+      field.scrollIntoView({ block: "center", behavior: "smooth" });
+      field.focus();
+      return;
+    }
+    if (name === "print") {
+      const id = argument || selected;
+      if (!id) { this.toast("Nothing to print", "Pick a file first.", "warn"); return; }
+      await this.printReport(id, button);
+      return;
+    }
+    if (name === "export-file") {
+      const id = argument || selected;
+      if (!id) { this.toast("Nothing to export", "Pick a file first.", "warn"); return; }
+      await this.exportDataset(id);
+      return;
+    }
+    if (name === "print-clean") {
+      const id = this.cleanCopyId();
+      if (!id && !this.state.selected?.has_clean_report) {
+        this.toast("No cleaning report yet",
+          "Run the cleaning above and the report comes with it.", "warn");
+        return;
+      }
+      await this.printReport(id || selected, button);
+      return;
+    }
+    if (name === "export-clean") {
+      const id = this.cleanCopyId();
+      if (!id) {
+        this.toast("No clean copy yet",
+          "Run the cleaning and it produces one, beside the original.", "warn");
+        return;
+      }
+      await this.exportDataset(id);
+      return;
+    }
+    if (name === "export-package") {
+      this.state.exportMode = "package";
+      this.goToTab("exportar");
+      return;
+    }
+    if (name === "prescription") {
+      const report = this.state.reports[`${selected}:difm`];
+      if (!report) {
+        this.toast("Nothing to build from",
+          "The prescription comes out of the analysis; run it first.", "warn");
+        return;
+      }
+      this.prescriptionFromDifm(report);
+    }
+  },
+
+  /* Hand a dataset to the Export tab ready to write: individual files, this
+   * dataset as the source. "The file as it stands" is a product in its own
+   * right — the data read, normalized and in the units the user declared. */
+  async exportDataset(id) {
+    if (id && id !== this.state.selectedId) await this.selectDataset(id);
+    this.state.exportMode = "files";
+    this.state.exportSource = "dataset";
+    this.goToTab("exportar");
+  },
+
+  /* The clean copy of what is selected: itself, if a clean copy is what is
+   * selected, and otherwise the last one the cleaning produced from it. */
+  cleanCopyId() {
+    const d = this.state.selected;
+    if (!d) return null;
+    if (d.origin === "clean") return d.id;
+    return this.cleanResultFor(d.id, null).clean?.id || null;
+  },
+
   /* ------------------------------------------------ right panel rendering */
 
   renderTab() {
@@ -381,6 +524,9 @@ const App = {
       exportar: () => this.tabExportar(panel),
     };
     (renderers[this.state.tab] || renderers.dados)();
+    // Every panel's calls to action are wired in one place, after the tab
+    // has drawn itself, so a tab only names the step it is asking for.
+    this.bindPanelActions(panel);
   },
 };
 
@@ -392,9 +538,22 @@ Object.assign(App, {
   tabDados(panel) {
     const d = this.state.selected;
     if (!d) {
-      panel.innerHTML = `<div class="panel"><h3>Data</h3>
-        <div class="empty">Load a file on the left, or start from one of the demo
-        datasets.</div></div>`;
+      const loaded = this.state.datasets.length;
+      panel.innerHTML = loaded
+        ? this.missingPanel(
+            "Data",
+            `${loaded} file(s) are open, but none is picked. The panel shows one at a `
+            + "time: what came in, whether the units are what they seem, and how the "
+            + "data looks.",
+            { cta: "pick", label: "Show the first file" })
+        : this.missingPanel(
+            "Data",
+            "Nothing is open yet. This tab reads what came off the monitor — "
+            + "shapefile, CSV, ISOXML, a card or a zip — and gives it a first look: "
+            + "coverage, timeline, columns, data quality and the units.",
+            { cta: "load", label: "Load a file",
+              hint: "Or try it on made-up data: the Harvest demo and the Trial demo "
+                    + "buttons are on the left." });
       return;
     }
 
@@ -456,6 +615,15 @@ Object.assign(App, {
       <div class="panel"><h3>First rows</h3>
         <div class="scroll-x" id="preview"></div>
       </div>
+
+      ${this.producesPanel([
+        { label: "Print the report (PDF)", cta: "print",
+          hint: "The first look as a page: what the file is, what it covers and "
+                + "what was found in it, in the units on screen." },
+        { label: "Export this file as it stands", cta: "export-file",
+          hint: "The data as read — normalized columns, declared units — written "
+                + "as shapefile, CSV or GeoJSON." },
+      ], "Reading a file and stopping there is a complete use of the app.")}
 
       <div class="panel">
         <button class="wide" id="btn-remove-dataset">Remove from session</button>
@@ -640,8 +808,21 @@ Object.assign(App, {
   tabLimpeza(panel) {
     const d = this.state.selected;
     if (!d) {
-      panel.innerHTML = `<div class="panel"><h3>Cleaning</h3>
-        <div class="empty">Pick a dataset first.</div></div>`;
+      const loaded = this.state.datasets.length;
+      panel.innerHTML = loaded
+        ? this.missingPanel(
+            "Cleaning",
+            "Cleaning works on one file at a time, and none is picked yet.",
+            { cta: "pick", label: "Show the first file" })
+        : this.missingPanel(
+            "Cleaning",
+            "Nothing is open yet. This tab removes overlap, headland turns and "
+            + "sensor faults from a monitor file, and says what it took out and "
+            + "from where. Nothing is overwritten: it produces a clean copy and "
+            + "the removed records beside the original.",
+            { cta: "load", label: "Load a file",
+              hint: "Already cleaned elsewhere? You can skip this tab entirely and "
+                    + "go straight to Economics." });
       return;
     }
 
@@ -675,7 +856,16 @@ Object.assign(App, {
         datasets, "clean" and "removed".</p>
       </div>
 
-      <div id="clean-report"></div>`;
+      <div id="clean-report"></div>
+
+      ${this.producesPanel([
+        { label: "Export the clean copy as a file", cta: "export-clean",
+          hint: "The kept records, written as shapefile, CSV or GeoJSON — the file "
+                + "to hand on to whatever comes next." },
+        { label: "Print the cleaning report (PDF)", cta: "print-clean",
+          hint: "Before and after, what each filter removed, and the histogram of "
+                + "both — the evidence that the cleaning was sound." },
+      ], "Cleaning a file and stopping there is a complete use of the app.")}`;
 
     this.renderCleanSteps(config.steps);
     this.bindMachinePicker("clean");
@@ -1140,15 +1330,35 @@ Object.assign(App, {
 });
 
 /* ======================================================================
- * Tab 3 — DIFM analysis
+ * Economics
+ *
+ * On-farm trial analysis: the yield response to the rates the trial applied,
+ * and the price ratio that says where the next unit of input stops paying
+ * for itself. The tab key, the endpoint and the stored report keep the name
+ * they were written with — see agrosuite/core/workflow.py.
  * ==================================================================== */
 
 Object.assign(App, {
   tabDifm(panel) {
     const d = this.state.selected;
     if (!d) {
-      panel.innerHTML = `<div class="panel"><h3>DIFM analysis</h3>
-        <div class="empty">Pick a dataset carrying an applied rate and a yield.</div></div>`;
+      const loaded = this.state.datasets.length;
+      panel.innerHTML = loaded
+        ? this.missingPanel(
+            "Economics",
+            "The analysis reads one table carrying both the applied rate and the "
+            + "yield, and none is picked. Pick the trial file — or join the "
+            + "as-applied and the yield map on the left, which builds that table.",
+            { cta: "pick", label: "Show the first file" })
+        : this.missingPanel(
+            "Economics",
+            "Nothing is open yet. This tab fits the yield response to the rates a "
+            + "trial applied and finds the rate where the next unit of input stops "
+            + "paying for itself. It needs a file carrying both the rate and the "
+            + "yield — a cleaned trial, or the layers joined on a shared grid.",
+            { cta: "load", label: "Load a file",
+              hint: "A file that is already clean can come straight here: cleaning "
+                    + "is not a step this tab waits for." });
       return;
     }
 
@@ -1175,7 +1385,25 @@ Object.assign(App, {
     const projectInput = prices.input_cost
       ? Number(Units.priceFromInternal(prices.input_cost, inputUnit).toFixed(2)) : 0;
 
+    // Without a crop price there is no economic optimum, only an agronomic
+    // maximum, which is a different number. Saying so before the run beats
+    // refusing after it.
+    const needsPrices = !projectCrop;
+
     panel.innerHTML = `
+      <div class="panel">
+        <h3>Economic analysis: optimum rate from your trial</h3>
+        <p class="hint tight">The yield response is fitted to the rates the trial
+        applied; the crop price and the input cost turn that curve into the rate
+        where the next unit stops paying for itself.</p>
+      </div>
+
+      ${needsPrices ? this.missingPanel(
+        "The prices are missing",
+        "Without a crop price the app can only report the agronomic maximum — the "
+        + "rate that grows the most, not the rate that earns the most.",
+        { cta: "prices", label: "Set the prices" }) : ""}
+
       <div class="panel">
         <h3>Trial</h3>
         ${this.field("Applied rate column",
@@ -1213,12 +1441,24 @@ Object.assign(App, {
       </div>
 
       <div class="panel">
-        <button class="primary wide" id="btn-run-difm">Analyse the response</button>
+        <button class="primary wide" id="btn-run-difm">Run the economic analysis</button>
       </div>
 
-      <div id="difm-report"></div>`;
+      <div id="difm-report"></div>
+
+      ${this.producesPanel([
+        { label: "Print the economic report (PDF)", cta: "print",
+          hint: "The optimum rate, the curve it came from, the margin it earns and "
+                + "the response of every rate the trial applied." },
+        { label: "Build a prescription from the optimum", cta: "prescription",
+          hint: "One rate for the field, or one per zone, carried to the Export tab "
+                + "as the map to take to the monitor." },
+      ], "The analysis is worth having on its own; the prescription is optional.")}`;
 
     document.getElementById("btn-run-difm").addEventListener("click", () => this.runDifm());
+    // The cache key, the endpoint and the stored report key stay 'difm': they
+    // are the wire names a saved project and a stored report were written
+    // with. Only the label changed.
     const existing = this.state.reports[`${this.state.selectedId}:difm`];
     if (existing) this.renderDifmReport(existing);
     else if (d.has_difm_report) this.restoreDifmReport(d);
@@ -1242,7 +1482,9 @@ Object.assign(App, {
         .map((o) => o.value),
     };
     if (!body.crop_price) {
-      this.toast("Enter a price", "Without a crop price there is no economic optimum.", "warn");
+      this.toast("Enter a price",
+        "Without a crop price there is no economic optimum — only the agronomic "
+        + "maximum, which is a different number.", "warn");
       return;
     }
 
@@ -1406,20 +1648,41 @@ Object.assign(App, {
       this.toast("Zone rates carried to export",
         zones.map((z) => `${z.zone}: ${Units.num(Units.convert.inputRate(z.optimum_rate))}`).join(" · "));
     }
-    this.state.tab = "exportar";
-    for (const b of document.querySelectorAll("#steps button")) {
-      b.setAttribute("aria-selected", String(b.dataset.tab === "exportar"));
-    }
-    this.renderTab();
+    this.goToTab("exportar");
   },
 });
 
 /* ======================================================================
- * Tab 4 — Trial layout
+ * Trial design
+ *
+ * The first half of the season's work, and it stands on its own: a boundary
+ * in, the plots and the AB line out, straight to the monitor. Nothing here
+ * asks for a yield map, for prices or for cleaning.
  * ==================================================================== */
 
 Object.assign(App, {
   tabEnsaio(panel) {
+    // The layout needs a field and nothing else. With no layer open and no
+    // drawing on the map there is nowhere to put the strips, so the panel
+    // asks for one instead of offering a form that cannot be submitted.
+    if (!this.state.datasets.length && !this.state.drawing?.length) {
+      panel.innerHTML = this.missingPanel(
+        "Trial design",
+        "There is no field to lay the strips on yet. A boundary file is the "
+        + "truest outline, but any layer works — a yield map falls back to the "
+        + "hull of its points — and you can also draw the field on the map.",
+        { cta: "load", label: "Load a boundary or a field file",
+          hint: "Nothing else is needed here: no yield map, no prices, no "
+                + "cleaning. Rates, plot size, replications and direction are "
+                + "set on this tab once there is a field." })
+        + this.missingPanel(
+          "Or draw it",
+          "Click the field's corners on the map and the layout is built inside "
+          + "what you drew.",
+          { cta: "draw", label: "Draw the field on the map" });
+      return;
+    }
+
     const lengthUnit = Units.label.length();
     const inputUnit = Units.label.inputRate();
     const areaUnit = Units.label.area();
@@ -1478,7 +1741,14 @@ Object.assign(App, {
         losing the whole treatment.</p>
       </div>
 
-      <div id="design-report"></div>`;
+      <div id="design-report"></div>
+
+      ${this.producesPanel([
+        { label: "Build the package for the monitor", cta: "export-package",
+          hint: "The USB folder the terminal reads: the strips as the prescription, "
+                + "the boundary and the AB line, checked before the stick leaves." },
+      ], "Planning the trial is a season's work on its own — it ends here, at the "
+         + "monitor, months before there is anything to analyse.")}`;
 
     this.bindMachinePicker("design");
     document.getElementById("btn-run-design").addEventListener("click", () => this.runDesign());
@@ -1604,11 +1874,8 @@ Object.assign(App, {
     if (this.state.guidance?.length) this.renderGuidanceStatus();
 
     document.getElementById("btn-design-export").addEventListener("click", () => {
-      this.state.tab = "exportar";
-      for (const b of document.querySelectorAll("#steps button")) {
-        b.setAttribute("aria-selected", String(b.dataset.tab === "exportar"));
-      }
-      this.renderTab();
+      this.state.exportMode = "package";
+      this.goToTab("exportar");
     });
   },
 });
@@ -1661,7 +1928,7 @@ Object.assign(App, {
 });
 
 /* ======================================================================
- * Tab 5 — Export
+ * Export
  * ==================================================================== */
 
 Object.assign(App, {
@@ -1670,6 +1937,25 @@ Object.assign(App, {
     const hasDataset = !!this.state.selectedId;
     const mode = this.state.exportMode || "package";
     const inputUnit = Units.label.inputRate();
+
+    // Nothing to write out yet: the tab says which of the two things it
+    // takes is missing, rather than drawing a form over an empty session.
+    if (!hasDesign && !hasDataset) {
+      panel.innerHTML = this.missingPanel(
+        "Export",
+        this.state.datasets.length
+          ? "There is a trial layout or a file to write, but none is picked."
+          : "There is nothing to write out yet. This tab builds the package the "
+            + "monitor reads — boundary, AB lines and prescription in the layout "
+            + "the platform expects — or individual files from any layer that is "
+            + "open.",
+        this.state.datasets.length
+          ? { cta: "pick", label: "Show the first file" }
+          : { cta: "load", label: "Load a file",
+              hint: "A trial laid out on the Trial design tab is exported from "
+                    + "here too, with no data loaded at all." });
+      return;
+    }
 
     panel.innerHTML = `
       <div class="panel">
@@ -1680,7 +1966,6 @@ Object.assign(App, {
         ], mode), mode === "package"
           ? "Builds the USB folder in the layout the monitor looks for, with boundary, AB lines and prescription."
           : "Generates only the chosen files, with no folder structure.")}
-        ${!hasDesign && !hasDataset ? '<div class="empty">Nothing to export yet.</div>' : ""}
       </div>
       <div id="export-form"></div>
       <div id="export-report"></div>`;
@@ -1730,7 +2015,7 @@ Object.assign(App, {
             ${hasGuidance ? "" : "disabled"}>
           <span>AB lines${hasGuidance
             ? ` — ${this.state.guidance.length} line(s)`
-            : " (build them on the Trial tab)"}</span></label>
+            : " (build them on the Trial design tab)"}</span></label>
         ${this.field("Boundary from", this.selectInput("pkg-boundary-src",
           [["", "— current drawing / trial —"], ...datasets],
           this.state.selectedId || ""),
@@ -2121,12 +2406,19 @@ Object.assign(App, {
     const brands = this.state.catalog.brands.filter((b) => b.export_formats.length);
     const source = this.state.exportSource || (hasDesign ? "design" : "dataset");
     const lengthUnit = Units.label.length();
+    /* The name becomes the file name. A trial layout is a prescription; a
+     * dataset exported as it stands is that dataset, and calling the zip
+     * "Prescription" would misname what is inside it. */
+    const defaultName = source === "dataset" && this.state.selected
+      ? (this.state.selected.label.replace(/[^\w .\-]+/g, " ").replace(/\s+/g, " ")
+          .trim().slice(0, 40) || "Data")
+      : "Prescription";
 
     box.innerHTML = `
       <div class="panel">
         <h3>Source</h3>
         ${this.field("What to export", this.selectInput("exp-source", [
-          ...(hasDesign ? [["design", "Trial layout (prescription)"]] : []),
+          ...(hasDesign ? [["design", "Trial design (prescription)"]] : []),
           ...(hasDataset ? [["dataset", `Data: ${this.state.selected?.label ?? ""}`]] : []),
         ], source))}
       </div>
@@ -2155,7 +2447,8 @@ Object.assign(App, {
         <div class="row tight">
           ${this.field(`ISOXML cell (${lengthUnit})`,
             this.numberInput("exp-cell", Math.round(Units.convert.length(10)), "1", "1"))}
-          ${this.field("Name", `<input type="text" id="exp-task" value="Prescription">`)}
+          ${this.field("Name", `<input type="text" id="exp-task"
+            value="${this.escape(defaultName)}">`)}
         </div>
         <input type="hidden" id="exp-field" value="Field">
         <input type="hidden" id="exp-product" value="Product">
@@ -2693,9 +2986,11 @@ document.addEventListener("DOMContentLoaded", () => App.init());
 /* ======================================================================
  * The guided workflow
  *
- * Five stages, always visible, with what is missing and the single next
- * thing to do. The stage is derived on the server from what has actually
- * happened, so it can never disagree with the state of the session.
+ * Two tracks, and the stages of whichever one the project is on: always
+ * visible, with what is missing and the single next thing worth doing. The
+ * stage is derived on the server from what has actually happened, so it can
+ * never disagree with the state of the session — and it guides rather than
+ * gates: every stage in the strip is clickable, whatever state it is in.
  * ==================================================================== */
 
 Object.assign(App, {
@@ -2710,38 +3005,75 @@ Object.assign(App, {
   renderStageStrip(project) {
     const strip = document.getElementById("stage-strip");
     if (!strip) return;
-    const stages = this.state.catalog.workflow.stages;
-    const currentIndex = stages.findIndex((s) => s.key === project.stage);
+    const tracks = this.state.catalog.workflow.tracks;
+    const stages = project.stages || [];
+    const empty = !this.state.datasets.length;
+    const next = project.next_action;
     strip.hidden = false;
 
-    strip.innerHTML = stages.map((stage, index) => {
-      const state = index < currentIndex ? "done" : index === currentIndex ? "current" : "";
-      const mark = index < currentIndex ? "✓" : String(index + 1);
-      return `<div class="stage ${state}" title="${this.escape(stage.description)}">
-        <span class="dot">${mark}</span><span>${this.escape(stage.label)}</span>
-      </div>`;
-    }).join("") + `
+    // The choice between the two tracks comes first, because it is the one
+    // decision that changes what the rest of the strip is for.
+    const choice = Object.entries(tracks).map(([key, track]) => `
+      <button class="track${key === project.track ? " on" : ""}" data-track="${key}"
+              title="${this.escape(track.description)}">${this.escape(track.label)}</button>`
+    ).join("");
+
+    // Done, skipped or still ahead — none of them closed. A stage nobody has
+    // reached is as clickable as the one the project is standing on.
+    const marks = { done: "✓", current: "●", skippable: "–", ahead: "○" };
+    const drawn = stages.map((stage) => `
+      <button class="stage ${stage.state}" data-stage="${stage.key}"
+              title="${this.escape(stage.description)} — If you stop here: ${
+                this.escape(stage.produces)}. ${this.escape(stage.export)}">
+        <span class="dot">${marks[stage.state] || "○"}</span>
+        <span>${this.escape(stage.label)}</span>
+      </button>`).join("");
+
+    strip.innerHTML = `
+      <div class="tracks" role="group" aria-label="What are you doing?">${choice}</div>
+      ${drawn}
       <div class="next">
-        <span class="what">Next: ${this.escape(project.next_action.label)}</span>
+        ${empty ? `<span class="what">Either way, start by opening a file: a boundary
+          to plan a trial on, or the harvest files to evaluate one.</span>`
+          : `<span class="what">Next: ${this.escape(next.label)}</span>`}
         <button class="small" id="btn-next-action">Go</button>
+        ${next.stop && !empty ? `<span class="stop" title="${
+          this.escape(next.stop.produces)}. ${
+          this.escape(next.stop.export)}">or stop here</span>` : ""}
       </div>`;
 
+    for (const button of strip.querySelectorAll("[data-track]")) {
+      button.addEventListener("click", () => this.setTrack(button.dataset.track));
+    }
+    for (const button of strip.querySelectorAll("[data-stage]")) {
+      button.addEventListener("click", () => this.goToStep(button.dataset.stage));
+    }
     document.getElementById("btn-next-action").addEventListener("click",
-      () => this.goToStep(project.next_action.step));
-    document.getElementById("btn-next-action").title = project.next_action.why;
+      () => this.goToStep(next.step));
+    document.getElementById("btn-next-action").title = next.why;
+  },
+
+  /* The two-way choice sets the project's goal, which is what the server
+   * reads: planning a trial and evaluating one need different things, and
+   * the panel on the left should ask for the ones that apply. */
+  async setTrack(track) {
+    const goal = this.state.catalog.workflow.tracks[track]?.goal;
+    if (!goal || goal === this.state.project?.goal) return;
+    await this.api("/api/project", { method: "POST", body: { goal } }).catch((err) => {
+      this.toast("That did not work", err.message, "error");
+    });
+    await this.refreshProject();
+    this.renderTab();
   },
 
   /* Each workflow step maps to the tab that carries it out. */
   goToStep(step) {
     const tab = {
       load: "dados", review: "dados", units: "dados", columns: "dados",
-      clean: "limpeza", analyse: "difm", augmenta: "dados", export: "exportar",
+      clean: "limpeza", design: "ensaio", analyse: "difm", augmenta: "dados",
+      export: "exportar",
     }[step] || "dados";
-    this.state.tab = tab;
-    for (const b of document.querySelectorAll("#steps button")) {
-      b.setAttribute("aria-selected", String(b.dataset.tab === tab));
-    }
-    this.renderTab();
+    this.goToTab(tab);
   },
 
   renderProjectPanel(project) {
@@ -3668,7 +4000,7 @@ Object.assign(App, {
     this.resetSessionState();
     this.state.projectFile = result.file;
     // The trial layout is in the file with everything else: the Trial
-    // layout tab puts it back on the map when it renders, and Export
+    // design tab puts it back on the map when it renders, and Export
     // offers it as the prescription again.
     this.state.design = result.design?.result || null;
     this.renderProjectFile();
@@ -3747,7 +4079,7 @@ Object.assign(App, {
   },
 
   /* The report belongs to the dataset that carries it: the clean copy after a
-   * cleaning, the analysed dataset after DIFM. The unit set travels with the
+   * cleaning, the analysed dataset after the economics. The unit set travels with the
    * request because the server keeps no display preference — the numbers on
    * paper must be the ones the user was looking at, not the metric ones
    * underneath. The project name is the heading. */
@@ -3797,7 +4129,9 @@ Object.assign(App, {
       link.remove();
     }
 
-    const names = { preflight: "first look", clean: "cleaning", difm: "DIFM analysis" };
+    // The stored report keys are the wire names; these are what they are
+    // called on screen and on the page.
+    const names = { preflight: "first look", clean: "cleaning", difm: "economic report" };
     const printed = result.sections.map((s) => names[s]).filter(Boolean).join(", ");
     this.toast("Report written",
       `${result.filename}: ${printed || "header only"}, ` +

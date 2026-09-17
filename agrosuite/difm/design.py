@@ -1,6 +1,6 @@
-"""Laying out DIFM strip trials.
+"""Laying out on-farm strip trials.
 
-A useful DIFM trial needs three properties this layout guarantees:
+A useful trial needs three properties this layout guarantees:
 
 * **Randomization in blocks.** Rates are drawn within each block of
   consecutive strips, so a fertility gradient running across the field does

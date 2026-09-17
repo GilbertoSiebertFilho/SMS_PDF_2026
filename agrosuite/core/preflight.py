@@ -13,8 +13,8 @@ Three things it checks that matter most in practice:
     compares the observed magnitude against what the operation and crop make
     plausible and names the unit that fits.
 
-**Is anything missing that blocks the next step?**
-    Cleaning without speed or swath width loses its best filters. A DIFM
+**Is anything missing for what comes next?**
+    Cleaning without speed or swath width loses its best filters. An economic
     analysis without an applied rate cannot start at all. Saying so up front
     beats failing three screens later.
 
@@ -604,12 +604,37 @@ ROLE_BY_OPERATION = {
 }
 
 
+def looks_cleaned(ds) -> bool:
+    """Whether this file still holds what cleaning exists to remove.
+
+    Read from the data, not from a tick box, because a file can arrive clean:
+    exported from another program after filtering, aggregated into cells, or
+    produced by this app's own cleaning in an earlier session.
+
+    Two signals say the filters have nothing left to catch:
+
+    * the file carries this app's cleaning mark — it came out of the Cleaning
+      tab, here or in the session a project file was saved from;
+    * it is not a machine log at all. Overlap, pass ends, flow delay and the
+      speed filters all read a track: a timestamp, a speed, a swath width. A
+      file carrying none of the three is a grid, a summary or an already
+      filtered export, and cleaning it would remove nothing it should.
+    """
+    if (ds.meta.extra or {}).get("cleaning"):
+        return True
+    return not ({sch.TIMESTAMP, sch.SPEED, sch.SWATH} & set(ds.df.columns))
+
+
 def suggest_next_step(ds, findings: list[Finding], role: str) -> dict[str, Any]:
     """Say what to do next with this file, and why.
 
-    The suggestion follows the order the work actually happens in: fix the
-    units first, because everything downstream inherits them; then clean;
-    then analyse. Setup layers skip straight to export.
+    Units come first, because everything downstream inherits them. After
+    that the suggestion follows what the file *is*, not a fixed order: a
+    boundary is something to lay a trial on, a prescription is something to
+    send to the monitor, a file that is already clean goes straight to the
+    economics, and a raw machine log is worth cleaning first.
+
+    It is a suggestion. Every tab stays open whatever this says.
     """
     blocking = [f for f in findings if f.level == "alert"]
     if any("Units" in f.title for f in blocking):
@@ -625,7 +650,21 @@ def suggest_next_step(ds, findings: list[Finding], role: str) -> dict[str, Any]:
             "label": "Pick the main variable",
             "why": "No column was recognized as the measured value.",
         }
-    if role in ("boundary", "guidance"):
+    if role == "boundary":
+        return {
+            "step": "design",
+            "label": "Plan a trial on this field",
+            "why": "A boundary is the one thing the strip layout needs: the plots "
+                   "and the AB line are built inside it.",
+        }
+    if role == "plan":
+        return {
+            "step": "export",
+            "label": "Send it to a monitor",
+            "why": "A prescription is ready to drive: it can go to any platform "
+                   "the app writes for.",
+        }
+    if role == "guidance":
         return {
             "step": "export",
             "label": "Send it to a monitor",
@@ -644,6 +683,14 @@ def suggest_next_step(ds, findings: list[Finding], role: str) -> dict[str, Any]:
             "label": "Cross vigour against rate",
             "why": "Augmenta data carries the pair that shows whether variable rate "
                    "actually engaged.",
+        }
+    if looks_cleaned(ds):
+        return {
+            "step": "analyse",
+            "label": "Take it to the economics",
+            "why": "This file carries nothing for the filters to remove — it was "
+                   "cleaned already, or it is aggregated rather than a machine "
+                   "log. Cleaning it again would only cost time.",
         }
     return {
         "step": "clean",

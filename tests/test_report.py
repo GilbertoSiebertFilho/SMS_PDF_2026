@@ -299,7 +299,7 @@ def test_preflight_only_report_has_no_empty_sections(tmp_path):
     text = _pdf_text(data)
     assert b"First look" in text
     assert b"Cleaning" not in text
-    assert b"DIFM analysis" not in text
+    assert b"Economic report" not in text
     assert b"Small file" in text
     # Area in hectares, records, and the verdict the first look gave.
     assert b" ha" in text or b"(ha)" in text

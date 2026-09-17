@@ -163,10 +163,11 @@ def synthetic_harvest(
 
 
 def synthetic_trial(seed: int = 3, rates: tuple[float, ...] = (0, 60, 120, 180, 240)) -> Dataset:
-    """Generate a DIFM strip trial with a known rate response.
+    """Generate a strip trial with a known rate response.
 
     The response is quadratic with a plateau and differs between two fertility
-    zones, which is exactly what a DIFM analysis should be able to separate.
+    zones, which is exactly what the economic analysis should be able to
+    separate.
 
     The crop is canola, the one the app opens on: this demo is the first thing
     a new user loads, with the Canadian defaults in place, and a trial drawn at
@@ -214,7 +215,7 @@ def synthetic_trial(seed: int = 3, rates: tuple[float, ...] = (0, 60, 120, 180, 
     df = df.drop(columns=["truth_kg_ha"], errors="ignore")
     ds.df = df
 
-    ds.meta.name = "DIFM demo trial"
+    ds.meta.name = "Strip trial (demo)"
     ds.meta.crop = "canola"
     ds.meta.notes = ["Synthetic strip trial with a known quadratic response."]
     ds.meta.extra["rates"] = list(rates)

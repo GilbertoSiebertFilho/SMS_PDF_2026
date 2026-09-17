@@ -249,6 +249,20 @@ def run(
     clean.meta.name = f"{dataset.meta.name} (clean)"
     removed.meta.name = f"{dataset.meta.name} (removed)"
 
+    # The clean copy says so in its own metadata, not only in the session's
+    # report. Saved to a project file and reopened, or handed to the first
+    # look on its own, it must still be recognizable as data the filters have
+    # already been through — that is what lets the app stop suggesting a
+    # second cleaning and offer the analysis instead.
+    clean.meta.extra = {
+        **(clean.meta.extra or {}),
+        "cleaning": {
+            "input": int(len(working)),
+            "kept": int(len(clean)),
+            "removed": int(len(removed)),
+        },
+    }
+
     report = build_report(
         dataset, clean, removed, results, corrections,
         before_stats, before_values, value_column,

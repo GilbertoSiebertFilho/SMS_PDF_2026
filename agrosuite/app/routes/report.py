@@ -77,7 +77,7 @@ def create_report(request: ReportRequest) -> dict[str, Any]:
     if not entry.reports:
         raise server_mod._fail(
             f"There is nothing to report on '{entry.label}' yet. Open it from the Data "
-            "tab so the first look runs, then clean it or run the DIFM analysis."
+            "tab so the first look runs, then clean it or run the economic analysis."
         )
 
     generated_at = datetime.now().astimezone().strftime("%Y-%m-%d %H:%M %Z").strip()

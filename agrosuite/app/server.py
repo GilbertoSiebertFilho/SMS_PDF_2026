@@ -218,7 +218,7 @@ def _refuse_elevation(entry, step: str) -> None:
     """Steps built for machine tracks stop at an elevation layer.
 
     The cleaning filters judge speed, swath overlap and pass ends, and the
-    DIFM fit wants a rate against a yield. The cells of a DEM, or the zones
+    economic fit wants a rate against a yield. The cells of a DEM, or the zones
     the terrain analyser derives from one, carry none of that; left alone,
     the default cleaning preset would run over the raster's scan order and
     register a 'clean' copy of a relief with a few cells taken out as
@@ -383,26 +383,48 @@ def _project_state() -> dict[str, Any]:
                 has_zone = True
                 break
 
-    has_geometry = any(
-        state.get(d).dataset.geometry is not None
-        for d in project["roles"] if d in {e["id"] for e in state.list()}
-    ) if project["roles"] else False
+    # Read off the snapshot taken above rather than listing the session again
+    # per role: it is the same list, and rebuilding it inside the loop costs a
+    # summary of every dataset per role. A dataset removed between the
+    # snapshot and here is simply one this answer does not describe.
+    has_geometry = False
+    has_rate_column = False
+    for dataset_id in entries:
+        try:
+            dataset = state.get(dataset_id).dataset
+        except KeyError:
+            continue
+        if project["roles"].get(dataset_id) and dataset.geometry is not None:
+            has_geometry = True
+        # One file can carry both sides of the response: the layers joined onto
+        # a shared grid, or a trial exported with its rate column beside the
+        # yield. The project then holds the rate without a second file marked
+        # as-applied, and asking for one would ask for what it already has.
+        columns = set(dataset.df.columns)
+        if sch.VALUE in columns and {sch.APPLIED_RATE, sch.TARGET_RATE} & columns:
+            has_rate_column = True
 
     goal = project["goal"]
     evaluation = workflow_mod.evaluate(
         goal, roles, has_prices=has_prices,
         has_geometry=has_geometry, has_zone=has_zone,
+        has_layers=bool(entries), has_rate_column=has_rate_column,
     )
 
     cleaned = any(e["origin"] == "clean" for e in entries.values())
     analysed = any(
+        # 'difm' is the stored report key; the analysis is called the economic
+        # analysis on screen. See the note in agrosuite/core/workflow.py.
         "difm" in state.get(e["id"]).reports or "augmenta" in state.get(e["id"]).reports
         for e in entries.values()
     )
+    designed = bool(project.get("design"))
     reviewed = bool(layers) and all(layer["reviewed"] for layer in layers)
     stage = workflow_mod.stage_of(
-        len(layers), reviewed, cleaned, analysed, project["exported"]
+        len(layers), reviewed, cleaned, analysed, project["exported"],
+        goal=goal, ready=evaluation["ready"], designed=designed,
     )
+    track = workflow_mod.track_of(goal)
 
     return {
         "name": project["name"],
@@ -415,6 +437,15 @@ def _project_state() -> dict[str, Any]:
         "evaluation": evaluation,
         "next_action": workflow_mod.next_action(stage, goal, evaluation),
         "role_options": preflight_mod.ROLES,
+        # The track this goal belongs to, and how far its stages have got.
+        # Every stage comes back reachable: the strip guides, it does not gate.
+        "track": track,
+        "track_label": workflow_mod.TRACKS[track]["label"],
+        "stages": workflow_mod.stage_states(
+            goal, stage, reviewed=reviewed, cleaned=cleaned, analysed=analysed,
+            designed=designed, exported=project["exported"],
+        ),
+        "has_design": designed,
     }
 
 
@@ -705,7 +736,7 @@ def import_demo(request: DemoRequest) -> dict[str, Any]:
     """Load a synthetic dataset for trying the app out."""
     if request.kind == "trial":
         dataset = demo_mod.synthetic_trial()
-        label = "DIFM trial (demo)"
+        label = "Strip trial (demo)"
     else:
         dataset = demo_mod.synthetic_harvest()
         label = "Harvest with defects (demo)"
@@ -869,16 +900,21 @@ def clean_dataset(dataset_id: str, request: CleanRequest) -> dict[str, Any]:
 
 
 # ==========================================================================
-# DIFM analysis
+# Economic analysis
+#
+# The path and the report key stay 'difm': they are the wire names, and a
+# project file, a stored report or a script written against the old name must
+# keep working. Only the label the user reads changed.
 # ==========================================================================
 
 @app.post("/api/datasets/{dataset_id}/difm")
 def difm(dataset_id: str, request: DifmRequest) -> dict[str, Any]:
+    """Fit the yield response and find the economic optimum rate."""
     try:
         entry = state.get(dataset_id)
     except KeyError as exc:
         raise _fail(str(exc), 404)
-    _refuse_elevation(entry, "the DIFM analysis")
+    _refuse_elevation(entry, "the economic analysis")
     try:
         report = difm_analysis.analyze(
             entry.dataset,
@@ -893,7 +929,7 @@ def difm(dataset_id: str, request: DifmRequest) -> dict[str, Any]:
             rate_max=request.rate_max,
         )
     except Exception as exc:
-        raise _fail(f"DIFM analysis failed: {exc}")
+        raise _fail(f"The economic analysis failed: {exc}")
     entry.reports["difm"] = report
     return report
 
@@ -911,12 +947,12 @@ def augmenta_report(dataset_id: str) -> dict[str, Any]:
 
 
 # ==========================================================================
-# Trial layout
+# Trial design
 # ==========================================================================
 
 @app.post("/api/design")
 def design(request: DesignRequest) -> dict[str, Any]:
-    """Generate the strip layout for a DIFM trial."""
+    """Generate the strip layout for an on-farm trial."""
     boundary: list[tuple[float, float]] | None = None
 
     if request.boundary_dataset_id:

@@ -1,6 +1,6 @@
 """Leftovers from the second review pass, pinned here.
 
-Three of them: the DIFM demo trial drawn at corn's ten tonnes a hectare while
+Three of them: the demo strip trial drawn at corn's ten tonnes a hectare while
 the app opens on canola, so the first thing a new user saw was the app's own
 check calling its own sample data wrong; the package endpoint answering with
 ``observacoes`` while the page read ``notes``, so the rate-conversion note

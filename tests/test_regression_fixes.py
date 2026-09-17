@@ -80,7 +80,7 @@ def test_speed_reconstructed_from_file_timestamps_is_plausible():
 
 
 def test_fixture_yield_map_is_not_emptied_by_the_flow_delay(tmp_path):
-    """The reviewer's repro: the DIFM fixture's yield shapefile, converted
+    """The reviewer's repro: the trial fixture's yield shapefile, converted
     the way the first-look button does it, cleaned with the harvest preset."""
     paths = fx.difm_project(tmp_path / "project")
     ds = registry.read_any(paths["yield"])

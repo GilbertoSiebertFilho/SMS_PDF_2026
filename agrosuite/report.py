@@ -60,7 +60,10 @@ from reportlab.platypus import (
 from .core import units as units_mod
 from .core.dataset import OPERATION_LABELS
 
-#: Section keys, in the order they appear on the page.
+#: Section keys, in the order they appear on the page. 'difm' is the key the
+#: economic report is stored under — the wire name kept so that a project file
+#: or a stored report written before the rename still opens; the heading on
+#: the page reads "Economic report".
 SECTIONS = ("header", "preflight", "clean", "difm", "caveat")
 
 #: Origins the cleaning gives its two products, as the server registers them.
@@ -794,7 +797,7 @@ def _difm_section(report: dict, units: _Units, st: dict, width: float) -> list:
     model = report.get("chosen_model") or {}
     has_profit = bool(economics)
 
-    flow = _heading("DIFM analysis — rate response", st)
+    flow = _heading("Economic report — yield response to rate", st)
     r2 = _f(model.get("r2"))
     flow.append(_stats([
         ("Economic optimum rate", _num(units.rate(economics.get("optimum_rate"))), units.rate_unit),
@@ -926,7 +929,8 @@ def build_pdf(
     ----------
     entry:
         A session entry: ``dataset``, ``label`` and ``reports`` are read. Only
-        the reports present (``preflight``, ``clean``, ``difm``) get a section.
+        the reports present (``preflight``, ``clean``, ``difm`` — the economic
+        report's stored key) get a section.
     units:
         The unit set chosen on screen — ``yield_unit``, ``input_rate_unit``,
         ``area_unit``, ``length_unit``, ``speed_unit``, ``currency``, ``crop``.
@@ -987,8 +991,8 @@ def build_pdf(
     if len(sections) == 1:
         story.append(Spacer(1, 6))
         story.append(_note(
-            "No analysis has been run on this dataset yet. Clean it, or run the DIFM "
-            "analysis, and the report will carry the results.", "", st, width,
+            "No analysis has been run on this dataset yet. Clean it, or run the "
+            "economic analysis, and the report will carry the results.", "", st, width,
         ))
 
     story.append(Spacer(1, 8))

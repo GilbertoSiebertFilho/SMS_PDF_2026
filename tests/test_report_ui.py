@@ -73,8 +73,8 @@ def test_the_unit_keys_sent_are_the_ones_the_report_reads():
 
 
 def test_each_report_is_printed_from_the_dataset_that_carries_it():
-    """The cleaning report hangs off the clean copy; the DIFM report and the
-    first look belong to the selected dataset."""
+    """The cleaning report hangs off the clean copy; the economic report and
+    the first look belong to the selected dataset."""
     clean = _block("renderCleanReport")
     assert "this.printReport(result.clean?.id || this.state.selectedId" in clean
     assert "this.printReport(this.state.selectedId" in _block("renderDifmReport")

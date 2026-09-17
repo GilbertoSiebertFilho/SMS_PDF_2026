@@ -15,15 +15,20 @@
     <div class="brand">
       <span class="mark">🌾</span>
       <span>AgroSuite</span>
-      <span class="sub">monitor data · cleaning · DIFM</span>
+      <span class="sub">monitor data · cleaning · economics</span>
     </div>
 
+    <!-- Two tracks share these tabs: plan a trial (Data, Trial design,
+         Export) and evaluate one (Data, Cleaning, Economics, Export). They
+         carry no numbers, because no order is required: every tab is
+         clickable at any time and says in its own panel what it still needs.
+         A Terrain tab belongs between Data and Trial design. -->
     <nav class="steps" id="steps" role="tablist">
-      <button data-tab="dados"    role="tab" aria-selected="true">1 · Data</button>
-      <button data-tab="limpeza"  role="tab" aria-selected="false">2 · Cleaning</button>
-      <button data-tab="difm"     role="tab" aria-selected="false">3 · DIFM analysis</button>
-      <button data-tab="ensaio"   role="tab" aria-selected="false">4 · Trial layout</button>
-      <button data-tab="exportar" role="tab" aria-selected="false">5 · Export</button>
+      <button data-tab="dados"    role="tab" aria-selected="true">Data</button>
+      <button data-tab="ensaio"   role="tab" aria-selected="false">Trial design</button>
+      <button data-tab="limpeza"  role="tab" aria-selected="false">Cleaning</button>
+      <button data-tab="difm"     role="tab" aria-selected="false">Economics</button>
+      <button data-tab="exportar" role="tab" aria-selected="false">Export</button>
     </nav>
 
     <div class="spacer"></div>
@@ -224,8 +229,8 @@
   <div class="body">
     <p class="hint">
       A header width, a flow delay and a working speed belong to the machine,
-      not to the field. Saved once, they fill the Cleaning, Trial and Export
-      tabs with one pick.
+      not to the field. Saved once, they fill the Cleaning, Trial design and
+      Export tabs with one pick.
     </p>
     <div id="machine-body"></div>
   </div>

@@ -1,4 +1,4 @@
-"""Joining the layers a DIFM analysis needs.
+"""Joining the layers the economic analysis needs.
 
 A trial is almost never one file. The plan comes out of the office software,
 the as-applied log comes off the seeder or the spreader, and the yield comes
@@ -174,13 +174,13 @@ def join_layers(
     """
     if "yield" not in layers:
         raise ValueError(
-            "A DIFM analysis needs a yield layer. Add the harvest file and mark "
-            "its role as Yield."
+            "The economic analysis needs a yield layer. Add the harvest file and "
+            "mark its role as Yield."
         )
     if "as_applied" not in layers and "plan" not in layers:
         raise ValueError(
-            "A DIFM analysis needs the rate that was applied. Add the as-applied "
-            "log, or the plan if that is all you have."
+            "The economic analysis needs the rate that was applied. Add the "
+            "as-applied log, or the plan if that is all you have."
         )
 
     target_crs = layers["yield"].metric_crs
@@ -336,7 +336,7 @@ def join_layers(
         frame[sch.TARGET_RATE] = frame["planned_rate"]
 
     meta = DatasetMeta(
-        name="DIFM joined layers",
+        name="Joined layers",
         source_format="join",
         brand="generic",
         brand_label="Joined layers",

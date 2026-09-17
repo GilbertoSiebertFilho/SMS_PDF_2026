@@ -1,9 +1,10 @@
-"""DIFM analysis of strip trials.
+"""The economic analysis of on-farm strip trials.
 
-DIFM (*Data-Intensive Farm Management*) treats the commercial field as the
-experiment itself: strips of different rates are applied with the grower's
-own machine and the response is read off the yield monitor. The analysis
-needs three precautions that set it apart from a small-plot experiment:
+The method treats the commercial field as the experiment itself: strips of
+different rates are applied with the grower's own machine, the response is
+read off the yield monitor, and the price of the crop against the cost of the
+input says where the next unit stops paying for itself. The analysis needs
+three precautions that set it apart from a small-plot experiment:
 
 1. **Aggregation.** Point by point, GPS error and sensor noise dominate. The
    data is aggregated into cells or strip segments before any curve is fitted.
@@ -258,7 +259,7 @@ def analyze(
     rate_max: float | None = None,
     min_points: int | None = None,
 ) -> dict[str, Any]:
-    """Run the full DIFM analysis and return the report.
+    """Run the full economic analysis and return the report.
 
     The report carries the fitted curve, the economic optimum rate, the
     comparison between uniform and zone-based variable rate, and the summary

@@ -1,9 +1,10 @@
 # AgroSuite
 
-A local application for working with agricultural monitor data: import what
-comes off the machine, clean harvest and application maps with a report of
-what was removed, analyse strip trials the DIFM way, and generate the files
-to take back to the monitor — already laid out the way each terminal expects.
+A local application for working with agricultural monitor data: design the
+on-farm trial and export it to the monitor, import what comes off the machine,
+clean harvest and application maps with a report of what was removed, work out
+what the trial earned, and generate the files to take back to the monitor —
+already laid out the way each terminal expects.
 
 Everything runs on your computer. No data leaves the machine: the server
 listens only on `127.0.0.1` and the files live in a session folder.
@@ -44,12 +45,34 @@ same panel.
 
 ## How the work flows
 
-The app walks the job in the order it actually happens, and says at every
-point where it stands and what is missing. That order is not a preference:
-cleaning before knowing the units bakes the wrong units into the clean copy,
-and analysing before cleaning fits a curve to overlap and headland turns.
+There are two tracks, a season apart, and the app serves both.
 
-A **project** is the set of files describing one field and season. A DIFM
+**Plan a trial**, before the season: load a boundary or a field file, set the
+rates, the plot size, the replications and the direction, generate the layout
+and the AB lines, and export the package to the monitor. Nothing in this track
+needs a yield map, prices or cleaning.
+
+**Evaluate a trial**, after harvest: load the as-applied and the yield map —
+and the plan, if there is one — review the units and the roles, clean, work out
+the economics, export.
+
+Neither track is a gate. Every tab is clickable at any time; a tab that cannot
+do its work yet says in its own panel what is missing and offers the one button
+that fixes it. **Each step can be the last one**: looking at the data and
+stopping is a complete use of the app, so is cleaning a file and exporting the
+clean copy, and a file that arrives already clean goes straight to Economics.
+Each tab ends with what it produces on its own and how to take it away.
+
+The order the tabs are in is still the order that costs least when the whole
+job is done at once — declaring the units before cleaning keeps the wrong ones
+out of the clean copy, and cleaning before fitting keeps overlap and headland
+turns out of the curve. It is a recommendation, not a lock.
+
+The stage strip along the top says which track the project is on, where the
+work has got to and what is worth doing next — as an offer, with every stage
+one click away whether it has been reached or not.
+
+A **project** is the set of files describing one field and season. The economic
 analysis needs several — the plan that was made, the as-applied log of what
 the machine did, the yield map of what came of it, and the prices that turn
 yield into money. The panel on the left names whichever is absent, instead of
@@ -71,9 +94,12 @@ anchored to the same origin, and a cell takes the rate level most of its
 records agree on rather than their mean — a cell half at 60 and half at 120
 would otherwise come out at 90, a treatment nobody applied.
 
-## The five steps
+## The tabs
 
-### 1 · Data
+**Data · Trial design · Cleaning · Economics · Export.** They carry no numbers,
+because no order is required.
+
+### Data
 
 It takes what the monitor produces:
 
@@ -96,7 +122,19 @@ carry them.
 A shapefile or an ISOXML folder needs all of its files together: use **Open
 by path / folder**, or upload a `.zip`.
 
-### 2 · Cleaning
+### Trial design
+
+It generates randomized block strips over the field boundary: width a multiple
+of the implement, rates drawn within each block, direction aligned to the
+longest side. It also generates the **AB line** along the strip direction —
+without it the operator enters at another angle and the trial is lost.
+
+This is the whole of the pre-season work, and it needs nothing else: a
+boundary — or any layer whose outline can stand for the field, or a shape
+drawn on the map — is enough to lay the strips out and build the package the
+terminal reads.
+
+### Cleaning
 
 Thirteen chained filters, with a starting profile per operation type:
 
@@ -119,7 +157,11 @@ The report can also put the field before and after side by side on the map,
 locked together and on one colour scale; hovering any point, on any map,
 shows its value in the chosen unit, or the reason it was removed.
 
-### 3 · DIFM analysis
+### Economics
+
+The analysis of an on-farm trial: a yield response curve fitted to the rates
+the trial applied, and the ratio between the crop price and the input cost
+that says where the next unit of input stops paying for itself.
 
 It aggregates the points into cells (never mixing rates from neighbouring
 strips), drops the transition between treatments, fits four response models —
@@ -127,20 +169,16 @@ quadratic, quadratic plateau, linear plateau and Mitscherlich — and picks the
 one with the best R².
 
 Given a crop price and an input cost, it computes the **economic optimum
-rate**: the point where the next unit of input stops paying for itself. Given
-a zone column, it fits one curve per zone and compares variable rate profit
-against the best single rate — which is the number that decides whether the
-map is worth building.
+rate**. Given a zone column, it fits one curve per zone and compares variable
+rate profit against the best single rate — which is the number that decides
+whether the map is worth building. The result prints as the **economic
+report**, and becomes a prescription in one step.
 
-### 4 · Trial layout
+Cleaning is not a precondition here: a file that is already clean — one this
+app cleaned in an earlier session, or an aggregated export — comes straight to
+this tab.
 
-It generates randomized block strips over the field boundary: width a
-multiple of the implement, rates drawn within each block, direction aligned to
-the longest side. It also generates the **AB line** along the strip
-direction — without it the operator enters at another angle and the trial is
-lost.
-
-### 5 · Export
+### Export
 
 Two modes.
 
@@ -155,12 +193,12 @@ structure.
 ## Machine profiles
 
 A header width, a flow delay and a working speed belong to the machine, not
-to the field, yet the cleaning, the trial layout and the export each ask for
+to the field, yet the cleaning, the trial design and the export each ask for
 one of them. Typing "60 ft, 12 s" for the third time this season is how a 6
 sneaks in for a 60. A **machine** is entered once and picked from a small row
 on each of those tabs: choosing it fills the fields that tab needs — flow
 delay and speed range on Cleaning, implement width and passes per strip on
-Trial layout, the target monitor on Export — in whatever units you chose.
+Trial design, the target monitor on Export — in whatever units you chose.
 
 **Save as machine…** reads the current settings back into a short form;
 **Suggest from this file** prefills it from the selected dataset (median
@@ -249,7 +287,7 @@ any other monitor without redrawing anything.
 ## Development
 
 ```
-python -m pytest tests/ -q          # 97 tests
+python -m pytest tests/ -q          # the whole suite, about four minutes
 python tests/fixtures.py samples    # sample files for every monitor
 python -m agrosuite --reload        # server with auto-reload
 ```
@@ -263,11 +301,12 @@ column name, the matching test breaks and the alias is updated in one place.
 ```
 agrosuite/
   core/       data model, column schema, units, CRS, AB lines,
-              preliminary analysis, the workflow
+              preliminary analysis, the two-track workflow
   formats/    per-format reading and writing, monitor identification,
               per-platform packages, verification, USB, QGIS
   clean/      cleaning filters and report
   difm/       response models, economics, trial layout, layer joining
+              (an internal folder name; on screen the tab is Economics)
   app/        local server and interface
   mcp_server  the tool surface Claude drives
 qgis_plugin/  optional QGIS plugin

@@ -179,12 +179,15 @@ def test_the_search_index_is_by_lower_cased_name(monkeypatch, tmp_path):
 # ==========================================================================
 
 def test_a_cleaned_datasets_report_does_not_suggest_cleaning(cleaned, tmp_path):
-    """The clean copy, the removed records and the original that was cleaned
-    all carry a first look that says "Clean the data"; on paper the step is
-    done, and the Cleaning section that answers it sits right below."""
+    """The original that was cleaned and the removed records still carry a
+    first look that says "Clean the data"; the clean copy carries its own
+    mark and points at the economics instead. On paper the step is done
+    either way, and the Cleaning section that answers it sits right below."""
     original, clean, removed = cleaned
+    assert original.reports["preflight"]["next_step"]["step"] == "clean"
+    assert removed.reports["preflight"]["next_step"]["step"] == "clean"
+    assert clean.reports["preflight"]["next_step"]["step"] == "analyse"
     for entry in (original, clean, removed):
-        assert entry.reports["preflight"]["next_step"]["step"] == "clean", entry.id
         out = tmp_path / f"{entry.id}.pdf"
         report_mod.build_pdf(entry, out, CANADA, STAMP, PROJECT)
         text = _pdf_text(_check_is_pdf(out))
@@ -358,8 +361,8 @@ def test_printing_after_the_clean_copy_was_removed_elsewhere(page, served):
 def test_printing_after_the_selected_dataset_was_removed_elsewhere(page, served):
     """The first look's Print button posts the selected dataset itself. Gone
     from the session, there is nothing to redraw for: the selection is
-    cleared as the remove button clears it, the tab says to pick a dataset,
-    and no error escapes."""
+    cleared as the remove button clears it, the tab says what it needs and
+    offers the button that fixes it, and no error escapes."""
     imported = _post(page, served, "/api/import/demo", {"kind": "harvest"})
     page.evaluate("async () => { await App.refreshDatasets(); }")
     page.evaluate("async (id) => { await App.selectDataset(id); }", imported["id"])
@@ -375,5 +378,10 @@ def test_printing_after_the_selected_dataset_was_removed_elsewhere(page, served)
 
     assert page.evaluate("() => App.state.selectedId") is None
     assert imported["id"] not in page.evaluate("() => App.state.datasets.map((d) => d.id)")
-    assert page.locator("#right-panel .empty").count() == 1
+    # The tab with nothing selected is not silent: it says what is missing —
+    # a file to open, or one of the open ones to pick — and carries the one
+    # button that fixes it.
+    panel = page.locator("#right-panel")
+    assert panel.locator("button[data-cta]").count() == 1
+    assert re.search(r"Nothing is open yet|none is picked", panel.inner_text())
     assert page.locator("#legend").is_hidden()
