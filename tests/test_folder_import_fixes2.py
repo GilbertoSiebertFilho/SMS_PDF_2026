@@ -154,7 +154,9 @@ def test_an_appledouble_fork_is_not_the_shapefile(tmp_path):
 
 def test_a_shapefile_under_macosx_is_not_a_source(tmp_path):
     shp = fx.john_deere_shapefile(tmp_path / "__MACOSX")
-    with pytest.raises(ValueError, match="neither a TASKDATA.XML nor a shapefile"):
+    # The list of formats the message names grows with the readers; what this
+    # test is about is that the folder is refused, not what it offers instead.
+    with pytest.raises(ValueError, match="holds neither a TASKDATA.XML"):
         registry.detect(shp.parent)
 
 
